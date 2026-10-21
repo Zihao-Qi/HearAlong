@@ -52,7 +52,7 @@ test('fix 1: a 382 s sleep inside the terminal frame persists at its sample offs
     assert.equal(store.captureGaps(meeting.id).length, 1, 'retry is idempotent');
     await assert.rejects(store.addFrame(meeting.id, 'mic:test', 2, 1600, Buffer.alloc(64000)), /last \(partial\) frame/);
     const chunk = await store.sealWindow(meeting.id, store.heldFrames(meeting.id, 'mic:test'));
-    assert.deepEqual(await readFile(chunk.path), Buffer.concat(frames.map(f => Buffer.from(f.buffer))));
+    assert.deepEqual(await readFile(store.resolvePath(chunk.path)), Buffer.concat(frames.map(f => Buffer.from(f.buffer))));
     store.close(); store = new MeetingStore(directory);
     assert.deepEqual(store.captureGaps(meeting.id), gaps);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }

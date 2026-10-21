@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
 import { access, mkdir, open, readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { CHUNK_SECONDS } from './audio.ts';
 import { buildSegments, type Timing } from './segments.ts';
 import type { Recognition } from './recognizer.ts';
@@ -36,6 +37,14 @@ export const FRAME_RATE = 16_000;
 /** Live frames are 1 s; only the last frame of a source may be shorter. */
 export const FRAME_SAMPLES = FRAME_RATE;
 
+/** Shared with read-only tools that must not open a writable MeetingStore just to resolve a recording. */
+export function resolveRecordingPath(directory: string, path: string): string {
+  return !path || isAbsolute(path) ? path : join(directory, path);
+}
+
+/** Stored references use forward slashes and must not escape or accidentally become absolute after slicing. */
+const isDataRelative = (path: string) => Boolean(path) && !isAbsolute(path) && !path.split('/').includes('..');
+
 /** Makes a new file's name durable, not just its bytes (power loss). Not every platform can sync a directory. */
 async function syncDirectory(directory: string) {
   try { const handle = await open(directory, 'r'); try { await handle.sync(); } finally { await handle.close(); } }
@@ -56,9 +65,13 @@ async function openAudioFile(directory: string, path: string) {
 export class MeetingStore {
   db: DatabaseSync;
   directory: string;
+  private pathPrefixes: string[];
   constructor(directory: string) {
-    this.directory = directory;
-    this.db = new DatabaseSync(join(directory, 'meetings.sqlite'));
+    this.directory = resolve(directory);
+    // Accept both the caller's spelling and its canonical spelling (e.g. /var vs /private/var).
+    this.pathPrefixes = [...new Set([this.directory, realpathSync(this.directory)])]
+      .map(root => root.endsWith(sep) ? root : `${root}${sep}`);
+    this.db = new DatabaseSync(join(this.directory, 'meetings.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, createdAt INTEGER NOT NULL,
         mode TEXT NOT NULL DEFAULT 'periodic', intervalSeconds INTEGER NOT NULL DEFAULT 60);
@@ -117,8 +130,58 @@ export class MeetingStore {
       }
       this.db.exec('PRAGMA user_version = 2');
     }
+    // Repair on every open: a folder may have moved, or an older build may have written absolute rows since our last open.
+    this.repairRecordingPaths();
     this.db.exec("UPDATE chunks SET status='queued', error='Recovered an interrupted transcription after restart.' WHERE status='running' AND meetingId NOT IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL)");
     this.backfillSegments();
+  }
+  /** Resolve a recording reference at the disk boundary; empty means removed, not the data folder. */
+  resolvePath(path: string): string {
+    return resolveRecordingPath(this.directory, path);
+  }
+  /** Normalize before testing containment, but never change the spelling of an outside absolute reference. */
+  private relativePath(path: string): string | null {
+    const normalized = normalize(path);
+    const prefix = this.pathPrefixes.find(prefix => normalized.startsWith(prefix));
+    if (!prefix) return null;
+    const candidate = normalized.slice(prefix.length).split(sep).join('/');
+    return isDataRelative(candidate) ? candidate : null;
+  }
+  /** Store owned files relative to data; imports outside it retain their absolute location. */
+  private storedPath(path: string): string {
+    if (!path) return path;
+    const absolute = isAbsolute(path) ? path : resolve(path);
+    return this.relativePath(absolute) ?? absolute;
+  }
+  /** A stale prefix is recoverable only for an exact recording tail that exists at the current location. */
+  private relocatedPath(path: string, meetingId: string): string | null {
+    const parts = normalize(path).split(sep);
+    const tail = parts.at(-3) === 'audio' && parts.at(-2) === meetingId ? parts.slice(-3)
+      : parts.at(-2) === 'imports' ? parts.slice(-2) : null;
+    const candidate = tail?.join('/');
+    if (!candidate || !isDataRelative(candidate)) return null;
+    try { return statSync(this.resolvePath(candidate)).isFile() ? candidate : null; }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
+      throw error;
+    }
+  }
+  private repairRecordingPaths() {
+    this.transaction(() => {
+      const absolutePaths = sep === '/' ? "path GLOB '/*'"
+        : "(path GLOB '[A-Za-z]:[/\\\\]*' OR path GLOB '[/\\\\]*')";
+      for (const table of ['frames', 'chunks']) {
+        // Filter native absolute paths in SQLite; relative and removed rows need no JS or filesystem work.
+        const rows = this.db.prepare(`SELECT id,meetingId,path FROM ${table} WHERE path <> '' AND ${absolutePaths}`).all() as { id: string; meetingId: string; path: string }[];
+        const update = this.db.prepare(`UPDATE ${table} SET path=? WHERE id=?`);
+        for (const row of rows) {
+          const candidate = this.relativePath(row.path) ?? this.relocatedPath(row.path, row.meetingId);
+          if (candidate !== null) update.run(candidate, row.id);
+        }
+      }
+      // A marker only: never use this to skip repair, and do not downgrade a future schema version.
+      if (Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version) < 3) this.db.exec('PRAGMA user_version = 3');
+    });
   }
   /** Completed chunks from before segments existed get them once; legacy native timings are kept. */
   private backfillSegments() {
@@ -318,7 +381,7 @@ export class MeetingStore {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       this.db.prepare('INSERT INTO frames (id,meetingId,source,sequence,path,startMs,samples,hash,savedAt,captureWallMs,captureEndWallMs) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, meetingId, source, sequence, path, startMs, samples, hash, Date.now(), timing?.captureWallMs ?? null, endWallMs);
+        .run(id, meetingId, source, sequence, this.storedPath(path), startMs, samples, hash, Date.now(), timing?.captureWallMs ?? null, endWallMs);
       for (const gap of gaps) this.db.prepare('INSERT INTO capture_gaps (meetingId,source,atMs,fromWallMs,toWallMs,reason) VALUES (?,?,?,?,?,?)')
         .run(meetingId, source, gap.atMs, gap.fromWallMs, gap.toWallMs, gap.reason);
       this.db.exec('COMMIT');
@@ -362,7 +425,7 @@ export class MeetingStore {
     if (!frames.length) throw new Error('Nothing to seal.');
     const source = frames[0].source;
     frames.forEach((f, i) => { if (f.source !== source || (i && f.sequence !== frames[i - 1].sequence + 1)) throw new Error('A window needs consecutive frames of one source.'); });
-    const parts = await Promise.all(frames.map(f => readFile(f.path)));
+    const parts = await Promise.all(frames.map(f => readFile(this.resolvePath(f.path))));
     const pcm = Buffer.concat(parts);
     const hash = createHash('sha256').update(pcm).digest('hex');
     const id = randomUUID();
@@ -376,20 +439,23 @@ export class MeetingStore {
           .get(meetingId, source, frames[0].sequence, frames.at(-1)!.sequence) as { n: number };
         if (Number(held.n) !== frames.length) throw new Error('These frames were already sealed.');
         this.db.prepare(`INSERT INTO chunks (id,meetingId,source,sequence,path,decodeStart,startMs,seconds,sampleRate,status,hash)
-          VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, frames[0].sequence, path, frames[0].startMs, pcm.length / 4 / FRAME_RATE, FRAME_RATE, hash);
+          VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, frames[0].sequence, this.storedPath(path), frames[0].startMs, pcm.length / 4 / FRAME_RATE, FRAME_RATE, hash);
         this.db.prepare('UPDATE frames SET windowChunkId=? WHERE meetingId=? AND source=? AND sequence BETWEEN ? AND ?')
           .run(id, meetingId, source, frames[0].sequence, frames.at(-1)!.sequence);
       });
     } catch (error) { await rm(path, { force: true }); throw error; }
     // Committed: the window is queued whatever happens next. Frame files are only cleanup (retried at startup).
-    await Promise.allSettled(frames.map(f => rm(f.path, { force: true })));
+    await Promise.allSettled(frames.map(f => rm(this.resolvePath(f.path), { force: true })));
     return this.chunk(id)!;
   }
   /** Removes frame files whose audio is already in a window (a crash between the seal and the cleanup). */
   async removeSealedFrameFiles() {
     // Only when the window's own file exists: otherwise the frame files are the only copy of that audio.
     const sealed = this.db.prepare(`SELECT f.path AS path, c.path AS windowPath FROM frames f JOIN chunks c ON c.id = f.windowChunkId`).all() as { path: string; windowPath: string }[];
-    await Promise.allSettled(sealed.map(async f => { await access(f.windowPath); await rm(f.path, { force: true }); }));
+    await Promise.allSettled(sealed.map(async f => {
+      if (!f.path || !f.windowPath) return;
+      await access(this.resolvePath(f.windowPath)); await rm(this.resolvePath(f.path), { force: true });
+    }));
   }
   /** Speaker roles of a meeting's sources (see speakers.ts), from saved chunks and held frames. */
   speakers(meetingId: string): Speakers {
@@ -428,7 +494,7 @@ export class MeetingStore {
     try { this.assertNotReplay(meetingId); } catch (error) { await rm(path, { force: true }); throw error; }
     this.recordingStarted(meetingId);
     this.db.prepare(`INSERT INTO chunks (id,meetingId,source,sequence,path,decodeStart,startMs,seconds,sampleRate,status,hash)
-      VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, sequence, path, startMs, pcm.length / 4 / sampleRate, sampleRate, hash);
+      VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, sequence, this.storedPath(path), startMs, pcm.length / 4 / sampleRate, sampleRate, hash);
     return this.chunk(id)!;
   }
   addMedia(meetingId: string, path: string, duration: number) {
@@ -442,7 +508,7 @@ export class MeetingStore {
       for (let start = 0; start < duration; start += CHUNK_SECONDS) {
         this.db.prepare(`INSERT INTO chunks (id,meetingId,source,sequence,path,decodeStart,startMs,seconds,sampleRate,status,hash)
           VALUES (?,?,?,?,?,?,?,?,NULL,'queued','file')`)
-          .run(randomUUID(), meetingId, source, sequence++, path, start, offset + start * 1000, Math.min(CHUNK_SECONDS, duration - start));
+          .run(randomUUID(), meetingId, source, sequence++, this.storedPath(path), start, offset + start * 1000, Math.min(CHUNK_SECONDS, duration - start));
       }
       this.db.exec('COMMIT');
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }

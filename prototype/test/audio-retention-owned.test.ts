@@ -68,12 +68,12 @@ for (const kind of ['frame', 'chunk'] as const) test(`migrated transcript-only m
     if (kind === 'frame') {
       const { frame } = await store.addFrame(m.id, 'mic:fresh', 0, 1000, Buffer.alloc(64000));
       assert.equal(store.meeting(m.id).audioEmpty, 0);
-      assert.ok(existsSync(frame.path));
+      assert.ok(existsSync(store.resolvePath(frame.path)));
       const sealed = await store.sealWindow(m.id, [frame]); store.completeChunk(sealed.id, result);
     } else {
       const chunk = await store.addPcm(m.id, 'mic:fresh', 0, 1000, 16000, Buffer.alloc(64000));
       assert.equal(store.meeting(m.id).audioEmpty, 0);
-      assert.ok(existsSync(chunk.path)); store.completeChunk(chunk.id, result);
+      assert.ok(existsSync(store.resolvePath(chunk.path))); store.completeChunk(chunk.id, result);
     }
     retention.observe(); await retention.run();
     assert.equal(store.meeting(m.id).audioEmpty, 0, 'fresh owned audio is examined normally');
@@ -106,9 +106,9 @@ test('imported legacy replay caches no owned audio and imports never enter delet
     assert.equal(existsSync(join(directory, 'audio', replay.id)), false);
     assert.deepEqual(retention.notice, { count: 1, bytes: 64000 }, 'only owned audio contributes to the one-time question');
     retention.answer('remove'); await retention.run();
-    assert.equal(existsSync(ownedChunk.path), false);
+    assert.equal(existsSync(store.resolvePath(ownedChunk.path)), false);
     assert.deepEqual(await readFile(path), importedBytes, 'the imported original is never deleted or changed');
-    assert.equal(store.chunks(replay.id)[0].path, path);
+    assert.equal(store.resolvePath(store.chunks(replay.id)[0].path), path);
     assert.equal(store.meeting(replay.id).audioRemovedAt, null);
     assert.match(store.markdown(replay.id), /Historical transcript stays/);
     retention.close(); store.close(); store = new MeetingStore(directory);
@@ -128,7 +128,7 @@ test('verified owned-audio absence covers every generation even when transcript 
     const m = store.createMeeting();
     const chunk = await store.addPcm(m.id, 'mic:old', 0, 0, 16000, Buffer.alloc(64000));
     store.completeChunk(chunk.id, result);
-    await rm(chunk.path);
+    await rm(store.resolvePath(chunk.path));
     const orphan = join(directory, 'audio', m.id, 'g7-orphan.f32');
     await writeFile(orphan, Buffer.alloc(0)); // even zero-byte audio is owned; it is not absence
     store.db.prepare('UPDATE meetings SET audioLegacy=1 WHERE id=?').run(m.id);
