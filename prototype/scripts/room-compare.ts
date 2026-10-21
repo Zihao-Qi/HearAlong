@@ -4,10 +4,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { resolveRecordingPath } from '../src/store.ts';
 
 const [which, dataDir = 'data'] = process.argv.slice(2);
 if (!which) throw new Error('Usage: room-compare.ts <meeting title or id> [dataDir]');
-const db = new DatabaseSync(join(resolve(dataDir), 'meetings.sqlite'), { readOnly: true });
+const directory = resolve(dataDir);
+const db = new DatabaseSync(join(directory, 'meetings.sqlite'), { readOnly: true });
 const meeting = db.prepare('SELECT * FROM meetings WHERE id = ? OR title = ? ORDER BY createdAt DESC LIMIT 1').get(which, which) as { id: string; title: string; audioRemovedAt?: number | null } | undefined;
 if (!meeting) throw new Error(`No meeting called or with id ${which}.`);
 // Older databases (before step 4) have no settings table: those takes simply have no recorded settings.
@@ -26,9 +28,10 @@ const takes = sources.map(source => {
   const perSecond: number[] = [];
   const unavailableAudio: number[] = [];
   for (const c of chunks) {
-    if (!c.path || !existsSync(c.path)) { unavailableAudio.push(c.startMs); continue; }
+    const path = resolveRecordingPath(directory, c.path);
+    if (!path || !existsSync(path)) { unavailableAudio.push(c.startMs); continue; }
     let b: Buffer;
-    try { b = readFileSync(c.path); }
+    try { b = readFileSync(path); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       unavailableAudio.push(c.startMs); continue;

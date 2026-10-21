@@ -27,7 +27,7 @@ test('M9a restart mid meeting: two sources resume their saved sequence and every
     for (const source of sources) await capture.end(meeting.id, source, 53);
     for (const [s, source] of sources.entries()) {
       const chunks = store.chunks(meeting.id).filter(c => c.source === source).sort((a, b) => a.sequence - b.sequence);
-      const bytes = Buffer.concat(await Promise.all(chunks.map(c => readFile(c.path))));
+      const bytes = Buffer.concat(await Promise.all(chunks.map(c => readFile(store.resolvePath(c.path)))));
       assert.ok(bytes.equals(Buffer.concat(audio[s])), `${source}: byte-for-byte, no gaps, no duplication`);
       assert.equal(chunks.reduce((n, c) => n + c.seconds, 0), 54);
     }

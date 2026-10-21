@@ -54,10 +54,10 @@ test('frames are sealed into 16–24 s windows at a pause; every sample lands in
     assert.equal(ended.sealed, 1);
     chunks = f.store.chunks(f.meeting.id);
     assert.deepEqual(chunks.map(c => [c.sequence, c.seconds, c.startMs]), [[0, 19, 0], [19, 11, 19_000]]);
-    const all = Buffer.concat(await Promise.all(chunks.map(c => readFile(c.path))));
+    const all = Buffer.concat(await Promise.all(chunks.map(c => readFile(f.store.resolvePath(c.path)))));
     assert.ok(all.equals(Buffer.concat(Array.from({ length: 30 }, (_, n) => frame(n, n === 18)))), 'byte for byte, in order, nothing twice');
     // Frame files are removed once their audio is in a window.
-    for (const fr of f.store.db.prepare('SELECT path FROM frames').all() as { path: string }[]) await assert.rejects(access(fr.path));
+    for (const fr of f.store.db.prepare('SELECT path FROM frames').all() as { path: string }[]) await assert.rejects(access(f.store.resolvePath(fr.path)));
     await assert.rejects(live.accept(f.meeting.id, SOURCE, 30, 30_000, frame(30)), /ended/);
     assert.deepEqual(await live.end(f.meeting.id, SOURCE, 29), { sealed: 0 }, 'end is idempotent');
   } finally { await f.close(); }
@@ -147,17 +147,17 @@ test('startup cleanup keeps frame files when their window file is missing (they 
     const held = f.store.heldFrames(f.meeting.id, SOURCE);
     // A seal whose frame cleanup did not happen (crash), and whose window file was then lost.
     const chunk = await f.store.sealWindow(f.meeting.id, held.slice(0, 1));
-    await writeFile(held[0].path, frame(0)); // the frame file survived (crash before cleanup)...
-    await rm(chunk.path); // ...and the window file was lost
+    await writeFile(f.store.resolvePath(held[0].path), frame(0)); // the frame file survived (crash before cleanup)...
+    await rm(f.store.resolvePath(chunk.path)); // ...and the window file was lost
     await f.store.removeSealedFrameFiles();
-    await access(held[0].path); // kept: it is the only copy
+    await access(f.store.resolvePath(held[0].path)); // kept: it is the only copy
     assert.equal(chunk.status, 'queued', 'a committed window is queued even though cleanup is best effort');
     const live = f.make();
     await live.end(f.meeting.id, SOURCE, 1);
     const second = f.store.chunks(f.meeting.id).find(c => c.sequence === 1)!;
     await f.store.removeSealedFrameFiles();
-    await assert.rejects(access(held[1].path), 'frame files go once their window file exists');
-    await access(second.path);
+    await assert.rejects(access(f.store.resolvePath(held[1].path)), 'frame files go once their window file exists');
+    await access(f.store.resolvePath(second.path));
   } finally { await f.close(); }
 });
 

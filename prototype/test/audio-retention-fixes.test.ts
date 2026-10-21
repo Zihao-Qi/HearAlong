@@ -49,7 +49,7 @@ test('HTTP unended recording survives 61 seconds, idle sealing and a day; next f
     f.advance(AUDIO_RETENTION.day + 1); await f.app.audioRetention.run();
     assert.equal(f.app.store.meeting(m.id).audioRemovedAt, null);
     assert.equal(f.app.store.meeting(m.id).audioDoneAt, null, 'no Stop or abandonment means no retention clock');
-    assert.ok(existsSync(f.app.store.chunks(m.id)[0].path));
+    assert.ok(existsSync(f.app.store.resolvePath(f.app.store.chunks(m.id)[0].path)));
     assert.equal((await f.frame(m.id, source, 1)).status, 201);
     assert.equal(f.app.store.meeting(m.id).audioDoneAt, null);
     assert.equal((await f.end(m.id, source, 1)).status, 200);
@@ -111,7 +111,7 @@ test('HTTP removal allows a fresh recording generation with its own completion a
     await f.app.jobs!.wait(); f.app.audioRetention.observe();
     const old = f.app.store.chunks(m.id)[0];
     f.advance(AUDIO_RETENTION.day + 1); await f.app.audioRetention.run();
-    assert.equal(existsSync(old.path), false); assert.ok(f.app.store.meeting(m.id).audioRemovedAt);
+    assert.equal(existsSync(f.app.store.resolvePath(old.path)), false); assert.ok(f.app.store.meeting(m.id).audioRemovedAt);
     const retry = await f.request(`/api/meetings/${m.id}/retry`, { method: 'POST' });
     assert.equal(retry.status, 409); assert.match((await retry.json()).error, /transcription cannot be retried/);
     const resumed = await f.frame(m.id, second);
@@ -122,11 +122,11 @@ test('HTTP removal allows a fresh recording generation with its own completion a
     assert.equal((await f.end(m.id, second)).status, 200);
     await f.app.jobs!.wait(); f.app.audioRetention.observe();
     const fresh = f.app.store.chunks(m.id).find(c => c.source === second)!;
-    assert.ok(existsSync(fresh.path)); assert.match(fresh.path, /g1-/);
+    assert.ok(existsSync(f.app.store.resolvePath(fresh.path))); assert.match(fresh.path, /g1-/);
     assert.equal(f.app.store.meeting(m.id).audioDoneAt, f.now());
-    await f.app.audioRetention.run(); assert.ok(existsSync(fresh.path));
-    f.advance(AUDIO_RETENTION.day - 1); await f.app.audioRetention.run(); assert.ok(existsSync(fresh.path));
-    f.advance(2); await f.app.audioRetention.run(); assert.equal(existsSync(fresh.path), false);
+    await f.app.audioRetention.run(); assert.ok(existsSync(f.app.store.resolvePath(fresh.path)));
+    f.advance(AUDIO_RETENTION.day - 1); await f.app.audioRetention.run(); assert.ok(existsSync(f.app.store.resolvePath(fresh.path)));
+    f.advance(2); await f.app.audioRetention.run(); assert.equal(existsSync(f.app.store.resolvePath(fresh.path)), false);
     assert.equal(f.app.store.segments(m.id).length, 2);
   } finally { await f.close(); }
 });
@@ -148,10 +148,10 @@ test('pending and restarted old-generation cleanup cannot delete a resumed recor
     await Promise.race([started, new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('deletion did not begin')), 1000))]);
     const { frame } = await store.addFrame(m.id, 'mic:new', 0, 1000, Buffer.alloc(64000));
     assert.equal(store.meeting(m.id).audioRemovedAt, null);
-    assert.ok(existsSync(frame.path));
+    assert.ok(existsSync(store.resolvePath(frame.path)));
     release(); await sweeping;
-    assert.ok(existsSync(frame.path), 'in-flight deletion uses only the removed generation');
-    await writeFile(old.path, 'residue from a crash');
+    assert.ok(existsSync(store.resolvePath(frame.path)), 'in-flight deletion uses only the removed generation');
+    await writeFile(store.resolvePath(old.path), 'residue from a crash');
     retention.close(); store.close(); store = new MeetingStore(directory);
     let cleaning!: () => void;
     const cleaningStarted = new Promise<void>(resolve => { cleaning = resolve; });
@@ -164,8 +164,8 @@ test('pending and restarted old-generation cleanup cannot delete a resumed recor
     retention.close(); store.close(); store = new MeetingStore(directory);
     release(); await resumedCleanup;
     assert.deepEqual(errors, [], 'cleanup completing after close never accesses the closed database');
-    assert.equal(existsSync(old.path), false, 'old cleanup survives restart even with Always');
-    assert.ok(existsSync(frame.path));
+    assert.equal(existsSync(store.resolvePath(old.path)), false, 'old cleanup survives restart even with Always');
+    assert.ok(existsSync(store.resolvePath(frame.path)));
     assert.throws(() => store.setStatus(old.id, 'queued'), /transcription cannot be retried/);
   } finally { release?.(); retention?.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -186,7 +186,7 @@ fs.open = async function(path, ...args) {
       try {
         const m = store.createMeeting(); store.db.prepare('UPDATE meetings SET audioRemovedAt=1 WHERE id=?').run(m.id);
         const { frame } = await store.addFrame(m.id, 'mic:new', 0, 0, Buffer.alloc(64000));
-        console.log(JSON.stringify({ path: frame.path, removed: store.meeting(m.id).audioRemovedAt }));
+        console.log(JSON.stringify({ path: store.resolvePath(frame.path), removed: store.meeting(m.id).audioRemovedAt }));
       } finally { store.close(); }
     `], { encoding: 'utf8' });
     const saved = JSON.parse(output);
@@ -209,7 +209,7 @@ test('generation migration preserves old removed rows and their crash cleanup wi
     const { frame } = await store.addFrame(m.id, 'mic:new', 0, 1000, Buffer.alloc(64000));
     retention = new AudioRetention(store, { setting: () => 'always', active: () => false });
     await retention.run();
-    assert.equal(existsSync(old.path), false); assert.ok(existsSync(frame.path));
+    assert.equal(existsSync(store.resolvePath(old.path)), false); assert.ok(existsSync(store.resolvePath(frame.path)));
     assert.throws(() => store.setStatus(old.id, 'queued'), /transcription cannot be retried/);
   } finally { retention?.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -224,7 +224,7 @@ test('room-compare keeps transcript metrics when audio disappears between existe
     await writeFile(preload, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
 const original = fs.readFileSync;
 fs.readFileSync = function(path, ...args) {
-  if (path === ${JSON.stringify(c.path)}) fs.rmSync(path, { force: true });
+  if (path === ${JSON.stringify(store.resolvePath(c.path))}) fs.rmSync(path, { force: true });
   return original.call(this, path, ...args);
 }; syncBuiltinESMExports();`);
     const output = execFileSync(process.execPath, ['--experimental-strip-types', '--import', preload, 'scripts/room-compare.ts', m.id, directory], { encoding: 'utf8' });
@@ -259,6 +259,6 @@ test('an empty legacy meeting is scanned once and observe starts no more sweeps,
     retention.observe(); assert.equal(sweeps, 0, 'empty marker is durable');
     // Fresh capture clears the empty marker and follows retention normally.
     const c = await store.addPcm(m.id, 'mic:new', 0, 0, 16000, Buffer.alloc(64000));
-    assert.equal(store.meeting(m.id).audioEmpty, 0); assert.ok(existsSync(c.path));
+    assert.equal(store.meeting(m.id).audioEmpty, 0); assert.ok(existsSync(store.resolvePath(c.path)));
   } finally { retention?.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });

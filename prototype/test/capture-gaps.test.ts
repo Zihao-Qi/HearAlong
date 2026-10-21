@@ -105,7 +105,7 @@ test('additive migration, frame + gap persistence, idempotent retries, old pages
     const frames = store.heldFrames(meeting.id, 'mic:test');
     for (const [i, text] of ['Before.', 'After.'].entries()) {
       const chunk = await store.sealWindow(meeting.id, [frames[i]]);
-      assert.equal((await readFile(chunk.path)).equals(pcm), true);
+      assert.equal((await readFile(store.resolvePath(chunk.path))).equals(pcm), true);
       store.completeChunk(chunk.id, { text, words: [], backend: 'test', computeMs: 1, decodeMs: 1,
         audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
     }
@@ -120,7 +120,7 @@ test('additive migration, frame + gap persistence, idempotent retries, old pages
     await store.addFrame(meeting.id, 'old', 1, 1000, pcm);
     await store.addFrame(meeting.id, 'old', 2, 2000, pcm, { captureWallMs: 900000 });
     assert.equal(store.captureGaps(meeting.id).length, 1);
-    assert.equal((await readFile(store.heldFrames(meeting.id, 'old')[0].path)).equals(pcm), true);
+    assert.equal((await readFile(store.resolvePath(store.heldFrames(meeting.id, 'old')[0].path))).equals(pcm), true);
     // Continuous capture uploaded much later has no gap.
     await store.addFrame(meeting.id, 'late', 0, 0, pcm, { captureWallMs: Date.now() - 20000 });
     const captureWallMs = store.heldFrames(meeting.id, 'late')[0].captureWallMs! + 1000;

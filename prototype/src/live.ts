@@ -248,13 +248,13 @@ export class LiveCapture {
     if (!drafts.begin(state.meetingId, source, window, rest[0].startMs)) return;
     state.window = window;
     // On the source's chain, so these are fed before any newer frame. A missing file only costs the draft.
-    const parts = await Promise.all(rest.map(f => readFile(f.path))).catch(() => null);
+    const parts = await Promise.all(rest.map(f => readFile(this.store.resolvePath(f.path)))).catch(() => null);
     if (!parts) { drafts.drop(window); state.window = null; return; }
     for (const part of parts) drafts.feed(window, asFloats(part));
   }
   private async loudness(frames: Frame[]): Promise<(index: number) => number> {
     if (frames.some(f => this.store.meeting(f.meetingId).audioRemovedAt !== null)) return () => 0;
-    const pcm = await Promise.all(frames.map(f => readFile(f.path).then(asFloats)));
+    const pcm = await Promise.all(frames.map(f => readFile(this.store.resolvePath(f.path)).then(asFloats)));
     const edge = FRAME_RATE / 10;
     return index => rms(pcm[index - 1].subarray(Math.max(0, pcm[index - 1].length - edge))) + rms(pcm[index].subarray(0, edge));
   }

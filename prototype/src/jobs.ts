@@ -23,7 +23,7 @@ export class JobManager {
       if (!job) break;
       this.store.setStatus(job.id, 'running');
       try {
-        const result = await this.recognizer.transcribe(job);
+        const result = await this.recognizer.transcribe({ ...job, path: this.store.resolvePath(job.path) });
         if (!this.stopped) this.store.completeChunk(job.id, result);
       } catch (error) {
         if (!this.stopped) this.store.setStatus(job.id, 'failed', '', error instanceof Error ? error.message : String(error));

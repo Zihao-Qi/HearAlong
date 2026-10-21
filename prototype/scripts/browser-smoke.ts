@@ -179,7 +179,7 @@ try {
     const tab = chunks.filter(c => c.source.startsWith('tab:')), mic = chunks.filter(c => c.source.startsWith('mic:'));
     assert.ok(tab.length >= 1 && mic.length >= 1, 'both sources saved windows');
     // The right-only tone reached the saved mono audio (downmix of both channels).
-    const pcm = new Float32Array((await readFile(tab[0].path)).buffer.slice(0));
+    const pcm = new Float32Array((await readFile(app.store.resolvePath(tab[0].path))).buffer.slice(0));
     const rms = Math.sqrt(pcm.reduce((n, x) => n + x * x, 0) / pcm.length);
     assert.ok(rms > 0.05, `the tab audio is silent (rms ${rms}): a channel was dropped`);
     // Both sources share one clock: the tab started within a second of the microphone, and its audio lies inside the mic's span.

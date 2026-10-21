@@ -44,7 +44,7 @@ for (const status of ['queued', 'running', 'failed', 'cancelled'] as const) test
     f.age(m.id);
     await f.retention.run();
     assert.equal(f.store.meeting(m.id).audioRemovedAt, null);
-    assert.ok(existsSync(m.chunk.path));
+    assert.ok(existsSync(f.store.resolvePath(m.chunk.path)));
     f.store.completeChunk(m.chunk.id, result); f.age(m.id);
     await f.retention.run();
     assert.ok(f.store.meeting(m.id).audioRemovedAt);
@@ -60,7 +60,7 @@ test('retention holds recording and pending admission, then starts its completio
     assert.equal(f.store.meeting(m.id).audioRemovedAt, null);
     f.active.delete(m.id); f.retention.observe();
     assert.ok(f.store.meeting(m.id).audioDoneAt);
-    await f.retention.run(); assert.ok(existsSync(m.chunk.path));
+    await f.retention.run(); assert.ok(existsSync(f.store.resolvePath(m.chunk.path)));
     f.advance(AUDIO_RETENTION.day + 1); await f.retention.run();
     assert.equal(existsSync(m.folder), false);
   } finally { await f.close(); }
@@ -97,12 +97,12 @@ test('retention holds unsealed frames; sealed windows and leftover frames are re
     const m = await f.meeting();
     const { frame } = await f.store.addFrame(m.id, 'mic:live', 0, 1000, Buffer.alloc(64000));
     f.age(m.id); await f.retention.run();
-    assert.ok(existsSync(frame.path)); assert.equal(f.store.meeting(m.id).audioRemovedAt, null);
+    assert.ok(existsSync(f.store.resolvePath(frame.path))); assert.equal(f.store.meeting(m.id).audioRemovedAt, null);
     const sealed = await f.store.sealWindow(m.id, [frame]);
-    await writeFile(frame.path, Buffer.alloc(4)); // crash residue from a seal
+    await writeFile(f.store.resolvePath(frame.path), Buffer.alloc(4)); // crash residue from a seal
     f.store.completeChunk(sealed.id, result); f.age(m.id);
     await f.retention.run();
-    assert.equal(existsSync(sealed.path), false); assert.equal(existsSync(frame.path), false);
+    assert.equal(existsSync(f.store.resolvePath(sealed.path)), false); assert.equal(existsSync(f.store.resolvePath(frame.path)), false);
     assert.equal(f.store.heldSources().length, 0);
     await assert.rejects(f.store.sealWindow(m.id, [frame]), /Audio removed/);
   } finally { await f.close(); }
@@ -179,7 +179,7 @@ test('legacy migration separates existing meetings and falls back to file time w
   try {
     const m = await f.meeting();
     const stamp = Math.floor(Date.now() / 1000) * 1000;
-    await utimes(m.chunk.path, stamp / 1000, stamp / 1000);
+    await utimes(f.store.resolvePath(m.chunk.path), stamp / 1000, stamp / 1000);
     f.store.db.exec('ALTER TABLE chunks DROP COLUMN completedAt; ALTER TABLE frames DROP COLUMN savedAt; DROP TABLE audio_retention');
     for (const column of ['audioDoneAt', 'audioRemovedAt', 'audioRemovedAfter', 'audioLegacy', 'audioKept', 'recordingEndedAt']) f.store.db.exec(`ALTER TABLE meetings DROP COLUMN ${column}`);
     f.reopen(); await f.retention.run();
@@ -203,8 +203,8 @@ test('legacy completion uses the latest completed chunk or frame timestamp when 
     f.store.db.prepare('UPDATE meetings SET audioDoneAt=NULL WHERE id=?').run(m.id);
     await f.retention.run();
     assert.equal(f.store.meeting(m.id).audioDoneAt, latest);
-    assert.ok(existsSync(sealed.path));
-    f.retention.answer('remove'); await f.retention.run(); assert.equal(existsSync(sealed.path), false);
+    assert.ok(existsSync(f.store.resolvePath(sealed.path)));
+    f.retention.answer('remove'); await f.retention.run(); assert.equal(existsSync(f.store.resolvePath(sealed.path)), false);
   } finally { await f.close(); }
 });
 
@@ -233,7 +233,7 @@ test('retention refuses symlink escapes and preserves unexpected documents and e
     await mkdir(join(valid.folder, 'eval-private')); await writeFile(join(valid.folder, 'eval-private', 'take.f32'), 'eval');
     await symlink(join(outside, 'keep'), join(valid.folder, 'linked.f32'));
     await f.retention.run();
-    assert.equal(existsSync(valid.chunk.path), false);
+    assert.equal(existsSync(f.store.resolvePath(valid.chunk.path)), false);
     assert.equal(await readFile(join(valid.folder, 'notes.md'), 'utf8'), 'notes');
     assert.equal(await readFile(join(valid.folder, 'eval-private', 'take.f32'), 'utf8'), 'eval');
     assert.equal(await readFile(join(outside, 'keep'), 'utf8'), 'safe');
@@ -301,7 +301,7 @@ test('server settings persist and removed-meeting retry is a clean refusal; room
     const m = app.store.createMeeting(); const c = await app.store.addPcm(m.id, 'mic:take', 0, 0, 16000, Buffer.alloc(64000));
     app.store.completeChunk(c.id, result);
     app.store.db.prepare('UPDATE meetings SET audioDoneAt=? WHERE id=?').run(Date.now() - 3 * AUDIO_RETENTION.day, m.id);
-    await app.audioRetention.run(); assert.ok(existsSync(c.path), 'saved Always stops removal');
+    await app.audioRetention.run(); assert.ok(existsSync(app.store.resolvePath(c.path)), 'saved Always stops removal');
     await request('/api/settings', { audioRetention: 'day' }); await app.audioRetention.run();
     const response = await fetch(app.url + `/api/meetings/${m.id}/retry`, { method: 'POST', headers: { Cookie: cookie, Origin: app.url } });
     assert.equal(response.status, 409); assert.match((await response.json()).error, /Audio removed/);
