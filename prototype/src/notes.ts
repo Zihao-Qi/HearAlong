@@ -428,7 +428,10 @@ export class NotesJobs {
     /** The server's shared quota cooldown (M7b §4): notes are not started during it, and their own rate-limit error starts it. */
     cooldowns?: Cooldowns;
   };
-  constructor(options: NotesJobs['options']) { this.options = options; }
+  constructor(options: NotesJobs['options']) {
+    this.options = options;
+    options.store?.registerDeletionGuard?.('notes', id => this.busy(id));
+  }
   get enabled() { return Boolean(this.options.runner); }
   /** A job is claimed synchronously and released after publication, so this covers preparation too (moves, §8.2). */
   busy(meetingId: string) { return this.running.has(meetingId); }

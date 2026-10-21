@@ -87,6 +87,10 @@ export class LiveView {
   helperSeen() { this.helperSeenAt = this.clock(); }
   native(): boolean { return this.clock() - this.helperSeenAt < 3000; }
 
+  /** Meeting-scoped requests disappear with their workflow; recording/session and helper state are independent. */
+  pruneMeetings(existing: ReadonlySet<string>) {
+    for (const id of this.reveals.keys()) if (!existing.has(id)) this.reveals.delete(id);
+  }
   /** A card clicked in the mini view, for the app page to open once (each request has its own number). */
   reveal(meetingId: string, cardId: string) { this.reveals.set(meetingId, { cardId, n: ++this.revealCount, at: this.clock() }); }
   /** The latest card to open for a meeting, if asked within the last 10 s (a page that comes later does not open an old one). */
