@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HearAlong</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png">
+<meta name="theme-color" content="#FFFFFF">
+</head>
+<body>
+<div id="quit-banner" class="quit-banner" role="status" tabindex="-1" hidden><p id="quit-text"></p></div>
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="meeting-wrap">
+      <button id="meeting-button" class="meeting-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="meeting-menu" title="Meetings · double-click to rename">
+        <span class="meeting-names"><span id="meeting-project" class="meeting-project" hidden></span><span id="meeting-title">No meeting</span></span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+      </button>
+      <input id="meeting-name" class="meeting-name" maxlength="120" aria-label="Meeting name" hidden>
+      <div id="meeting-menu" class="menu meeting-menu" role="menu" aria-label="Meetings" hidden>
+        <button id="new-meeting" role="menuitem" class="menu-item strong">New meeting</button>
+        <button id="rename-meeting" role="menuitem" class="menu-item">Rename this meeting…</button>
+        <button id="open-replay" role="menuitem" class="menu-item">Replay a recording…<span class="muted small">Play an audio file as if it were live (a new meeting)</span></button>
+        <div class="menu-sep" role="separator"></div>
+        <div id="meeting-list-label" class="menu-label" aria-hidden="true">Meetings</div>
+        <div id="meeting-list" class="menu-list" role="group" aria-label="Meetings"></div>
+        <div class="menu-sep" role="separator"></div>
+        <button id="switch-project" role="menuitem" class="menu-item">Show another project’s meetings…</button>
+        <button id="move-meeting" role="menuitem" class="menu-item">Move this meeting to…</button>
+      </div>
+    </div>
+    <span id="live-chip" class="chip" role="status" hidden></span>
+    <button id="open-meeting" class="chip chip-button" type="button" aria-haspopup="dialog">Add materials</button>
+  </div>
+  <div class="topbar-right">
+    <span id="connection" class="muted small">Connecting…</span>
+    <div class="start-wrap">
+      <button id="start" class="button primary" aria-haspopup="menu" aria-expanded="false" aria-controls="start-menu">Start<span class="wide-only">&nbsp;recording</span></button>
+      <div id="start-menu" class="start-menu" role="menu" aria-label="Start recording" hidden>
+        <p class="start-consent">Make sure everyone has agreed to be recorded.</p>
+        <button id="start-mic" role="menuitem">Microphone<span class="muted small">In person: the room</span></button>
+        <button id="start-online" role="menuitem">Microphone + meeting tab<span class="muted small">Online: you, and the call from a Chrome tab</span></button>
+      </div>
+    </div>
+    <button id="add-tab" class="button" hidden title="Also record a Chrome tab's audio (the online call) as “Them”">Add meeting tab</button>
+    <button id="mini-view" class="text-action" type="button" hidden title="A small window that stays on top of other apps while recording">Mini view</button>
+    <button id="stop" class="button" hidden>Stop</button>
+    <button id="open-system" class="button system-button" type="button" aria-haspopup="dialog" aria-label="Settings">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      <span class="wide-only">Settings</span>
+      <span id="status-dot" class="status-dot" aria-hidden="true"></span><span id="status-word" class="status-word wide-only"></span>
+    </button>
+  </div>
+</header>
+<section id="older-audio" class="audio-notice" aria-label="Older meeting audio" hidden>
+  <p id="older-audio-text"></p>
+  <div><button id="remove-older-audio" class="button primary" type="button">Remove</button><button id="keep-older-audio" class="text-action" type="button">Keep them</button></div>
+</section>
+<div id="compact-tabs" class="compact-tabs" role="tablist" aria-label="Meeting views" hidden>
+  <button id="ctab-live" role="tab" aria-selected="true" aria-controls="transcript-pane">Transcript</button>
+  <button id="ctab-board" role="tab" aria-selected="false" aria-controls="board-panel">Board<span id="compact-badge" class="tab-badge" hidden></span></button>
+  <button id="ctab-notes" role="tab" aria-selected="false" aria-controls="notes-panel">Notes</button>
+  <button id="ctab-plans" role="tab" aria-selected="false" aria-controls="plans-panel">Plans</button>
+  <button id="ctab-project" role="tab" aria-selected="false" aria-controls="project-panel" hidden>Project<span id="cproject-badge" class="tab-badge" hidden></span></button>
+</div>
+
+<main id="layout" class="layout">
+  <section id="transcript-pane" class="transcript-pane" aria-label="Transcript">
+    <h2 class="visually-hidden">Transcript</h2>
+    <p id="audio-removed" class="muted small audio-removed" hidden></p>
+    <button id="pinned-card" class="pinned-card" type="button" hidden></button>
+    <div id="transcript" class="transcript" tabindex="0">
+      <p class="empty">Create a meeting from the meeting menu (top left), then start recording or replay a recording.</p>
+    </div>
+    <button id="jump" class="button jump" hidden>Jump to end ↓</button>
+    <div id="selection-menu" class="selection-menu" role="menu" aria-label="Actions for selected text" hidden>
+      <div class="selection-actions">
+        <button role="menuitem" data-action="explain" title="Explain this concept (materials or web)">Explain</button>
+        <button role="menuitem" data-action="answer" title="Answer from your materials, with citations">Answer</button>
+        <button role="menuitem" data-action="compute" title="Do the calculation, assumptions stated">Compute</button>
+        <button role="menuitem" data-action="findSource" title="Where your materials discuss this">Find source</button>
+        <button role="menuitem" data-action="lookUp" title="Look it up on the web (never books or pays)">Look up</button>
+        <button role="menuitem" data-action="other" title="Your own request about the selection">Other…</button>
+      </div>
+      <form id="selection-other" class="selection-other" hidden>
+        <input id="selection-prompt" type="text" maxlength="2000" placeholder="What should be done with the selection?" aria-label="Your request">
+        <button class="button primary" type="submit">Run</button>
+      </form>
+      <p id="selection-hint" class="selection-hint" role="status" hidden></p>
+    </div>
+  </section>
+
+  <div id="divider" class="divider" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="board-pane"
+    aria-label="Board width" title="Drag to resize the board · double-click to reset"></div>
+  <aside id="board-pane" class="board-pane" aria-label="Meeting views">
+    <div class="pane-head">
+      <div class="tabs" role="tablist" aria-label="Right pane">
+        <button id="tab-board" role="tab" aria-selected="true" aria-controls="board-panel">Board<span id="board-badge" class="tab-badge" hidden></span></button>
+        <button id="tab-notes" role="tab" aria-selected="false" aria-controls="notes-panel">Notes</button>
+        <button id="tab-plans" role="tab" aria-selected="false" aria-controls="plans-panel">Plans</button>
+        <button id="tab-project" role="tab" aria-selected="false" aria-controls="project-panel" hidden>Project<span id="project-badge" class="tab-badge" hidden></span></button>
+      </div>
+      <button id="board-sort" class="sort-toggle" type="button">Time ⇅</button>
+    </div>
+    <div id="board-panel" role="tabpanel" aria-labelledby="tab-board" class="pane-body">
+      <div class="board-bar">
+        <label class="board-filter">Show
+          <select id="stage-filter" aria-label="Show cards by stage">
+            <option value="all">All cards</option>
+            <option value="suggested">Suggested</option>
+            <option value="investigating">Investigating</option>
+            <option value="answered">Answered</option>
+            <option value="meeting">From the meeting</option>
+          </select>
+        </label>
+        <button id="show-dismissed" class="link-button" hidden></button>
+        <button id="scan-board" class="link-button" title="Let the quick model read this meeting's transcript and propose cards">Scan this meeting</button>
+        <span id="board-state" class="muted small" role="status" aria-live="polite"></span>
+      </div>
+      <button id="new-cards" class="new-cards" hidden></button>
+      <div id="board-empty" class="board-empty">
+        <p><strong>While you listen,</strong> the quick model reads the transcript about once a minute and adds cards: questions, claims to check, decisions and actions, anchored to the moment they were said.</p>
+        <p class="muted">Select words in the transcript to ask, explain, compute or look something up yourself.</p>
+      </div>
+      <h4 id="requests-title" class="notes-section board-group-title" hidden>Your requests</h4>
+      <p id="answers-note" class="draft-note" hidden>Answers are AI drafts. A ✓ badge means the quoted words were found in the cited source, not that the answer is right.</p>
+      <div id="actions-list" class="actions-list"></div>
+      <div id="board-cards" class="board-cards"></div>
+      <div id="actions-status" class="muted small actions-status" role="status" aria-live="polite"></div>
+    </div>
+    <div id="notes-panel" role="tabpanel" aria-labelledby="tab-notes" class="pane-body" hidden>
+      <div class="notes-bar">
+        <button id="write-notes" class="button primary">Write notes</button>
+        <button id="notes-stale" class="notes-stale" type="button" aria-haspopup="menu" aria-controls="notes-menu" hidden>Older than the transcript</button>
+        <div class="notes-options-wrap">
+          <button id="notes-options" class="button options-button" aria-haspopup="menu" aria-expanded="false" aria-controls="notes-menu" hidden><span class="notes-options-label">Options</span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></button>
+          <div id="notes-menu" class="menu notes-menu" role="menu" aria-label="Notes options" hidden>
+            <button id="rewrite-notes" class="menu-item" role="menuitem" tabindex="-1">Write the notes again</button>
+            <a id="export-notes" class="menu-item" role="menuitem" tabindex="-1" href="#">Download (.md)</a>
+            <button id="copy-notes" class="menu-item" role="menuitem" tabindex="-1">Copy as Markdown</button>
+            <div class="notes-about" role="none">
+              <div id="notes-warnings" role="note" aria-label="Notes details"></div>
+            </div>
+          </div>
+        </div>
+        <span id="notes-status" class="muted small" role="status" aria-live="polite" hidden></span>
+      </div>
+      <div id="notes-body" class="notes-body">
+        <p class="board-empty">After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.</p>
+      </div>
+    </div>
+    <div id="plans-panel" role="tabpanel" aria-labelledby="tab-plans" class="pane-body" hidden>
+      <section id="plans" class="plans" aria-label="Plans" hidden></section>
+    </div>
+    <div id="project-panel" role="tabpanel" aria-labelledby="tab-project" class="pane-body project-body" hidden>
+      <form id="tell-form" class="tell-form">
+        <label class="visually-hidden" for="tell-input">Tell the project</label>
+        <input id="tell-input" maxlength="1000" autocomplete="off" placeholder="Tell the project… e.g. Vela restocked the display labels">
+      </form>
+      <div id="tell-result" class="tell-result" hidden></div>
+      <p id="project-state" class="project-state" role="status" aria-live="polite"></p>
+      <section id="needs-ok" class="project-section needs-ok" aria-labelledby="needs-ok-title" hidden>
+        <h3 id="needs-ok-title" class="project-heading">Needs your OK</h3>
+        <div id="ok-rows" class="ok-rows"></div>
+      </section>
+      <section id="brief" class="project-section" aria-labelledby="brief-title" hidden>
+        <h3 id="brief-title" class="project-heading">Brief</h3>
+        <p id="brief-text" class="brief-text"></p>
+        <div id="brief-edit" class="brief-edit" hidden><textarea id="brief-input" rows="6" aria-label="The project brief"></textarea><div class="row"><button id="brief-save" class="button small-button primary" type="button">Save</button><button id="brief-cancel" class="button small-button" type="button">Cancel</button></div></div>
+        <div class="brief-meta"><span id="brief-who" class="muted small"></span><button id="brief-more" class="link-button" type="button" aria-expanded="false" hidden>More</button><button id="brief-undo" class="link-button" type="button" aria-label="Undo the AI rewrite of the brief" hidden>Undo</button><button id="brief-edit-button" class="link-button" type="button" aria-label="Edit the project brief">Edit</button><button id="brief-versions-button" class="link-button" type="button" aria-label="Earlier versions of the brief" aria-expanded="false">Versions</button></div>
+        <ul id="brief-versions" class="brief-versions" hidden></ul>
+      </section>
+      <div id="lists-bar" class="lists-bar" hidden>
+        <label id="project-show" class="board-filter project-show"><span class="visually-hidden">Show</span>
+          <select id="project-filter" aria-label="Show in the project memory">
+            <option value="changes">This meeting’s changes</option>
+            <option value="all">Everything open</option>
+            <option value="todo">To-dos</option>
+            <option value="decision">Decisions</option>
+            <option value="question">Questions</option>
+            <option value="closed">Closed and old</option>
+          </select>
+        </label>
+        <button id="confirm-all" class="button small-button" type="button" hidden>Confirm all new</button>
+      </div>
+      <div id="memory-lists" class="memory-lists"></div>
+      <p id="project-empty" class="board-empty" hidden>Nothing recorded yet. Memory fills in after the first meeting's notes.</p>
+      <div id="memory-popover" class="memory-popover" role="dialog" aria-label="Memory item" hidden></div>
+    </div>
+  </aside>
+
+
+</main>
+
+<dialog id="settings" class="settings" aria-labelledby="settings-title">
+  <div class="settings-head">
+    <div><h2 id="settings-title">Settings</h2><p id="settings-meeting" class="muted small"></p></div>
+    <button id="close-settings" class="button" type="button" data-close-panel>Close</button>
+  </div>
+  <div class="settings-body">
+    <nav class="settings-nav" aria-label="Settings sections">
+        <span id="nav-project-label" class="nav-label">This project</span>
+        <button type="button" data-section="project">Project</button>
+        <span id="nav-meeting-label" class="nav-label">This meeting</span>
+        <button type="button" data-section="materials">Materials</button>
+        <button type="button" data-section="glossary">Glossary</button>
+        <button type="button" data-section="export">Export</button>
+        <span class="nav-label">This Mac</span><span class="nav-divider" aria-hidden="true"></span>
+        <button type="button" data-section="microphone">Microphone</button>
+        <button type="button" data-section="mini">Mini window</button>
+        <button type="button" data-section="speech">Speech</button>
+        <button type="button" data-section="cloud">Cloud models</button>
+        <button type="button" data-section="activity">Activity</button>
+    </nav>
+    <div class="settings-content">
+    <section class="settings-section" data-section="project" hidden>
+      <h3>Project</h3>
+      <div id="project-none" class="stack">
+        <p class="muted small">This meeting is not in a project. A project keeps materials, a glossary and a memory of to-dos, decisions and questions across its meetings.</p>
+        <button id="put-in-project" class="button" type="button">Put this meeting in a project…</button>
+      </div>
+      <div id="project-settings" class="stack" hidden>
+        <label class="small" for="project-name">Name</label>
+        <div class="row"><input id="project-name" maxlength="80"><button id="save-project-name" class="button" type="button">Rename</button></div>
+        <label class="small" for="project-repo">Repo folder: memory files are written to its <code>project-memory/</code> folder</label>
+        <div class="row"><input id="project-repo" placeholder="/path/to/your/research/repo"><button id="save-project-repo" class="button" type="button">Save</button></div>
+        <p id="project-files" class="muted small"></p>
+        <label class="check small" for="plan-after-notes"><input type="checkbox" id="plan-after-notes">
+          <span><strong>Plan after the notes</strong><span class="muted block">When a meeting’s notes are written, make its plans too (about 3 minutes, with the cloud model). Off: use the Plans tab.</span></span>
+        </label>
+        <h4 class="settings-sub">Instructions for other agents</h4>
+        <p class="muted small">Paste this line into the repo's AGENTS.md or CLAUDE.md, so agents working there record changes with a source:</p>
+        <div class="row"><input id="agents-line" readonly aria-label="Line for AGENTS.md" value="Project memory: read and follow project-memory/README.md."><button id="copy-agents-line" class="button" type="button">Copy</button></div>
+        <div class="row"><button id="check-repo" class="button" type="button">Check the repo for finished work</button><span id="check-repo-note" class="muted small"></span></div>
+      </div>
+    </section>
+    <section class="settings-section" data-section="materials" hidden>
+      <h3>Materials</h3>
+      <ul id="materials" class="plain-list material-list"></ul>
+      <div class="row"><input id="material-path" placeholder="/path/to/project-or-file" aria-label="Folder or file to add"><select id="material-scope" aria-label="Add for" hidden><option value="project">For the project</option><option value="meeting">This meeting only</option></select><button id="attach" class="button">Add</button></div>
+      <div class="row"><input id="query" placeholder="Search the materials" aria-label="Search the materials"><button id="search" class="button">Search</button></div>
+      <div id="search-results" class="scroll small"></div>
+    </section>
+    <section class="settings-section" data-section="glossary" hidden>
+      <h3>Glossary</h3>
+      <p id="glossary-status" class="muted small">No glossary yet.</p>
+      <div class="row"><button id="build-glossary" class="button">Build from materials</button><button id="edit-glossary" class="button">Edit terms</button><span id="build-glossary-note" class="muted small"></span></div>
+      <textarea id="glossary-editor" rows="8" hidden spellcheck="false" aria-label="Glossary: one term per line, spoken variants after a vertical bar, separated by semicolons"></textarea>
+      <button id="save-glossary" class="button" hidden>Save glossary</button>
+    </section>
+    <section class="settings-section" data-section="export" hidden>
+      <h3>Export</h3>
+      <div class="row"><a id="export" class="button" href="#">Transcript (.md)</a><a id="export-raw" class="button" href="#">Raw transcript</a><a id="export-notes-panel" class="button" href="#" aria-disabled="true" title="Write notes first">Notes (.md)</a></div>
+    </section>
+    <section class="settings-section" data-section="microphone" hidden aria-labelledby="mic-heading">
+      <h3 id="mic-heading">Microphone</h3>
+      <label class="stack small" for="mic-device">Input
+        <select id="mic-device"><option value="">System default</option></select>
+      </label>
+      <label class="check small" for="room-mode"><input type="checkbox" id="room-mode">
+        <span><strong>Room mode</strong> for in-person meetings<span class="muted block">Turns off echo cancellation and noise suppression, which can remove quiet voices across a room. Online recording always keeps echo cancellation.</span></span>
+      </label>
+      <div class="meter-row">
+        <div id="mic-meter" class="meter" role="meter" aria-label="Microphone level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><span></span></div>
+        <button id="mic-test" class="button" type="button">Test for 10 s</button>
+      </div>
+      <p id="mic-hint" class="muted small" role="status" aria-live="polite">Applies to the next recording.</p>
+    </section>
+    <section class="settings-section" data-section="mini" hidden>
+      <h3>Mini window</h3>
+      <label class="check small" for="mini-by-itself"><input type="checkbox" id="mini-by-itself">
+        <span>Open the mini window by itself when I leave the app<span class="muted block">During a recording, the first time you switch to another app. Otherwise the Mini view button opens it.</span></span>
+      </label>
+    </section>
+    <section class="settings-section" data-section="speech" hidden>
+      <h3>Speech on this Mac</h3>
+      <p id="model" class="small">Checking local model…</p>
+      <label class="audio-setting" for="audio-retention"><span>Keep audio for</span>
+        <select id="audio-retention"><option value="day">1 day</option><option value="week">1 week</option><option value="month">1 month</option><option value="always">Always</option></select>
+      </label>
+      <p class="muted small">After recording ends and every piece is transcribed. Transcripts and notes are kept.</p>
+      <details class="queue"><summary class="small">Transcription queue</summary><div id="jobs" class="scroll small"></div></details>
+      <button id="retry" class="button" hidden>Retry failed pieces</button>
+    </section>
+    <section class="settings-section" data-section="cloud" hidden>
+      <h3>Cloud models</h3>
+      <p id="cloud" class="small"></p>
+      <label class="stack small" for="board-model">Live board model
+        <select id="board-model">
+          <option value="luna">gpt-6-luna — fast, fewer tokens (default)</option>
+          <option value="sol">gpt-6.1-sol — catches more items, more quota</option>
+        </select>
+      </label>
+    </section>
+    <section class="settings-section" data-section="activity" hidden>
+      <h3>Activity</h3>
+      <div id="log" class="scroll small log" role="status" aria-live="polite"></div>
+    </section>
+    </div>
+  </div>
+</dialog>
+<dialog id="project-dialog" class="replay-dialog project-dialog" aria-labelledby="project-dialog-title">
+  <div class="panel-head">
+    <h2 id="project-dialog-title">Move this meeting</h2>
+    <button id="close-project-dialog" class="button" type="button">Close</button>
+  </div>
+  <p id="project-dialog-note" class="muted small"></p>
+  <div id="project-choices" class="project-choices" role="radiogroup" aria-labelledby="project-dialog-title"></div>
+  <div id="new-project-fields" class="stack" hidden>
+    <label class="stack small" for="new-project-name">Project name<input id="new-project-name" maxlength="80"></label>
+    <label class="stack small" for="new-project-repo">Repo folder (optional)<input id="new-project-repo" placeholder="/path/to/your/research/repo"></label>
+  </div>
+  <label id="use-glossary-row" class="check small use-glossary" hidden><input type="checkbox" id="use-meeting-glossary" checked><span>Use this meeting’s glossary for the project (it has none yet)</span></label>
+  <p id="project-dialog-error" class="error small" role="alert" hidden></p>
+  <div class="row"><button id="project-dialog-go" class="button primary" type="button">Move</button></div>
+</dialog>
+<dialog id="replay-dialog" class="replay-dialog" aria-labelledby="replay-title">
+  <div class="panel-head">
+    <h2 id="replay-title">Replay a recording</h2>
+    <button id="close-replay" class="button" type="button">Close</button>
+  </div>
+  <p class="muted small">Creates a new meeting and plays the file as if it were live. Transcription runs locally.</p>
+  <input id="replay-file" type="file" accept="audio/*,video/*,.m4a,.wav,.mp3,.aiff,.mp4" aria-label="Recording file">
+  <div class="row">
+    <label>Speed <select id="replay-speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option></select></label>
+    <button id="replay" class="button primary">Start replay</button>
+  </div>
+</dialog>
+<script src="/vendor/marked-15.0.12.umd.js"></script>
+<script src="/vendor/purify-3.2.6.min.js"></script>
+<script src="/vendor/katex-0.16.22.min.js"></script>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,72 @@
+/* The mini view (M7, mockup A): Chrome's Document Picture-in-Picture window while recording. Its own document, so its own styles. */
+:root {
+  --panel: #FFFFFF; --ink: #18212F; --muted: #5A6577; --line: #DDE2EA; --line-strong: #C9D0DB;
+  --accent: #2F56C6; --accent-ink: #1F3E99; --accent-tint: #EEF2FD; --rec: #C62828; --them: #8A4B08;
+  --notice: #FFF4E0; --notice-ink: #7A4300;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--panel); color: var(--ink); font: 13px/1.4 var(--sans); overflow: hidden; }
+button { font: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mini { height: 100%; display: flex; flex-direction: column; }
+/* Every row keeps its height between updates, so the window never jumps. */
+.status { flex: 0 0 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px; white-space: nowrap; }
+.dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
+.rec { color: #9B1C1C; font-weight: 500; }
+.idle { color: var(--muted); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.clock { font: 12px var(--mono); color: var(--ink); }
+.fill { flex: 1; }
+.stop, .stop-now { min-height: 32px; padding: 0 10px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); }
+.stop:hover { border-color: var(--muted); }
+.stop-now { border-color: var(--rec); background: var(--rec); color: #FFF; }
+.stop-now:hover { border-color: #A51F1F; background: #A51F1F; }
+.keep:hover { color: var(--accent); }
+.keep { min-height: 32px; padding: 0 6px; border: none; border-radius: 7px; background: none; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+/* One box of at most two lines, whatever the number of problems (the full text is its title), so the lines and the card keep their room. */
+.notice { margin: 0 10px 6px; padding: 6px 8px; border-radius: 7px; background: var(--notice); color: var(--notice-ink); font-size: 12px; line-height: 1.35; }
+.notice span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.status:focus { outline: none; } /* holds the focus only between its buttons being replaced */
+/* The meeting's lines, newest at the bottom, with the preview lines below them; scrolled up, the way back to the latest instead. */
+.lines { flex: 1; min-height: 36px; display: flex; flex-direction: column; gap: 3px; padding-bottom: 8px; overflow: hidden; }
+/* The lines scroll through the whole meeting; earlier lines leave at the top under a short fade, and, scrolled up, later ones at
+   the bottom. The page keeps them in place itself (no browser anchoring), so it is the same in Chrome's window and the native one. */
+.scroll { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0 10px; overflow-x: hidden; overflow-y: auto; overflow-anchor: none;
+  overscroll-behavior: contain; scrollbar-width: thin; }
+.scroll.above { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px); mask-image: linear-gradient(to bottom, transparent 0, #000 18px); }
+.scroll.below { -webkit-mask-image: linear-gradient(to top, transparent 0, #000 18px); mask-image: linear-gradient(to top, transparent 0, #000 18px); }
+.scroll.above.below { -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%); }
+.scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.text { margin-top: auto; display: flex; flex-direction: column; gap: 3px; } /* a short transcript sits at the bottom */
+.finals, .drafts { display: flex; flex-direction: column; gap: 3px; }
+#m-earlier:empty { display: none; }
+.drafts { padding: 0 10px; }
+.drafts[hidden], .latest[hidden] { display: none; }
+/* A text button at the right, its text in line with the lines' right edge; the window's control height. */
+.latest { flex: 0 0 32px; display: flex; align-items: center; justify-content: flex-end; padding: 0 4px 0 10px; }
+.back { min-height: 32px; padding: 0 6px; border: none; border-radius: 7px; background: none; color: var(--accent-ink); text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.back:hover { color: var(--accent); }
+.ln, .pending-ln { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 6px; }
+.final { overflow-wrap: anywhere; }
+.pending-preview { color: var(--muted); overflow-wrap: anywhere; user-select: none; -webkit-user-select: none; }
+.lines.plain .ln, .lines.plain .pending-ln { grid-template-columns: minmax(0, 1fr); }
+.lines.plain .who { display: none; }
+.who { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; line-height: 18px; color: var(--accent-ink); }
+.who.them { color: var(--them); }
+.draft, .empty { color: var(--muted); user-select: none; -webkit-user-select: none; }
+/* One line per source: a right-to-left box holding left-to-right text, so an overlong preview is cut at its start, not at the newest words. */
+.draft { direction: rtl; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.draft bdi { direction: ltr; unicode-bidi: isolate; }
+.draft:empty, .draft bdi:empty::before { content: "\00a0"; }
+/* The newest card, as the app's compact pinned card: type and time, then the text; 52 px. */
+.card { flex: 0 0 52px; display: flex; flex-direction: column; justify-content: center; gap: 2px; margin: 0 8px 8px; padding: 6px 10px; border: none; border-radius: 8px;
+  background: var(--accent-tint); color: var(--ink); text-align: left; white-space: nowrap; overflow: hidden; }
+.card:hover { background: #E1E8FB; }
+.card[hidden] { display: none; }
+.card .tag, .card .text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.card .tag { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent-ink); }
+/* A very short window (Chrome's can be made so): the lines give way first, so the status and the card stay whole. */
+@media (max-height: 150px) { .lines { min-height: 0; padding-bottom: 4px; } }

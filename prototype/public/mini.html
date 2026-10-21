@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HearAlong</title>
+<link rel="stylesheet" href="/mini.css">
+</head>
+<body>
+<div class="mini">
+  <span id="m-announce" class="visually-hidden" role="status"></span>
+  <div id="m-status" class="status" tabindex="-1"></div>
+  <div id="m-notices" role="status"></div>
+  <div id="m-lines" class="lines">
+    <div id="m-scroll" class="scroll" tabindex="0" role="region" aria-label="Transcript">
+      <div class="text">
+        <div id="m-earlier" class="finals"></div>
+        <div id="m-finals" class="finals" role="log" aria-live="polite" aria-label="New lines"></div>
+      </div>
+    </div>
+    <div id="m-drafts" class="drafts" aria-hidden="true"></div>
+    <div id="m-latest" class="latest" hidden><button id="m-back" class="back" type="button">Back to latest</button></div>
+  </div>
+  <button id="m-card" class="card" type="button" hidden></button>
+</div>
+<script type="module" src="/mini.js"></script>
+</body>
+</html>

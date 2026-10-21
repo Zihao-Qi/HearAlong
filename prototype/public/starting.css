@@ -1,0 +1,10 @@
+/* The installed app's "Starting…" page (M7); see starting.js. */
+:root { --ground: #F4F6F9; --panel: #FFFFFF; --ink: #18212F; --muted: #5A6577; --accent: #2F56C6; --line-strong: #C9D0DB; }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--ground); color: var(--ink); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+main { max-width: 440px; padding: 24px 28px; border-radius: 12px; background: var(--panel); box-shadow: 0 10px 28px rgba(24, 33, 47, .1); display: flex; flex-direction: column; gap: 12px; }
+h1 { margin: 0; font-size: 18px; }
+p { margin: 0; color: var(--muted); }
+code { font: 13px "SF Mono", Menlo, monospace; color: var(--ink); }
+button { align-self: flex-start; min-height: 40px; padding: 0 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: #FFF; font: 14px system-ui, sans-serif; cursor: pointer; }

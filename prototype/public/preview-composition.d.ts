@@ -1,0 +1,17 @@
+import type { Paragraph, ParagraphLine } from './live-shared.js';
+export type TimedWord = { text: string; startMs: number; endMs: number };
+export type Preview = { source: string; window: string; windowStartMs: number; committedUntilMs?: number; coveredUntilMs: number; words: TimedWord[]; text: string; behind: boolean; speaker?: string | null };
+export type PendingPreview = Preview & { chunkId: string; cutMs: number };
+export type ComposedPreview = (Preview | PendingPreview) & { key: string; kind: 'active' | 'pending'; part: 'before' | 'post'; boundaryStartMs?: number; gapAtMs?: number; startMs: number; endMs: number; chunkId?: string };
+export function timedWords(tokens: { text: string; t0Ms: number; t1Ms: number }[], startMs?: number): TimedWord[];
+export function midpoint(word: TimedWord): number;
+export function coversTime(span: { startMs: number; endMs: number }, at: number): boolean;
+export function overlapsTime(a: { startMs: number; endMs: number }, b: { startMs: number; endMs: number }): boolean;
+export function composePreview(drafts?: Preview[], pending?: PendingPreview[], finals?: DisplayOrder[]): ComposedPreview[];
+export function newestWords(source: string, finals: { source: string; text: string; startMs: number }[], drafts: Preview[], pending: PendingPreview[], limit?: number): string;
+export function miniPreviewWords(source: string, finals: { source: string; text: string; startMs: number }[], drafts: Preview[], pending: PendingPreview[], limit?: number, placed?: { key: string }[]): string;
+export type DisplayOrder = { startMs: number; source?: string; kind?: string; key?: string; id?: string };
+export function compareDisplayOrder(a: DisplayOrder, b: DisplayOrder): number;
+export function miniPendingRows(finals: DisplayOrder[], drafts: Preview[], pending: PendingPreview[]): ComposedPreview[];
+export type MiniPlacement = { key: string; chunkId?: string; source: string; startMs: number; text: string; speaker: string | null; beforeKey: string | null };
+export function miniLog<T extends ParagraphLine & { source?: string; text: string }>(finals: T[], drafts: Preview[], pending: PendingPreview[]): { paragraphs: Paragraph<T>[]; placements: MiniPlacement[] };
