@@ -2,4 +2,4 @@
 .claude/
 
 # Private material (evaluation, real data, notes): its own private Git repository
-/private/
+/private
