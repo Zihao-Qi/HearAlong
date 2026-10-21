@@ -11,6 +11,7 @@
     "start": "node --experimental-strip-types src/server.ts",
     "rehearse": "node --experimental-strip-types scripts/rehearse.ts",
     "check": "tsc --noEmit",
+    "guard:install": "cd .. && common=$(git rev-parse --path-format=absolute --git-common-dir) && git config core.hooksPath \"${common%/*}/.githooks\"",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "smoke:stt": "node --experimental-strip-types scripts/stt-smoke.ts",
     "smoke:browser": "node --experimental-strip-types scripts/browser-smoke.ts",

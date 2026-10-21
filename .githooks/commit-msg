@@ -1,0 +1,10 @@
+#!/bin/sh
+root=$(git rev-parse --show-toplevel) || exit 1
+case "$1" in
+  /*) message=$1 ;;
+  *) message=$PWD/$1 ;;
+esac
+cd "$root" || exit 1
+command -v node >/dev/null 2>&1 || { echo 'Privacy guard: install Node.js and retry.' >&2; exit 1; }
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1
+exec node "${common_dir%/*}/.githooks/public-guard.cjs" commit-msg "$message"
