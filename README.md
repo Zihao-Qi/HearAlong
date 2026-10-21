@@ -60,8 +60,8 @@ HearAlong was built by one person directing a small team of AI agents, each with
 Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI features are optional and need the Pi agent signed in to your own model subscription. Without them, recording and transcription still work fully on the Mac.
 
 ```sh
-git clone https://github.com/zihao-qi/hearalong.git
-cd hearalong/prototype
+git clone https://github.com/Zihao-Qi/HearAlong.git
+cd HearAlong/prototype
 npm ci --ignore-scripts
 export MEETING_MODEL_PATH=/path/to/parakeet.gguf   # the local speech model
 MEETING_CLOUD=0 npm start                          # local only; open http://127.0.0.1:4318
