@@ -586,7 +586,10 @@ export class ActionJobs {
     /** Shared with the other sol jobs; omitted (tests): the actions' own. */
     cooldowns?: Cooldowns;
   };
-  constructor(options: ActionJobs['options']) { this.options = options; this.cooldowns = options.cooldowns ?? new Cooldowns(options.clock); }
+  constructor(options: ActionJobs['options']) {
+    this.options = options; this.cooldowns = options.cooldowns ?? new Cooldowns(options.clock);
+    options.store?.registerDeletionGuard?.('actions', id => this.busy(id));
+  }
   get enabled() { return Boolean(this.options.runner); }
   private jobDir(meetingId: string) { return join(this.options.directory, 'actions', meetingId); }
   /** Saves a snapshot of the job; writes for one job are chained, so an older state can never overwrite a newer one. */

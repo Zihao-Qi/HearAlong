@@ -240,7 +240,10 @@ export class Boards {
     /** The meeting's own time for the scan cadence (replay position during a replay); wall time otherwise. */
     meetingClock?: (meetingId: string) => number;
   };
-  constructor(options: Boards['options']) { this.options = options; }
+  constructor(options: Boards['options']) {
+    this.options = options;
+    options.store?.registerDeletionGuard?.('board', id => this.busy(id));
+  }
   get enabled() { return Boolean(this.options.ask); }
   private path(meetingId: string) { return join(this.options.directory, 'board', `${meetingId}.json`); }
   private meetingNow(meetingId: string) { return this.options.meetingClock?.(meetingId) ?? this.options.clock(); }

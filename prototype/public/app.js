@@ -2419,9 +2419,15 @@ function hasOpenChanges() {
   if (!d) return false;
   const from = changesMeeting();
   if (d.proposals.some(p => p.meetingId === from)) return true;
-  return d.items.some(i => fromThisMeeting(i) && (!i.confirmed || d.info[i.id]?.unconfirmed.some(u => u.meetingId === from)));
+  return d.items.some(i => deletedMeetingChanges(i) || fromThisMeeting(i) && (!i.confirmed || d.info[i.id]?.unconfirmed.some(u => u.meetingId === from)));
 }
-const fromThisMeeting = item => Boolean(projectView.data?.info[item.id]?.meetings.includes(changesMeeting()));
+const deletedMeeting = id => typeof id === 'string' && status?.meetings && !status.meetings.some(m => m.id === id);
+function deletedMeetingChanges(item) {
+  const info = projectView.data?.info[item.id];
+  return Boolean(!item.confirmed && (deletedMeeting(info?.createdIn) || info?.meetings.some(deletedMeeting))
+    || info?.unconfirmed.some(u => deletedMeeting(u.meetingId)));
+}
+const fromThisMeeting = item => Boolean(projectView.data?.info[item.id]?.meetings.includes(changesMeeting()) || deletedMeetingChanges(item));
 function updateProjectBadge() {
   const d = projectView.data;
   // What needs a decision; an agent's note that led to nothing does not.
@@ -3080,7 +3086,7 @@ function noteRecent(result, word) {
 }
 function unconfirmedOf(item) {
   const info = projectView.data.info[item.id];
-  const links = (info?.unconfirmed ?? []).filter(u => projectView.filter !== 'changes' || u.meetingId === changesMeeting());
+  const links = (info?.unconfirmed ?? []).filter(u => projectView.filter !== 'changes' || u.meetingId === changesMeeting() || deletedMeeting(u.meetingId));
   return { item: !item.confirmed, links };
 }
 function renderMemoryLists() {

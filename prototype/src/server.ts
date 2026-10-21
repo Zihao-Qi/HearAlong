@@ -9,6 +9,7 @@ import { discoverModel, numberInRange } from './config.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
 import { MeetingStore, type Mode } from './store.ts';
+import { finishPendingMeetingDeletions } from './delete-meeting.ts';
 import { LocalRecognizer } from './recognizer.ts';
 import { JobManager, type Recognizer } from './jobs.ts';
 import { LiveDrafts, ownsDisplayInterval, type Draft } from './drafts.ts';
@@ -116,6 +117,8 @@ export async function startServer(options: {
       if (ended + others) console.warn(`Ended ${ended + others} process group(s) left running when the server last stopped.`);
     } catch (error) { console.warn(`Could not end the processes left by the last run: ${(error as Error).message}`); }
     store = new MeetingStore(directory);
+    // A committed deletion must finish before recognition, notes/actions, boards or plans load their job records.
+    finishPendingMeetingDeletions(store, message => console.log(message));
     const config = await discoverModel();
     const recognizer = options.recognizer !== undefined ? options.recognizer : config.available && config.path ? new LocalRecognizer(config.path) : null;
     jobs = recognizer ? new JobManager(store, recognizer) : undefined;
@@ -357,6 +360,7 @@ export async function startServer(options: {
       ...(corrector?.isBusy(meetingId) ? ['the glossary corrections'] : []),
       ...(building.get(projects.scope(meetingId).glossaryScope) && !building.get(projects.scope(meetingId).glossaryScope)!.error ? ['the glossary build'] : []),
     ];
+    store.registerDeletionGuard('server activity', id => busy(id).length > 0 || capture.active(id) || importing.has(id));
     // Drain the tail once nothing more is coming: replay finished, or no audio for a minute and nothing queued.
     const finished = (meetingId: string) => {
       if (appStoreRef.chunks(meetingId).some(c => c.status === 'queued' || c.status === 'running')) return false;
@@ -386,7 +390,21 @@ export async function startServer(options: {
     // End of a meeting: the final scan waits for the tail to be transcribed, but at most 60 s after the speech ended. A meeting
     // stays watched for 10 minutes after that, so corrections finishing late are still scanned; later edits need "Scan this meeting".
     const endedAt = new Map<string, number>();
+    const meetingIds = appStoreRef.db.prepare('SELECT id FROM meetings');
+    const pruneDeletedMeetingState = () => {
+      const existing = new Set((meetingIds.all() as { id: string }[]).map(m => m.id));
+      for (const state of [boardActive, endedAt, lastPcmAt, recording, importing]) {
+        for (const id of state.keys()) if (!existing.has(id)) state.delete(id);
+      }
+      // Active builds block deletion; failed meeting builds can linger. Project-scoped builds belong to the project.
+      for (const state of [building, builds]) {
+        for (const scope of state.keys()) if (scope.startsWith('meeting:') && !existing.has(scope.slice('meeting:'.length))) state.delete(scope);
+      }
+      capture.pruneMeetings(existing);
+      liveView.pruneMeetings(existing);
+    };
     const boardLoop = setInterval(() => {
+      pruneDeletedMeetingState();
       for (const meetingId of boardActive) {
         const replay = appStoreRef.replay(meetingId);
         // Saved live audio not yet in a window keeps a live meeting open.
@@ -430,6 +448,7 @@ export async function startServer(options: {
     const startedAt = Date.now();
     let idleSince: number | null = null;
     const idleLoop = options.idleMs ? setInterval(() => {
+      pruneDeletedMeetingState();
       const now = Date.now();
       for (const [id, at] of pages) if (now - at > 180_000) pages.delete(id);
       const working = capture.recording() || appStoreRef.queuedCount() > 0 || appStoreRef.meetings().some(m => stillComing(m.id) || busy(m.id).length > 0);
@@ -561,6 +580,7 @@ export async function startServer(options: {
         if (!cookies.includes(`meeting_session=${token}`)) throw new HttpError(403, 'Open the dashboard first to establish a local session.');
         if (req.method !== 'GET' && req.headers.origin !== origin) throw new HttpError(403, 'Mutations require the dashboard origin.');
         if (closing) throw new HttpError(503, 'Server is shutting down.');
+        pruneDeletedMeetingState();
         // Open pages (the installed app's window, tabs): each says who it is with every request, and goodbye when it closes.
         const pageId = req.headers['x-page'];
         if (typeof pageId === 'string' && pageId.length <= 64) {

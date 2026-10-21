@@ -211,6 +211,7 @@ export class Proposals {
   private closing = false;
   constructor(store: MeetingStore, memory: Memory, options: Proposals['options']) {
     this.store = store; this.memory = memory; this.options = options;
+    store.registerDeletionGuard('memory run', id => this.busy(id));
     store.db.exec(`
       CREATE TABLE IF NOT EXISTS memory_runs (id TEXT PRIMARY KEY, project TEXT NOT NULL, meetingId TEXT NOT NULL, notesVersion INTEGER, inputHash TEXT,
         state TEXT NOT NULL, startedAt INTEGER NOT NULL, finishedAt INTEGER, error TEXT, summary TEXT);
@@ -516,7 +517,8 @@ export class Proposals {
   }
   /**
    * After an Undo. Of an accepted proposal: it waits for an OK again (as after undoing a Reject), seen against the items as
-   * they are now. Of something recorded automatically: a rerun must not bring it back (§4.5).
+   * they are now. Deleted meetings have no workflow to reopen: only the retained memory batch is undone.
+   * Of something recorded automatically: a rerun must not bring it back (§4.5).
    */
   undone(project: string, batch: string): { reopened: string | null } {
     return transaction(this.store.db, () => {

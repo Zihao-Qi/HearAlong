@@ -196,6 +196,27 @@ test('accepting checks the versions the proposal saw; Change match applies the u
   } finally { await f.close(); }
 });
 
+test('Undo of an Accept from a deleted meeting reverses project memory without reopening its removed proposal', async () => {
+  const f = await fixture();
+  try {
+    const meeting = f.store.createMeeting('Permanently removed workflow');
+    seed(f.memory, [['todo', 'Ask Tamsin where the club keeps the spare padlock keys']]);
+    f.notesBy.set(meeting.id, notes(meeting.id, 1, [note('actions', 'Tamsin has identified the spare key drawer.', 'a')]));
+    f.answers.push({ results: [{ source: 'S1', changes: [{ kind: 'update', target: 'T-1', sure: true, status: 'done' }] }] });
+    await f.run(meeting.id);
+    const proposal = f.proposals.list(P)[0];
+    const accepted = f.proposals.accept(P, proposal.id, { requestId: randomUUID() });
+    assert.equal(f.memory.item(P, 'T-1')!.status, 'done');
+    f.store.deleteMeeting(meeting.id);
+    assert.equal(f.memory.batch(P, accepted.batch)!.undone, false);
+    f.memory.undo(P, accepted.batch, randomUUID());
+    assert.deepEqual(f.proposals.undone(P, accepted.batch), { reopened: null });
+    assert.equal(f.memory.item(P, 'T-1')!.status, 'open');
+    assert.equal(f.memory.batch(P, accepted.batch)!.undone, true);
+    assert.throws(() => f.proposals.get(P, proposal.id), /No such proposal/);
+  } finally { await f.close(); }
+});
+
 test('links and confirmations never make a proposal stale; Undo of an Accept brings it back; regenerated notes take back what only they gave', async () => {
   const f = await fixture();
   try {

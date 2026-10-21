@@ -73,6 +73,10 @@ export class LiveCapture {
     state.chain = next.catch(() => {});
     return next;
   }
+  /** Deleted meetings must not remain candidates for the global live/recording readers. Never detach queued work. */
+  pruneMeetings(existing: ReadonlySet<string>) {
+    for (const [source, state] of this.sources) if (!existing.has(state.meetingId) && !state.busy) this.sources.delete(source);
+  }
   /**
    * True while any meeting has a source that is recording and not yet ended by its page. A frame within the last minute counts,
    * not only the last 15 s: uploads may be held up while the page still has audio queued, and a quit must wait for its end.

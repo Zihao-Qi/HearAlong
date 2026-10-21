@@ -72,6 +72,7 @@ export class PlanJobs {
   private deferred = new Set<string>();
   constructor(options: PlanJobs['options']) {
     this.options = options;
+    options.store.registerDeletionGuard('plans/exploration', id => options.explorations.busy(id) || this.submitting.has(id) || this.admissions.has(id) || this.deferred.has(id));
     // Recovery has loaded the run records. Finish a crash-torn claim if it has a run; otherwise release it.
     for (const meeting of options.store.meetings()) for (const attempt of options.auto.attempts(meeting.id)) {
       if (attempt.run !== null) continue;

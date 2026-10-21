@@ -1,9 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
 import { access, mkdir, open, readFile, rm } from 'node:fs/promises';
-import { realpathSync, statSync } from 'node:fs';
-import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
+import { dataRelativeRecordingPath, repairedRecordingPath } from './recording-paths.ts';
 import { CHUNK_SECONDS } from './audio.ts';
+import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
 import { buildSegments, type Timing } from './segments.ts';
 import type { Recognition } from './recognizer.ts';
 import { ROLE_LABEL, compareSegments, rolesFor, type Role, type Speakers } from './speakers.ts';
@@ -42,9 +43,6 @@ export function resolveRecordingPath(directory: string, path: string): string {
   return !path || isAbsolute(path) ? path : join(directory, path);
 }
 
-/** Stored references use forward slashes and must not escape or accidentally become absolute after slicing. */
-const isDataRelative = (path: string) => Boolean(path) && !isAbsolute(path) && !path.split('/').includes('..');
-
 /** Makes a new file's name durable, not just its bytes (power loss). Not every platform can sync a directory. */
 async function syncDirectory(directory: string) {
   try { const handle = await open(directory, 'r'); try { await handle.sync(); } finally { await handle.close(); } }
@@ -65,12 +63,14 @@ async function openAudioFile(directory: string, path: string) {
 export class MeetingStore {
   db: DatabaseSync;
   directory: string;
-  private pathPrefixes: string[];
+  private deletionGuards = new Map<string, (id: string) => boolean>();
+  /** Job owners supply their existing in-process busy records, including preparation before persistence. */
+  registerDeletionGuard(name: string, busy: (id: string) => boolean) { this.deletionGuards.set(name, busy); }
+  deletionBusy(id: string) { return [...this.deletionGuards].filter(([, busy]) => busy(id)).map(([name]) => name); }
+  inspectMeetingDeletion(id: string) { return inspectMeetingDeletion(this, id); }
+  deleteMeeting(id: string) { return deleteMeeting(this, id); }
   constructor(directory: string) {
     this.directory = resolve(directory);
-    // Accept both the caller's spelling and its canonical spelling (e.g. /var vs /private/var).
-    this.pathPrefixes = [...new Set([this.directory, realpathSync(this.directory)])]
-      .map(root => root.endsWith(sep) ? root : `${root}${sep}`);
     this.db = new DatabaseSync(join(this.directory, 'meetings.sqlite'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
       CREATE TABLE IF NOT EXISTS meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, createdAt INTEGER NOT NULL,
@@ -141,30 +141,13 @@ export class MeetingStore {
   }
   /** Normalize before testing containment, but never change the spelling of an outside absolute reference. */
   private relativePath(path: string): string | null {
-    const normalized = normalize(path);
-    const prefix = this.pathPrefixes.find(prefix => normalized.startsWith(prefix));
-    if (!prefix) return null;
-    const candidate = normalized.slice(prefix.length).split(sep).join('/');
-    return isDataRelative(candidate) ? candidate : null;
+    return dataRelativeRecordingPath(this.directory, path);
   }
   /** Store owned files relative to data; imports outside it retain their absolute location. */
   private storedPath(path: string): string {
     if (!path) return path;
     const absolute = isAbsolute(path) ? path : resolve(path);
     return this.relativePath(absolute) ?? absolute;
-  }
-  /** A stale prefix is recoverable only for an exact recording tail that exists at the current location. */
-  private relocatedPath(path: string, meetingId: string): string | null {
-    const parts = normalize(path).split(sep);
-    const tail = parts.at(-3) === 'audio' && parts.at(-2) === meetingId ? parts.slice(-3)
-      : parts.at(-2) === 'imports' ? parts.slice(-2) : null;
-    const candidate = tail?.join('/');
-    if (!candidate || !isDataRelative(candidate)) return null;
-    try { return statSync(this.resolvePath(candidate)).isFile() ? candidate : null; }
-    catch (error) {
-      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
-      throw error;
-    }
   }
   private repairRecordingPaths() {
     this.transaction(() => {
@@ -175,8 +158,8 @@ export class MeetingStore {
         const rows = this.db.prepare(`SELECT id,meetingId,path FROM ${table} WHERE path <> '' AND ${absolutePaths}`).all() as { id: string; meetingId: string; path: string }[];
         const update = this.db.prepare(`UPDATE ${table} SET path=? WHERE id=?`);
         for (const row of rows) {
-          const candidate = this.relativePath(row.path) ?? this.relocatedPath(row.path, row.meetingId);
-          if (candidate !== null) update.run(candidate, row.id);
+          const candidate = repairedRecordingPath(this.directory, row.path, row.meetingId);
+          if (candidate !== row.path) update.run(candidate, row.id);
         }
       }
       // A marker only: never use this to skip repair, and do not downgrade a future schema version.
