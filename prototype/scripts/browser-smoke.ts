@@ -17,7 +17,7 @@ const notes = async ({ inputPath }: { inputPath: string }) => {
   const first = (await readFile(inputPath, 'utf8')).split('\n').find(line => /^S1 /.test(line))!;
   const quote = first.replace(/^S1 \[[^\]]+\] /, '').split(' ').slice(0, 8).join(' ');
   return { text: JSON.stringify({ summary: [{ text: 'Thirty-six lanterns are ready for the evening parade.', cites: ['S1'], quote }], decisions: [], actions: [], openQuestions: [],
-    otherMatters: [{ text: 'Check the repair cafe intake limit for Saturday.', kind: 'todo', label: 'admin', cites: ['S1'], quote: 'Please check the repair cafe intake limit for Saturday.' }], otherTalk: [] }), model: 'scripted' };
+    otherMatters: [{ text: 'Check the repair cafe intake limit for Saturday.', kind: 'todo', label: 'admin', cites: ['S1'], quote }], otherTalk: [] }), model: 'scripted' };
 };
 // A scripted action model (no cloud call): streams a status and a draft, then answers with one checkable citation.
 const actions: ActionRunner = async ({ action, inputPath, onEvent, signal }) => {
