@@ -39,6 +39,12 @@ Audio recognition stays local. Do not treat that as a guarantee that all app dat
 
 Runtime data lives in `data/`, or `MEETING_DATA_DIR`: SQLite records, audio, imports, notes, project memory, tool scratch files, and AI session logs. These can contain sensitive content and are Git-ignored. Audio retention defaults to one day after completed processing; settings also offer a week, a month, or always. Transcripts and notes are retained. Do not publish runtime folders or logs.
 
+## Public repository guard
+
+Run `npm run guard:install` from `prototype/` to set the absolute main-tree `.githooks` path for every worktree, including older revisions (requires Git and Node.js).
+Keep your ignored `private/public-denylist.txt` in the main working tree; linked worktrees share it, and missing/unreadable/empty lists block commits and pushes.
+Hooks check identities, added lines/paths, refs, commit/tag messages, runtime/media/environment files and files over 2 MB; fix staged changes or rewrite offending commits/tags before pushing.
+
 ## Checks
 
 Run from this directory:
