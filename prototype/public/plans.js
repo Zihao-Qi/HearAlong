@@ -201,7 +201,7 @@ const CHEVRON = '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 
  * Every mutation belongs to the meeting shown when it started: `epoch` changes with the meeting, and a late reply of another
  * meeting's mutation changes nothing here.
  */
-export function createPlansView({ host, api, hooks }) {
+export function createPlansView({ host, api, hooks, optionsHost, optionsInHead = () => false }) {
   const v = {
     owner: null, data: null, signature: null, sequence: 0, epoch: 0, busy: false, timer: 0,
     open: new Set(), quotes: new Set(), more: false, aside: false, review: false, earlier: new Set(), showKept: null,
@@ -212,6 +212,8 @@ export function createPlansView({ host, api, hooks }) {
   live.setAttribute('role', 'status');
   live.setAttribute('aria-live', 'polite');
   host.replaceChildren(content, live);
+  // Controls are rendered once, either in the panel head or the supplied wide-layout slot.
+  const findControl = selector => content.querySelector(selector) ?? optionsHost?.querySelector(selector);
   const announce = text => { const epoch = v.epoch; live.textContent = ''; requestAnimationFrame(() => { if (epoch === v.epoch) live.textContent = text; }); };
   /** One operation id per attempt, kept until its outcome is known (a retry after a lost reply reuses it). */
   const opId = key => { if (!v.ops.has(key)) v.ops.set(key, { id: crypto.randomUUID(), at: Date.now() }); return v.ops.get(key).id; };
@@ -226,6 +228,7 @@ export function createPlansView({ host, api, hooks }) {
     for (const map of [v.ops, v.failed, v.undo]) map.clear();
     clearTimeout(v.timer);
     content.replaceChildren();
+    optionsHost?.replaceChildren();
     host.hidden = true;
   }
 
@@ -409,7 +412,8 @@ export function createPlansView({ host, api, hooks }) {
 
   function render() {
     const data = v.data;
-    const before = host.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+    const before = host.contains(document.activeElement) || optionsHost?.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+    optionsHost?.replaceChildren();
     if (!data) { host.hidden = true; return; }
     // The kept plans shown are those of one run: once they are gone (another run started or ended), the current ones show.
     if (v.showKept && data.kept?.run !== v.showKept) v.showKept = null;
@@ -431,7 +435,7 @@ export function createPlansView({ host, api, hooks }) {
     // The focus stays where it was; when that control is gone (a step that can no longer be added), on its plan's chevron.
     if (before) {
       const plan = /(?:^|[:.])(p\d+)(?=[.:]|$)/.exec(before)?.[1];
-      (content.querySelector(`[data-focus="${CSS.escape(before)}"]`) ?? (plan ? content.querySelector(`[data-focus="chev:${plan}"]`) : null))?.focus();
+      (findControl(`[data-focus="${CSS.escape(before)}"]`) ?? (plan ? content.querySelector(`[data-focus="chev:${plan}"]`) : null))?.focus();
     }
   }
 
@@ -443,18 +447,18 @@ export function createPlansView({ host, api, hooks }) {
     if (!v.menu) return;
     v.menu = false;
     render();
-    if (returnFocus) (content.querySelector(`[data-focus="${v.menuOpener}"]`) ?? content.querySelector('[data-focus="options"]'))?.focus();
+    if (returnFocus) (findControl(`[data-focus="${v.menuOpener}"]`) ?? findControl('[data-focus="options"]'))?.focus();
   }
   function openMenu(opener = 'options', last = false) {
     v.menu = true; v.menuOpener = opener;
     render();
-    const items = content.querySelectorAll('[role="menuitem"]');
+    const items = (optionsInHead() && optionsHost ? optionsHost : content).querySelectorAll('[role="menuitem"]');
     items[last ? items.length - 1 : 0]?.focus();
   }
   function toggleMenu(opener) { if (v.menu && v.menuOpener === opener) closeMenu(true); else openMenu(opener); }
   // A toggle re-renders its own control before the click bubbles; use the original event path, not the detached target.
-  document.addEventListener('click', event => { if (!event.composedPath().some(node => node.classList?.contains('plans-head'))) closeMenu(); });
-  document.addEventListener('focusin', event => { if (!content.querySelector('.plans-head')?.contains(event.target)) closeMenu(); });
+  document.addEventListener('click', event => { if (!event.composedPath().some(node => node.classList?.contains('plans-head') || node.classList?.contains('plans-options-wrap'))) closeMenu(); });
+  document.addEventListener('focusin', event => { if (!content.querySelector('.plans-head')?.contains(event.target) && !optionsHost?.contains(event.target)) closeMenu(); });
 
   function head(doc, run, active, kept) {
     const replaceable = active && run.state === 'waiting' && run.kind === 'plan' && run.origin === 'auto';
@@ -465,6 +469,7 @@ export function createPlansView({ host, api, hooks }) {
       stale.setAttribute('aria-haspopup', 'menu');
       row.append(stale);
     }
+    const tools = optionsInHead() && optionsHost ? optionsHost : row;
     const options = button('Options', 'button options-button', 'options', () => toggleMenu('options'));
     options.insertAdjacentHTML('beforeend', '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>');
     options.setAttribute('aria-haspopup', 'menu');
@@ -473,8 +478,8 @@ export function createPlansView({ host, api, hooks }) {
     options.onkeydown = event => {
       if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); openMenu('options', event.key === 'ArrowUp'); }
     };
-    row.append(options);
-    if (!v.menu) return row;
+    tools.append(options);
+    if (!v.menu) return row.children.length ? row : null;
     const menu = el('div', undefined, 'menu notes-menu plans-menu');
     menu.id = 'plans-menu';
     menu.setAttribute('role', 'menu');
@@ -516,8 +521,8 @@ export function createPlansView({ host, api, hooks }) {
         items[next]?.focus();
       }
     };
-    row.append(menu);
-    return row;
+    tools.append(menu);
+    return row.children.length ? row : null;
   }
 
   function banner(text, kind = 'warn', extra = []) {

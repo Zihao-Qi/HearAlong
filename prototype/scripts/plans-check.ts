@@ -219,8 +219,8 @@ async function stateChecks(page: Page, state: string, config: string, t: string)
     case 'waiting-recording': {
       check(`${t}: an automatic run waiting for the recording`, status === 'Planning after the notes: waiting for the recording to end.', status);
       // The user's Plan replaces a waiting automatic run (§2b).
-      await page.locator('#plans [data-focus="options"]').click();
-      await page.locator('#plans [data-focus="plan-again"]').click();
+      await page.locator(':is(#plans, #plans-options-slot) [data-focus="options"]').click();
+      await page.locator('#plans-menu [data-focus="plan-again"]').click();
       await page.locator('#plans .plans-status > span', { hasText: /^Waiting for the memory update\.$/ }).waitFor();
       check(`${t}: Plan replaces the waiting automatic run`, true);
       break;
@@ -281,9 +281,9 @@ async function stateChecks(page: Page, state: string, config: string, t: string)
     }
     case 'mixed': {
       const downloaded = page.waitForEvent('download');
-      await page.locator('#plans [data-focus="options"]').click();
+      await page.locator(':is(#plans, #plans-options-slot) [data-focus="options"]').click();
       const menuWarnings = await page.locator('#plans-menu').innerText();
-      await page.locator('#plans [data-focus="download"]').click();
+      await page.locator('#plans-menu [data-focus="download"]').click();
       const markdown = await readFile((await (await downloaded).path())!, 'utf8');
       const notesWarnings = ['Missing speech: 12:40–13:10.', '2 audio chunk(s) were still being transcribed when the notes were written.',
         '3 line(s) had not been checked for misheard terms.', 'The transcript changed after the notes were written.'];
@@ -393,36 +393,37 @@ async function openAll(page: Page, t: string, name: string) {
 /** Clicks every control in the section once (opening rows reveals more), and checks that each one does something. */
 async function clickEverything(page: Page, t: string, counts: () => { downloads: number; popups: number }) {
   // Exercise Download before the walk can start a new run and close its menu.
-  if (await page.locator('#plans [data-focus="options"]').count()) {
-    await page.locator('#plans [data-focus="options"]').click();
-    if (await page.locator('#plans [data-focus="download"]').count()) {
+  if (await page.locator(':is(#plans, #plans-options-slot) [data-focus="options"]').count()) {
+    await page.locator(':is(#plans, #plans-options-slot) [data-focus="options"]').click();
+    if (await page.locator('#plans-menu [data-focus="download"]').count()) {
       const downloaded = page.waitForEvent('download');
-      await page.locator('#plans [data-focus="download"]').click();
+      await page.locator('#plans-menu [data-focus="download"]').click();
       await downloaded;
     } else await page.keyboard.press('Escape');
   }
   const done = new Set<string>();
   const silent: string[] = [];
   let clicked = 0;
-  const signature = async () => JSON.stringify([await page.evaluate(() => [document.getElementById('plans')!.innerHTML, document.querySelector('#plans [role="status"][aria-live]')?.textContent,
+  const signature = async () => JSON.stringify([await page.evaluate(() => [document.getElementById('plans')!.innerHTML, document.getElementById('plans-options-slot')!.innerHTML,
+    document.querySelector('#plans [role="status"][aria-live]')?.textContent,
     document.querySelector('#transcript .cited')?.getAttribute('data-id') ?? null, document.body.dataset.tab]), counts()]);
   let guard = 0;
   for (; guard < 600; guard++) {
     const next = await page.evaluate(seen => {
       const key = (b: HTMLElement) => `${b.dataset.focus}|${b.textContent}|${b.getAttribute('aria-expanded')}`;
-      const all = ([...document.querySelectorAll('#plans button[data-focus], #plans a[data-focus]')] as HTMLElement[])
+      const all = ([...document.querySelectorAll(':is(#plans, #plans-options-slot) button[data-focus], :is(#plans, #plans-options-slot) a[data-focus]')] as HTMLElement[])
         .filter(b => b.offsetParent && !(b as HTMLButtonElement).disabled && b.getAttribute('aria-disabled') !== 'true' && !seen.includes(key(b)));
-      // What an opened row shows comes first; what closes something comes last, so every row's details are visited.
-      const c = all.find(b => b.closest('.plan-details')) ?? all.find(b => b.getAttribute('aria-expanded') !== 'true') ?? all[0];
+      // Finish a head menu before trying rows behind it; then visit opened details before their closing controls.
+      const c = all.find(b => b.closest('[role="menu"]')) ?? all.find(b => b.closest('.plan-details')) ?? all.find(b => b.getAttribute('aria-expanded') !== 'true') ?? all[0];
       return c ? { key: key(c), focus: c.dataset.focus!, label: c.textContent!.trim() || c.getAttribute('aria-label') || '' } : null;
     }, [...done]);
     if (!next) break;
     done.add(next.key);
     const before = await signature();
-    const target = page.locator(`#plans [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).filter({ hasText: next.label.slice(0, 40) }).first();
+    const target = page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).filter({ hasText: next.label.slice(0, 40) }).first();
     // A run that publishes while the walk goes on replaces the rows (their keys name the version): a control gone is skipped.
-    try { await (await target.count() ? target : page.locator(`#plans [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).first()).click({ timeout: 3000 }); }
-    catch { if (await page.locator(`#plans [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).count()) silent.push(`${next.label} (could not be clicked)`); continue; }
+    try { await (await target.count() ? target : page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).first()).click({ timeout: 3000 }); }
+    catch { if (await page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).count()) silent.push(`${next.label} (could not be clicked)`); continue; }
     clicked++;
     let changed = false;
     for (let i = 0; i < 15 && !changed; i++) { await page.waitForTimeout(100); changed = await signature() !== before; }
