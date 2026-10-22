@@ -5,7 +5,8 @@ import { existsSync, realpathSync } from 'node:fs';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { discoverModel, numberInRange } from './config.ts';
+import { numberInRange } from './config.ts';
+import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
 import { MeetingStore, type Mode } from './store.ts';
@@ -86,6 +87,8 @@ async function lock(directory: string) {
 
 export async function startServer(options: {
   directory?: string; port?: number; recognizer?: Recognizer | null;
+  /** Bounded discovery and injectable OS/network boundaries for setup tests. */
+  setup?: SetupOptions;
   /** Live draft transcription; by default on with the local model, off when a test recognizer is injected. */
   drafts?: LiveDrafts | null;
   /** Cloud model access through Pi; null disables it (MEETING_CLOUD=0 does the same). */
@@ -108,6 +111,7 @@ export async function startServer(options: {
   let retention: AudioRetention | undefined;
   let live: LiveCapture | undefined;
   let drafts: LiveDrafts | null = null;
+  let setup: SpeechSetup | undefined;
   try {
     // Before anything else (M7b §4): what a crash left running ends. The Pi group of a run recorded as running and the groups
     // recorded in its process folder first (the run is marked interrupted), then any other task's recorded groups (actions).
@@ -119,7 +123,36 @@ export async function startServer(options: {
     store = new MeetingStore(directory);
     // A committed deletion must finish before recognition, notes/actions, boards or plans load their job records.
     finishPendingMeetingDeletions(store, message => console.log(message));
-    const config = await discoverModel();
+    const settingsPath = join(directory, 'settings.json');
+    type BoardModel = 'luna' | 'sol';
+    const isBoardModel = (v: unknown): v is BoardModel => v === 'luna' || v === 'sol';
+    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean } = {
+      boardModel: 'luna', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false,
+    };
+    try {
+      const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
+      if (isAudioRetention(saved.audioRetention)) settings.audioRetention = saved.audioRetention;
+      if (isBoardModel(saved.boardModel)) settings.boardModel = saved.boardModel;
+      if (typeof saved.miniOpensItself === 'boolean') settings.miniOpensItself = saved.miniOpensItself;
+      if (typeof saved.speechModelPath === 'string' && saved.speechModelPath.trim()) settings.speechModelPath = saved.speechModelPath;
+      if (typeof saved.setupSeen === 'boolean') settings.setupSeen = saved.setupSeen;
+    } catch { /* defaults */ }
+    let settingsWrite: Promise<unknown> = Promise.resolve();
+    const saveSettings = async (change: Partial<typeof settings>) => {
+      const write = settingsWrite.catch(() => {}).then(async () => {
+        const candidate = { ...settings, ...change };
+        const tmp = `${settingsPath}.${randomUUID()}.tmp`;
+        await writeFile(tmp, JSON.stringify(candidate), { mode: 0o600 });
+        await rename(tmp, settingsPath);
+        settings = candidate;
+      });
+      settingsWrite = write;
+      await write;
+    };
+    const speechSetup = new SpeechSetup(directory, () => settings, saveSettings, options.setup);
+    setup = speechSetup;
+    await speechSetup.initialize();
+    const config = { ...speechSetup.scan.config }; // The recognizer and status describe this start, not the next choice.
     const recognizer = options.recognizer !== undefined ? options.recognizer : config.available && config.path ? new LocalRecognizer(config.path) : null;
     jobs = recognizer ? new JobManager(store, recognizer) : undefined;
     jobs?.kick();
@@ -275,19 +308,7 @@ export async function startServer(options: {
     // The user chooses the board's model: luna by default, or sol. Saved in settings.json;
     // the warm RPC process is replaced on change.
     const BOARD_MODELS = { luna: quickModel, sol: heavyModel } as const;
-    type BoardModel = keyof typeof BOARD_MODELS;
-    const settingsPath = join(directory, 'settings.json');
-    const isBoardModel = (v: unknown): v is BoardModel => v === 'luna' || v === 'sol';
-    // Also whether the mini window opens by itself when the user leaves the app during a recording: off unless the user turns it
-    // on, so by default only the app's Mini view button opens it.
-    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting } = { boardModel: 'luna', miniOpensItself: false, audioRetention: 'day' };
-    try {
-      const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
-      if (isAudioRetention(saved.audioRetention)) settings.audioRetention = saved.audioRetention;
-      if (isBoardModel(saved.boardModel)) settings.boardModel = saved.boardModel;
-      if (typeof saved.miniOpensItself === 'boolean') settings.miniOpensItself = saved.miniOpensItself;
-    } catch { /* defaults */ }
-    let settingsWrite: Promise<unknown> = Promise.resolve();
+    // The startup settings are shared with setup; all writes use the same atomic queue.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
     let gate: PiRpc | null = null;
     const retiring = new Set<Promise<void>>();
@@ -451,7 +472,7 @@ export async function startServer(options: {
       pruneDeletedMeetingState();
       const now = Date.now();
       for (const [id, at] of pages) if (now - at > 180_000) pages.delete(id);
-      const working = capture.recording() || appStoreRef.queuedCount() > 0 || appStoreRef.meetings().some(m => stillComing(m.id) || busy(m.id).length > 0);
+      const working = ['downloading', 'checking'].includes(speechSetup.download.state.state) || capture.recording() || appStoreRef.queuedCount() > 0 || appStoreRef.meetings().some(m => stillComing(m.id) || busy(m.id).length > 0);
       if (pages.size || working || closing || shuttingDown || (!seenPage && now - startedAt < 60_000)) { idleSince = null; return; }
       idleSince ??= now;
       if (now - idleSince >= options.idleMs!) { clearInterval(idleLoop); options.onIdle?.(); }
@@ -596,9 +617,30 @@ export async function startServer(options: {
           audioRetention.observe();
           res.writeHead(204).end(); return;
         }
+        if (req.method === 'GET' && url.pathname === '/api/setup') { send(res, 200, speechSetup.status()); return; }
+        if (req.method === 'GET' && url.pathname === '/api/setup/speech-models') { send(res, 200, speechSetup.models()); return; }
+        if (req.method === 'POST' && url.pathname.startsWith('/api/setup/')) {
+          const action = url.pathname.slice('/api/setup/'.length);
+          if (action === 'speech/use') { const value = await json(req); if (!value || typeof value !== 'object') throw new HttpError(400, 'Give the id of a speech model.'); send(res, 200, await speechSetup.use(value.id)); return; }
+          if (action === 'speech/choose-file') { send(res, 200, await speechSetup.chooseFile()); return; }
+          if (action === 'speech/download') {
+            const raw = await body(req, 16_384);
+            let value;
+            try { value = raw.length ? JSON.parse(raw.toString()) : {}; } catch { throw new HttpError(400, 'Provide valid JSON.'); }
+            if (!value || typeof value !== 'object' || Array.isArray(value) || (value.use !== undefined && typeof value.use !== 'boolean')) throw new HttpError(400, 'use is true or false.');
+            void speechSetup.download.start(value.use === true);
+            send(res, 200, speechSetup.status()); return;
+          }
+          if (action === 'speech/pause') { await speechSetup.download.pause(); send(res, 200, speechSetup.status()); return; }
+          if (action === 'speech/cancel') { await speechSetup.download.cancel(); send(res, 200, speechSetup.status()); return; }
+          if (action === 'recheck') { await speechSetup.recheck(); send(res, 200, speechSetup.status()); return; }
+          if (action === 'seen') { send(res, 200, await speechSetup.seen()); return; }
+          throw new HttpError(404, 'Not found.');
+        }
         if (url.pathname === '/api/settings') {
           if (req.method === 'PUT') {
             const value = await json(req);
+            if (!value || typeof value !== 'object' || Array.isArray(value)) throw new HttpError(400, 'Give the settings to change.');
             // One setting or both; the others stay as they are.
             const change: Partial<typeof settings> = {};
             if (value.boardModel !== undefined) {
@@ -613,18 +655,15 @@ export async function startServer(options: {
               if (!isAudioRetention(value.audioRetention)) throw new HttpError(400, 'audioRetention is day, week, month or always.');
               change.audioRetention = value.audioRetention;
             }
-            if (!Object.keys(change).length) throw new HttpError(400, 'Give boardModel, miniOpensItself or audioRetention.');
+            if ('speechModelPath' in value) throw new HttpError(400, 'Choose a speech model through setup, not settings.');
+            if (value.setupSeen !== undefined) {
+              if (typeof value.setupSeen !== 'boolean') throw new HttpError(400, 'setupSeen is true or false.');
+              change.setupSeen = value.setupSeen;
+            }
+            if (!Object.keys(change).length) throw new HttpError(400, 'Give boardModel, miniOpensItself, audioRetention or setupSeen.');
             // Saved one at a time, and applied only once saved: a failed save keeps the previous choice. Each change applies to
             // the settings as the save before it left them, so two changes made together both stay.
-            const write = settingsWrite.catch(() => {}).then(async () => {
-              const candidate = { ...settings, ...change };
-              const tmp = `${settingsPath}.${randomUUID()}.tmp`;
-              await writeFile(tmp, JSON.stringify(candidate), { mode: 0o600 });
-              await rename(tmp, settingsPath);
-              settings = candidate;
-            });
-            settingsWrite = write;
-            await write;
+            await saveSettings(change);
             void audioRetention.run();
           } else if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
           send(res, 200, { ...settings, boardModels: Object.entries(BOARD_MODELS).map(([id, model]) => ({ id, model })), boardEnabled: boardGates || options.board != null }); return;
@@ -1179,6 +1218,7 @@ export async function startServer(options: {
     let closed: Promise<void> | undefined;
     async function closeOnce() {
       closing = true;
+      await speechSetup.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
       audioRetention.close();
       clearInterval(retentionLoop);
       clearInterval(idleLoop);
@@ -1212,6 +1252,9 @@ export async function startServer(options: {
       await actionJobs.close();
       await quick?.close?.();
       await appJobs?.close();
+      // Restore process-global decoder settings only after the existing audio work has stopped.
+      await speechSetup.close().catch(error => console.warn(`Could not close speech setup: ${(error as Error).message}`));
+      await settingsWrite.catch(error => console.warn(`Could not save settings: ${(error as Error).message}`));
       audioRetention.observe(true); // persist completed meetings' stop time, without scheduling any deletion
       appStore.close();
       await release();
@@ -1219,12 +1262,14 @@ export async function startServer(options: {
     void audioRetention.run();
     return app;
   } catch (error) {
+    await setup?.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
     retention?.close();
     clearInterval(retentionLoop);
     clearInterval(sweep);
     await live?.close();
     await drafts?.close();
     await jobs?.close();
+    await setup?.close().catch(error => console.warn(`Could not close speech setup: ${(error as Error).message}`));
     store?.close();
     await release();
     throw error;
