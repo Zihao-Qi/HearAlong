@@ -103,6 +103,7 @@
         <button id="tab-project" role="tab" aria-selected="false" aria-controls="project-panel" hidden>Project<span id="project-badge" class="tab-badge" hidden></span></button>
       </div>
       <button id="board-sort" class="sort-toggle" type="button">Time ⇅</button>
+      <div id="plans-options-slot" class="plans-options-wrap" hidden></div>
     </div>
     <div id="board-panel" role="tabpanel" aria-labelledby="tab-board" class="pane-body">
       <div class="board-bar">
@@ -134,7 +135,7 @@
       <div class="notes-bar">
         <button id="write-notes" class="button primary">Write notes</button>
         <button id="notes-stale" class="notes-stale" type="button" aria-haspopup="menu" aria-controls="notes-menu" hidden>Older than the transcript</button>
-        <div class="notes-options-wrap">
+        <div id="notes-options-wrap" class="notes-options-wrap">
           <button id="notes-options" class="button options-button" aria-haspopup="menu" aria-expanded="false" aria-controls="notes-menu" hidden><span class="notes-options-label">Options</span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></button>
           <div id="notes-menu" class="menu notes-menu" role="menu" aria-label="Notes options" hidden>
             <button id="rewrite-notes" class="menu-item" role="menuitem" tabindex="-1">Write the notes again</button>

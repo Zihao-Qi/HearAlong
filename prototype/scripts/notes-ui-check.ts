@@ -104,7 +104,7 @@ try {
           const bar = document.querySelector('.notes-bar')!.getBoundingClientRect();
           const body = document.getElementById('notes-body')!.getBoundingClientRect();
           const tabs = [...document.querySelectorAll('.compact-tabs button')].filter(n => (n as HTMLElement).offsetParent);
-          return { barHeight: bar.height, gap: body.top - bar.bottom, pageScroll: document.documentElement.scrollWidth > innerWidth,
+          return { barHeight: bar.height, gap: body.top - (bar.height ? bar.bottom : document.getElementById('notes-panel')!.getBoundingClientRect().top), pageScroll: document.documentElement.scrollWidth > innerWidth,
             tabsLeft: tabs[0]?.getBoundingClientRect().left ?? null, tabsRight: tabs.at(-1)?.getBoundingClientRect().right ?? null,
             tabs: tabs.map(n => ({ label: n.textContent, height: n.getBoundingClientRect().height, clipped: n.scrollWidth > n.clientWidth + 1 })) };
         });
@@ -152,9 +152,11 @@ try {
           await shot(page, `notes-${phase}-menu-${opener}-${config.name}`);
           assert.ok(await page.locator('#notes-menu').evaluate(menu => {
             const r = menu.getBoundingClientRect(), panel = document.getElementById('notes-panel')!.getBoundingClientRect();
+            const options = document.getElementById('notes-options')!, style = getComputedStyle(options);
             return r.left >= panel.left && r.right <= panel.right && r.bottom <= innerHeight
               && [...menu.querySelectorAll('[role="menuitem"]')].every(n => n.getBoundingClientRect().height >= 44)
-              && getComputedStyle(document.getElementById('notes-options')!).boxShadow !== 'none';
+              && style.backgroundColor === 'rgb(238, 242, 253)'
+              && (options.closest('.pane-head') ? style.borderTopWidth === '0px' && style.boxShadow === 'none' : style.boxShadow !== 'none');
           }), 'menu fits and has a visible expanded state');
           await page.keyboard.press('Escape'); assert.equal(await page.locator(`#${opener}`).evaluate(e => e === document.activeElement), true);
           await page.locator(`#${opener}`).click(); await page.mouse.click(5, 5);
@@ -205,7 +207,7 @@ try {
           else {
             await page.locator('#plans .plan-row').first().waitFor();
             assert.equal(await page.locator('#plans .plans-stale').isVisible(), state === 'stale');
-            assert.deepEqual(await page.locator('#plans .options-button').evaluate(optionsStyle), notesOptions, 'Options buttons have identical SVGs and dimensions');
+            assert.deepEqual(await page.locator(':is(#plans, #plans-options-slot) .options-button').evaluate(optionsStyle), notesOptions, 'Options buttons have identical SVGs and dimensions');
             for (const toggle of await page.locator('#plans .plans-more button, #plans .plans-aside-toggle').all()) {
               assert.doesNotMatch(await toggle.innerText(), /[▸▾]/);
               assert.deepEqual(await toggle.evaluate(foldStyle), notesFold, 'Plans folds match Notes typography, chevrons and 44px targets');
@@ -229,8 +231,8 @@ try {
               await toggle.scrollIntoViewIfNeeded();
             }
             if (state === 'menu') {
-              await page.locator('#plans [data-focus="options"]').click();
-              assert.equal(await page.locator('#plans [data-focus="plan-again"]').evaluate(e => e === document.activeElement), true);
+              await page.locator(':is(#plans, #plans-options-slot) [data-focus="options"]').click();
+              assert.equal(await page.locator('#plans-menu [data-focus="plan-again"]').evaluate(e => e === document.activeElement), true);
               assert.match(await page.locator('#plans-menu').innerText(), /Made at/);
               assert.equal(await page.locator('#plans-menu h3').count(), 0);
             }

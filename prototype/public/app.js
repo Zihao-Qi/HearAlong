@@ -26,7 +26,7 @@ const miniSupported = () => 'documentPictureInPicture' in window;
 /** The helper's native window is there (the installed app): the mini view is its window, not Chrome's. */
 const nativeMini = () => Boolean(lastSnapshot?.mini?.native);
 const quitView = { seen: false }; // a quit has begun (see quitting)
-const boardView = { owner: null, data: null, sort: store.get('board-sort') === 'type' ? 'type' : 'time', stage: 'all', showDismissed: false, nodes: new Map(), groups: new Map(), seen: new Set(), unread: new Set(), undo: new Map(), sequence: 0, initialised: false };
+const boardView = { owner: null, data: null, sort: store.get('board-sort') === 'type' ? 'type' : 'time', stage: 'all', showDismissed: false, nodes: new Map(), groups: new Map(), seen: new Set(), unread: new Set(), away: new Set(), undo: new Map(), sequence: 0, initialised: false };
 const actionsView = { owner: null, jobs: [], materials: false, web: null, enabled: false, sequence: 0, cards: new Map(), forms: new Map(), expanded: new Map(), seenDone: new Set(), unseen: false, initialised: false };
 // Plans (M7b): its own meeting tab, and the API object it uses (the real routes, or fixtures with ?plans-fixture=).
 let plansApi = null;
@@ -397,10 +397,10 @@ function selectMeeting(id) {
   Object.assign(actionsView, { owner: null, jobs: [], materials: false, web: null, unseen: false });
   $('board-empty').hidden = false;
   $('actions-status').textContent = '';
-  updateBoardBadge();
   void refreshActions();
   boardView.sequence++;
   resetBoardView(null);
+  updateBoardBadge();
   void refreshBoard();
   resetProjectView();
   void refreshSegments();
@@ -453,7 +453,9 @@ function showTab(tab) {
   $('board-sort').hidden = tab !== 'board';
   if (tab === 'notes' || tab === 'plans') void refreshNotes();
   if (tab === 'plans') void plansView?.refresh();
-  if (tab === 'board') updateBoardBadge();
+  $('notes-options-wrap').hidden = tab !== 'notes';
+  $('plans-options-slot').hidden = tab !== 'plans';
+  updateBoardBadge();
   if (tab === 'project') void refreshProject();
 }
 // Arrow keys move between the tabs, as in the compact layout.
@@ -481,6 +483,12 @@ const layoutView = {
 };
 /** Whether the board's cards are on screen (badge counting). */
 function boardVisible() { return notesView.tab === 'board' && (!layoutView.compact || layoutView.tab === 'board'); }
+/** Keep a single Notes menu and let Plans render its tools into the active layout's slot. */
+function syncPaneTools() {
+  const wrap = $('notes-options').parentElement;
+  const target = layoutView.compact ? document.querySelector('.notes-bar') : document.querySelector('.board-pane .pane-head');
+  if (wrap.parentElement !== target) target.insertBefore(wrap, layoutView.compact ? $('notes-status') : null);
+}
 /** Opens the board or notes in whichever layout is active. */
 function openPane(tab, jumping = false) { if (layoutView.compact) showCompactTab(tab, jumping); else showTab(tab); }
 /** The shown board width: the user's width, clamped so neither pane is ever below its minimum. */
@@ -512,6 +520,8 @@ function applyLayout() {
   const sort = $('board-sort');
   if (compact && sort.parentElement !== document.querySelector('.board-bar')) document.querySelector('.board-bar').prepend(sort);
   if (!compact && sort.parentElement === document.querySelector('.board-bar')) document.querySelector('.board-pane .pane-head').append(sort);
+  syncPaneTools();
+  if (changed) { closeNotesMenu(); plansView?.closeMenu(); plansView?.render(); }
   if (!compact) clampBoard();
   if (compact) {
     if (layoutView.tab !== 'live' && notesView.tab !== layoutView.tab) showTab(layoutView.tab);
@@ -1239,9 +1249,9 @@ function updateBoardBadge() {
     if (!boardVisible() && actionsView.initialised) actionsView.unseen = true;
   }
   actionsView.initialised = true;
-  if (boardVisible()) actionsView.unseen = false;
-  // New cards from the quick model count too while another tab is open.
-  const newCards = boardVisible() ? 0 : boardView.unread.size;
+  if (boardVisible()) { actionsView.unseen = false; boardView.away.clear(); }
+  // Card dots track board scrolling; the tab counts only arrivals while the board was off screen.
+  const newCards = boardView.away.size;
   // The same badge on the wide pane's Board tab and the compact Board tab.
   for (const badge of [$('board-badge'), $('compact-badge')]) {
     badge.hidden = !active && !actionsView.unseen && !newCards;
@@ -1428,8 +1438,14 @@ function renderBoard(owner) {
   $('show-dismissed').hidden = !dismissedCount && !boardView.showDismissed;
   $('show-dismissed').textContent = boardView.showDismissed ? 'Hide dismissed' : `Show dismissed (${dismissedCount})`;
   const visible = all.filter(c => (!c.dismissed || boardView.showDismissed || boardView.undo.has(c.id)) && (boardView.stage === 'all' || stageOf(c) === boardView.stage));
-  // Cards seen for the first time are unread (a dot), and counted in the "new" pill when the user has scrolled away.
-  for (const c of all) if (!boardView.seen.has(c.id)) { boardView.seen.add(c.id); if (boardView.initialised) boardView.unread.add(c.id); }
+  // The first snapshot is the meeting's baseline; only later cards get dots and arrival counts.
+  for (const c of all) if (!boardView.seen.has(c.id)) {
+    boardView.seen.add(c.id);
+    if (boardView.initialised) {
+      boardView.unread.add(c.id);
+      if (!boardVisible()) boardView.away.add(c.id);
+    }
+  }
   boardView.initialised = true;
   const container = $('board-cards');
   const keep = new Set();
@@ -1579,7 +1595,7 @@ function renderPinned(owner) {
   button.onclick = () => { if (sameMeeting(owner)) revealCard(owner, newest.id); };
 }
 function resetBoardView(owner) {
-  boardView.nodes.clear(); boardView.groups.clear(); boardView.seen.clear(); boardView.unread.clear(); boardView.undo.clear();
+  boardView.nodes.clear(); boardView.groups.clear(); boardView.seen.clear(); boardView.unread.clear(); boardView.away.clear(); boardView.undo.clear();
   Object.assign(boardView, { owner, data: null, initialised: false });
   $('board-cards').replaceChildren();
   $('pinned-card').hidden = true;
@@ -3531,6 +3547,8 @@ $('settings').querySelector('.settings-nav button[data-section="project"]').addE
 // ---------- Plans (M7b): its meeting tab, and the project's "Plan after the notes" ----------
 plansApi = await choosePlansApi({ pageId, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
 plansView = createPlansView({
+  optionsHost: $('plans-options-slot'),
+  optionsInHead: () => !layoutView.compact,
   host: $('plans'), api: plansApi,
   hooks: {
     meetingId: () => meetingId,
