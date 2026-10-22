@@ -11,7 +11,7 @@ import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
 import { MeetingStore, type Mode } from './store.ts';
 import { finishPendingMeetingDeletions } from './delete-meeting.ts';
-import { LocalRecognizer } from './recognizer.ts';
+import { SwitchableRecognizer } from './setup/switchable-recognizer.ts';
 import { JobManager, type Recognizer } from './jobs.ts';
 import { LiveDrafts, ownsDisplayInterval, type Draft } from './drafts.ts';
 import { miniPreviewWords, miniLog, midpoint } from '../public/preview-composition.js';
@@ -152,18 +152,27 @@ export async function startServer(options: {
     const speechSetup = new SpeechSetup(directory, () => settings, saveSettings, options.setup);
     setup = speechSetup;
     await speechSetup.initialize();
-    const config = { ...speechSetup.scan.config }; // The recognizer and status describe this start, not the next choice.
-    const recognizer = options.recognizer !== undefined ? options.recognizer : config.available && config.path ? new LocalRecognizer(config.path) : null;
-    jobs = recognizer ? new JobManager(store, recognizer) : undefined;
-    jobs?.kick();
+    const config = { ...speechSetup.scan.config };
+    const switchable = options.recognizer === undefined ? new SwitchableRecognizer(config.available ? config.path : null, options.setup?.worker) : null;
+    const recognizer: Recognizer = switchable ?? options.recognizer ?? { available: () => false,
+      transcribe: async () => { throw new Error('No local model is available.'); }, close() {} };
+    const modelAvailable = () => recognizer.available?.() ?? true;
+    jobs = new JobManager(store, recognizer);
+    jobs.kick();
     await store.removeSealedFrameFiles();
     drafts = options.drafts !== undefined ? options.drafts
-      : recognizer instanceof LocalRecognizer && config.path ? new LiveDrafts({ modelPath: config.path, log: message => console.warn(message) }) : null;
+      : new LiveDrafts({ modelPath: config.available ? config.path ?? '' : '', streaming: Boolean(switchable && config.streaming), log: message => console.warn(message) });
     const liveJobs = jobs;
     // Set once the board exists: a window sealed later (also one recovered after a restart) gets its tail scanned.
     let onLiveChunk = (_meetingId: string) => {};
     const capture = new LiveCapture(store, { drafts, clock: options.clock, onChunk: id => { liveJobs?.kick(); onLiveChunk(id); }, log: message => console.warn(message) });
     live = capture;
+    if (switchable) speechSetup.attachRuntime({
+      recording: () => capture.recording(), cancelSwitch: () => switchable.cancelSwitch(),
+      switchTo: (path, applied, canApply) => switchable.switchTo(path, applied, canApply),
+      applied: next => drafts?.setModel(next.path, Boolean(next.streaming)),
+      kick: () => liveJobs.kick(),
+    });
     // Seals sources that went quiet, including frames saved before a restart.
     let onAudioSweep = () => {};
     sweep = setInterval(() => { void capture.sweep(); onAudioSweep(); }, 2000);
@@ -628,11 +637,10 @@ export async function startServer(options: {
             let value;
             try { value = raw.length ? JSON.parse(raw.toString()) : {}; } catch { throw new HttpError(400, 'Provide valid JSON.'); }
             if (!value || typeof value !== 'object' || Array.isArray(value) || (value.use !== undefined && typeof value.use !== 'boolean')) throw new HttpError(400, 'use is true or false.');
-            void speechSetup.download.start(value.use === true);
-            send(res, 200, speechSetup.status()); return;
+            send(res, 200, await speechSetup.startDownload(value.use === true)); return;
           }
           if (action === 'speech/pause') { await speechSetup.download.pause(); send(res, 200, speechSetup.status()); return; }
-          if (action === 'speech/cancel') { await speechSetup.download.cancel(); send(res, 200, speechSetup.status()); return; }
+          if (action === 'speech/cancel') { send(res, 200, await speechSetup.cancelDownload()); return; }
           if (action === 'recheck') { await speechSetup.recheck(); send(res, 200, speechSetup.status()); return; }
           if (action === 'seen') { send(res, 200, await speechSetup.seen()); return; }
           throw new HttpError(404, 'Not found.');
@@ -704,8 +712,8 @@ export async function startServer(options: {
           throw new HttpError(404, 'Not found.');
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
-          send(res, 200, { config, meetings: appStore.meetings(), recording: capture.recording(), shuttingDown, audioRetentionNotice: audioRetention.notice,
-            queued: appStore.queuedCount(), sttBackend: recognizer instanceof LocalRecognizer ? recognizer.backend : recognizer ? 'test adapter' : 'unavailable',
+          send(res, 200, { config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), shuttingDown, audioRetentionNotice: audioRetention.notice,
+            queued: appStore.queuedCount(), sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
             capabilities: { microphone: true, systemAudio: false, cloudModels: Boolean(quick), correctionModel: quick ? correctionModel : null, notesModel: notesRunner ? heavyModel : null, actionModel: actionRunner ? heavyModel : null, quickModel: quick ? quickModel : null, heavyModel: heavy ? heavyModel : null, participationScheduler: false, pdfExtraction: false },
           }); return;
         }
@@ -912,7 +920,7 @@ export async function startServer(options: {
               const { visible, speaker } = labelledLines(meetingId);
               return displayPreviews(meetingId, visible, speaker);
             })(),
-            draftsAvailable: Boolean(drafts),
+            draftsAvailable: drafts?.available() ?? false,
             // Sources recording now, and whether each has been quiet for a minute (problem notices in the app and the mini view).
             sources: capture.liveSources(meetingId),
             // A quit has begun (the launcher's Quit, or SIGTERM): a recording page stops as if Stop were clicked.
@@ -1068,12 +1076,12 @@ export async function startServer(options: {
         }
         if (req.method === 'POST' && action === 'retry') {
           appStore.assertAudioAvailable(meetingId);
-          if (!appJobs) throw new HttpError(400, 'No local model is available.');
+          if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
           for (const chunk of appStore.chunks(meetingId)) if (chunk.status === 'failed') appStore.setStatus(chunk.id, 'queued');
           appJobs.kick(); send(res, 200, { queued: appStore.queuedCount() }); return;
         }
         if (req.method === 'POST' && action === 'pcm') {
-          if (!appJobs) throw new HttpError(400, 'No local model is available.');
+          if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
           if (appStore.queuedCount() >= 1000) throw new HttpError(429, 'The transcription queue is full. Stop recording and wait for processing.');
           const source = String(req.headers['x-audio-source'] ?? '');
           if (!/^(mic|tab):[a-f0-9-]{36}$/.test(source)) throw new HttpError(400, 'Invalid audio source ID.');
@@ -1137,7 +1145,7 @@ export async function startServer(options: {
           send(res, 200, result); return;
         }
         if (req.method === 'POST' && action === 'upload') {
-          if (!appJobs) throw new HttpError(400, 'No local model is available.');
+          if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
           if (uploading) throw new HttpError(409, 'Another audio file is uploading.');
           importing.add(meetingId);
           appStore.recordingStarted(meetingId);
@@ -1218,6 +1226,7 @@ export async function startServer(options: {
     let closed: Promise<void> | undefined;
     async function closeOnce() {
       closing = true;
+      speechSetup.stopSwitches();
       await speechSetup.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
       audioRetention.close();
       clearInterval(retentionLoop);
@@ -1262,6 +1271,7 @@ export async function startServer(options: {
     void audioRetention.run();
     return app;
   } catch (error) {
+    setup?.stopSwitches();
     await setup?.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
     retention?.close();
     clearInterval(retentionLoop);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, stat, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -10,12 +10,10 @@ import { type SetupOptions } from '../src/setup/service.ts';
 import { model, gguf } from './helpers/gguf.ts';
 
 async function fixture(t: any, setup: SetupOptions = {}, prepare?: (directory: string) => Promise<void>) {
-  const directory = await mkdtemp(join(tmpdir(), 'setup-api-'));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'setup-api-')));
   await prepare?.(directory);
-  const options = { directory, port: 0, quick: null, heavy: null, recognizer: {
-    async transcribe() { return { text: '', backend: 'test', computeMs: 0, decodeMs: 0, audioSeconds: 0, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {},
-  },
-    setup: { ...setup, scan: { home: join(directory, 'home'), envModelPath: null, hfHome: null, ...setup.scan }, ffmpeg: setup.ffmpeg ?? (async () => ({ found: true, ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' })) } };
+  const options = { directory, port: 0, quick: null, heavy: null, drafts: null,
+    setup: { worker: { workerScript: new URL('./fixtures/switch-worker.ts', import.meta.url) }, ...setup, scan: { home: join(directory, 'home'), envModelPath: null, hfHome: null, ...setup.scan }, ffmpeg: setup.ffmpeg ?? (async () => ({ found: true, ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' })) } };
   const app = await startServer(options);
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
   const request = (path: string, options: RequestInit = {}) => fetch(`${app.url}${path}`, { ...options, headers: { Cookie: cookie, Origin: app.url, 'Content-Type': 'application/json', ...options.headers } });
@@ -69,7 +67,7 @@ test('setup POST endpoints all require the dashboard origin and session', async 
   assert.equal((await f.request('/api/setup', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
 });
 
-test('setup use persists next choice, reports restartNeeded and leaves running config unchanged', async t => {
+test('setup use persists choice and updates running config after asynchronous load', async t => {
   const f = await fixture(t, {}, async directory => {
     await model(join(directory, 'models/a.gguf'), { name: 'Example first' });
     await model(join(directory, 'models/b.gguf'), { name: 'Example next', family: 'whisper' });
@@ -77,16 +75,18 @@ test('setup use persists next choice, reports restartNeeded and leaves running c
   const original = (await f.get('/api/status')).config;
   const next = (await f.get('/api/setup/speech-models')).models.find((m: any) => m.name === 'Example next');
   const response = await f.post('/api/setup/speech/use', { id: next.id }); assert.equal(response.status, 200);
-  assert.equal((await response.json()).restartNeeded, true);
+  assert.equal((await response.json()).restartNeeded, false);
   assert.equal((await f.get('/api/status')).config.path, original.path);
   assert.equal((await f.get('/api/settings')).speechModelPath, next.chosenFile.path);
   const settings = JSON.parse(await readFile(join(f.directory, 'settings.json'), 'utf8')); assert.equal(settings.speechModelPath, next.chosenFile.path);
+  await waitFor(async () => !(await f.get()).rows[0].pending);
+  assert.equal((await f.get('/api/status')).config.path, next.chosenFile.path);
   const models = (await f.get('/api/setup/speech-models')).models;
-  assert.equal(models.find((m: any) => m.name === 'Example first').inUse, true);
-  assert.equal(models.find((m: any) => m.name === 'Example next').inUse, false);
+  assert.equal(models.find((m: any) => m.name === 'Example first').inUse, false);
+  assert.equal(models.find((m: any) => m.name === 'Example next').inUse, true);
 });
 
-test('setup use is allowed during live capture and only changes next-start selection', async t => {
+test('setup use is allowed during live capture and waits for recording to stop', async t => {
   const f = await fixture(t, {}, async directory => {
     const initial = await model(join(directory, 'models/a.gguf'));
     await writeFile(join(directory, 'settings.json'), JSON.stringify({ speechModelPath: initial }));
@@ -99,7 +99,8 @@ test('setup use is allowed during live capture and only changes next-start selec
   } }); assert.equal(pcm.status, 201);
   const next = (await f.get('/api/setup/speech-models')).models.find((m: any) => m.name === 'Example next');
   assert.equal((await f.post('/api/setup/speech/use', { id: next.id })).status, 200);
-  assert.equal((await f.get()).restartNeeded, true); assert.equal((await f.get('/api/status')).recording, true);
+  assert.equal((await f.get()).restartNeeded, false); assert.equal((await f.get('/api/status')).recording, true);
+  assert.equal((await f.get()).rows[0].pending.applies, 'after recording');
 });
 
 test('setupSeen persists across server starts and other settings are preserved', async t => {
@@ -133,7 +134,7 @@ test('setup picker cancelled makes no change; unsupported and non-GGUF selection
   selected = await model(join(f.directory, 'llm.gguf'), { family: 'llama' });
   response = await f.post('/api/setup/speech/choose-file'); assert.equal(response.status, 400);
   selected = await model(join(f.directory, 'chosen.gguf'));
-  response = await f.post('/api/setup/speech/choose-file'); assert.equal(response.status, 200); assert.equal((await response.json()).restartNeeded, true);
+  response = await f.post('/api/setup/speech/choose-file'); assert.equal(response.status, 200); assert.equal((await response.json()).restartNeeded, false);
 });
 
 test('setup picker permits only one native dialog at a time', async t => {
@@ -162,7 +163,7 @@ test('setup a concurrent recheck cannot lose a newly saved model choice', async 
   const choose = f.post('/api/setup/speech/use', { id: next.id });
   await waitFor(async () => (await f.get('/api/settings')).speechModelPath === next.chosenFile.path);
   release(); await recheck;
-  assert.equal((await (await choose).json()).restartNeeded, true);
+  assert.equal((await (await choose).json()).restartNeeded, false);
   assert.equal((await f.get()).rows[0].path, next.chosenFile.path);
 });
 
@@ -227,6 +228,8 @@ for (const existing of [false, true]) for (const use of [false, true]) test(`set
   await waitFor(async () => (await f.get()).rows[0].download.state === 'done');
   const settings = await f.get('/api/settings');
   assert.equal(Boolean(settings.speechModelPath), !existing || use);
-  assert.equal((await f.get()).restartNeeded, !existing || use);
+  assert.equal((await f.get()).restartNeeded, false);
+  await waitFor(async () => !(await f.get()).rows[0].pending);
+  if (!existing || use) assert.equal((await f.get('/api/status')).config.path, settings.speechModelPath);
   assert.ok((await f.get('/api/setup/speech-models')).models.some((m: any) => m.name === 'Example downloaded'));
 });

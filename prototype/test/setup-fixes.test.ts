@@ -110,21 +110,21 @@ test('fix 5: cancel racing a finishing download preserves done', async t => {
   assert.deepEqual(f.job.state, { state: 'done', path: f.job.path }); assert.deepEqual(await fs.readFile(f.job.path), content);
 });
 
-test('fix 6: a later use true sticks to the shared download job', async t => {
-  const entered = deferred(), release = deferred(); let use: boolean | undefined;
-  const f = await downloadFixture(t, { freeSpace: async () => { entered.resolve(); await release.promise; return 1e12; }, onDone: async (_path, value) => { use = value; } });
-  const first = f.job.start(false); await entered.promise;
-  assert.equal(f.job.start(true), first); assert.equal(f.job.start(false), first);
-  release.resolve(); await first; assert.equal(use, true);
-  // Pausing and resuming is still the same requested download, not a new use=false choice.
-  const resumed = deferred(), resumeSpace = deferred(); let resumedUse: boolean | undefined;
+test('fix 6: transfer requests share one job and resume reports its completed path, not a selection hint', async t => {
+  const entered = deferred(), release = deferred(); let completed: string | undefined;
+  const f = await downloadFixture(t, { freeSpace: async () => { entered.resolve(); await release.promise; return 1e12; }, onDone: async path => { completed = path; } });
+  const first = f.job.start(); await entered.promise;
+  assert.equal(f.job.start(), first); assert.equal(f.job.start(), first);
+  release.resolve(); await first; assert.equal(completed, f.job.path);
+  // Selection now belongs to SpeechSetup's intent, not to a sticky flag on a transfer attempt.
+  const resumed = deferred(), resumeSpace = deferred(); let resumedPath: string | undefined;
   const second = await downloadFixture(t, {
     freeSpace: async () => { resumed.resolve(); await resumeSpace.promise; return 1e12; },
-    onDone: async (_path, value) => { resumedUse = value; },
+    onDone: async path => { resumedPath = path; },
   });
-  const work = second.job.start(true); await resumed.promise;
+  const work = second.job.start(); await resumed.promise;
   const pause = second.job.pause(); resumeSpace.resolve(); await Promise.all([work, pause]);
-  await second.job.start(false); assert.equal(resumedUse, true);
+  await second.job.start(); assert.equal(resumedPath, second.job.path);
 });
 
 test('fix 7: a post-rename callback failure keeps done and logs the failure', async t => {
@@ -146,7 +146,7 @@ test('fix 9: close prevents queued and future starts from outliving the owner', 
   const f = await downloadFixture(t, { freeSpace: async () => { checks++; entered.resolve(); await release.promise; return 1e12; } });
   const first = f.job.start(); await entered.promise;
   const cancelled = f.job.cancel(), queued = f.job.start(), closed = f.job.close(); release.resolve();
-  await Promise.all([first, cancelled, queued, closed]); await f.job.start(true);
+  await Promise.all([first, cancelled, queued, closed]); await f.job.start();
   assert.equal(checks, 1); assert.equal(f.requests(), 0); assert.equal(await fs.stat(f.job.path).catch(() => null), null);
 });
 
@@ -226,7 +226,7 @@ test('fix 12: finishing a download forces a fresh scan after an older recheck', 
   t.mock.method(setup.scanner, 'scan', async (...args: Parameters<typeof original>) => { const result = await original(...args); scanned.resolve(); return result; });
   block = true;
   const recheck = setup.recheck(); await entered.promise; await scanned.promise;
-  const download = setup.download.start(false);
+  const download = setup.download.start();
   await waitFor(async () => Boolean(await fs.stat(setup.download.path).catch(() => null)));
   // Let onDone enter recheck while the older check is still held.
   await new Promise(r => setTimeout(r, 10)); release.resolve(); await Promise.all([recheck, download]);
