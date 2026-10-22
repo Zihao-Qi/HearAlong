@@ -2,6 +2,8 @@ import { stamp, TYPE_LABELS, NOTICES, SAVING_BEHIND_FRAMES } from '/live-shared.
 import { choosePlansApi, createPlansView } from '/plans.js';
 import { createTranscriptView } from '/transcript-view.js';
 import { CaptureSuspension } from '/capture-clock.js';
+import { SetupUI, setupRequest, copyCommand } from '/setup-ui.js';
+import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
 
 const $ = id => document.getElementById(id);
 const store = {
@@ -35,16 +37,7 @@ const notesView = { tab: ['notes', 'plans', 'project'].includes(store.get('right
 // Project memory (M6): the project of the shown meeting, what the Project tab shows, and rows resolved in the last 15 s.
 const projectView = { owner: null, project: null, data: null, run: null, filter: null, expanded: new Map(), editing: null, resolved: new Map(), resolvedEdits: new Map(), sources: new Map(), wordings: new Map(), commits: null, commitsFor: null, menu: null, sequence: 0, tell: null, menuProject: undefined, projects: [] };
 
-/** This page, to the server: an open window keeps the installed app's server running; closing it says goodbye (M7). */
-const pageId = crypto.randomUUID();
-window.addEventListener('pagehide', () => { navigator.sendBeacon(`/api/bye?page=${pageId}`); });
 navigator.serviceWorker?.register('/sw.js').catch(() => {}); // only for the "Starting…" page of the installed app
-async function api(path, options = {}) {
-  const response = await fetch(path, { ...options, headers: { ...options.headers, 'X-Page': pageId } });
-  const data = response.headers.get('content-type')?.includes('json') ? await response.json() : {};
-  if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
-  return data;
-}
 /** An API call that gives up after `ms` (a stalled request must not hang recording or stopping). */
 function apiWithin(ms, path, options = {}) {
   const controller = new AbortController();
@@ -309,12 +302,9 @@ async function refreshStatus() {
     // Only a snapshot requested after the current selection may say that meeting no longer exists.
     if (generation === selectionGeneration && !capture && !requestingMic && !status.meetings.some(m => m.id === meetingId)) selectMeeting(status.meetings[0]?.id ?? null);
     renderMeetingMenu();
-    $('model').textContent = status.config.available
-      ? `Parakeet (local), ${(status.config.bytes / 1024 ** 2).toFixed(0)} MiB · ${status.sttBackend === 'not loaded' ? 'loads when needed' : `running on ${status.sttBackend}`} · ${status.queued ? `${status.queued} piece(s) waiting` : 'nothing waiting'}`
-      : status.config.error;
     const caps = status.capabilities;
     $('cloud').textContent = caps.cloudModels
-      ? `On, through Pi with your subscription. Glossary: ${caps.heavyModel}. Corrections: ${caps.correctionModel}. Transcript text and material excerpts are sent to OpenAI; audio stays on this Mac.`
+      ? `On, through Pi with your subscription. Glossary: ${caps.heavyModel}. Corrections: ${caps.correctionModel}. Transcript text and material excerpts are sent to your chosen model provider; audio stays on this Mac.`
       : 'Off (MEETING_CLOUD=0). Nothing leaves this Mac.';
     renderStatusDot();
   } catch (error) {
@@ -1774,9 +1764,42 @@ function menuProjectId() { return projectView.menuProject !== undefined ? projec
 $('close-replay').onclick = () => $('replay-dialog').close();
 $('replay-dialog').addEventListener('close', () => $('meeting-button').focus()); // its opener was in the closed menu
 
-// Settings: one dialog with a sidebar of sections (This meeting: materials, glossary, export; This Mac: microphone, mini window,
+// Settings: one dialog with a sidebar of sections (This meeting: materials, glossary, export; This Mac: setup, microphone, mini window,
 // speech, cloud models, activity). The materials chip opens it at Materials, the cog at Microphone. Escape and Close shut it.
+let setupSnapshot;
+function setupStatusChanged(snapshot) {
+  setupSnapshot = snapshot;
+  const ai = snapshot.rows.find(row => row.id === 'ai');
+  $('setup-web').hidden = ai.web !== false;
+  if (!$('setup-web').firstChild) $('setup-web').append('Web search is not installed. ', copyCommand('pi install npm:pi-web-access'));
+  renderStatusDot();
+}
+const setupUi = new SetupUI($('setup-settings'), { details: true, onStatus: setupStatusChanged,
+  onError(error) { $('setup-settings-error').hidden = !error; $('setup-settings-error').textContent = error?.message.replace(/'/g, '’') ?? ''; },
+});
+window.addEventListener('pagehide', () => setupUi.stop({ dispose: true }));
+// The same sequence guard owns initial, action and foreground reads. No idle setup polling.
+let foregroundSetup;
+function refreshSetupSnapshot({ recheck = false } = {}) {
+  foregroundSetup ??= (async () => {
+    // GET is a cached snapshot. A Terminal install needs one bounded OS recheck, not idle polling.
+    if (recheck) {
+      try { await setupRequest('/api/setup/recheck', 'POST'); }
+      catch (error) { setupUi.onError(error); return; }
+    }
+    return setupUi.refresh({ background: true });
+  })().finally(() => { foregroundSetup = null; });
+  return foregroundSetup;
+}
+void refreshSetupSnapshot();
+function refreshSpeechOff() {
+  if ($('status-dot').classList.contains('error') && !setupUi.checkingRow && !setupUi.pendingActions.has('speech')) void refreshSetupSnapshot({ recheck: true });
+}
+window.addEventListener('focus', refreshSpeechOff);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshSpeechOff(); });
 function showSettingsSection(name) {
+  if (name === 'setup') void setupUi.start(setupSnapshot); else setupUi.stop();
+  if (name === 'cloud') void refreshSetupSnapshot();
   for (const section of $('settings').querySelectorAll('.settings-section')) section.hidden = section.dataset.section !== name;
   for (const button of $('settings').querySelectorAll('.settings-nav button')) {
     button.setAttribute('aria-current', button.dataset.section === name ? 'page' : 'false');
@@ -1816,9 +1839,9 @@ $('settings').querySelector('.settings-nav').addEventListener('keydown', event =
 });
 $('open-meeting').onclick = () => openSettings('materials');
 // With a warning on the dot, the cog opens where the problem is.
-$('open-system').onclick = () => openSettings($('status-dot').classList.contains('warn') || $('status-dot').classList.contains('error') ? 'speech' : 'microphone');
+$('open-system').onclick = () => openSettings($('status-dot').classList.contains('error') ? 'setup' : $('status-dot').classList.contains('warn') ? 'speech' : 'microphone');
 $('close-settings').onclick = () => $('settings').close();
-$('settings').addEventListener('close', () => micTest?.stop());
+$('settings').addEventListener('close', () => { micTest?.stop(); setupUi.stop(); });
 // A click on the dimmed backdrop closes it too.
 $('settings').addEventListener('click', event => { if (event.target === $('settings')) $('settings').close(); });
 /** "Materials: <first> · Glossary v<N>" (short in compact), or "Add materials". */
@@ -1833,7 +1856,9 @@ function renderMeetingChip() {
 function renderStatusDot() {
   if (!status) return;
   const failed = (detail?.chunks ?? []).filter(c => c.status === 'failed').length;
-  const [kind, word, label] = !status.config.available ? ['error', 'Speech off', 'The local speech model is not available']
+  const speech = setupSnapshot?.rows.find(row => row.id === 'speech');
+  const speechReady = speech ? speech.state === 'ready' && !speech.pending : status.config.available;
+  const [kind, word, label] = !speechReady || setupSnapshot?.rows.some(row => row.id === 'ffmpeg' && row.state !== 'found') ? ['error', 'Speech off', 'Speech needs setup on this Mac']
     : failed ? ['warn', `${failed} failed`, `${failed} piece(s) of audio failed to transcribe`]
     // A queue is normal (each 16–24 s piece passes through it; a replay queues its whole file): only a live backlog is a problem.
     : capture && status.queued > 3 ? ['warn', `${status.queued} waiting`, `Transcription is falling behind: ${status.queued} pieces of audio waiting`]
@@ -3599,7 +3624,7 @@ await refreshStatus();
 await refreshSegments();
 await refreshDetail();
 setInterval(refreshSegments, 1000);
-setInterval(refreshStatus, 5000);
+startPageSession(refreshStatus);
 setInterval(refreshDetail, 3000);
 showTab(notesView.tab);
 applyLayout();

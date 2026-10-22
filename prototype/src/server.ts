@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { numberInRange } from './config.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
+import { resolvePi } from './pi-command.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
 import { MeetingStore, type Mode } from './store.ts';
@@ -214,7 +215,11 @@ export async function startServer(options: {
     const ai = new AiSetup(() => settings, saveSettings, { ...options.ai, cwd: scratchRoot, cloud });
     aiSetup = ai;
     ai.start(); // Discovery, package detection and auth must never delay startup.
-    const setupStatus = () => { const status = speechSetup.status(); return { ...status, rows: [...status.rows, ai.status()] }; };
+    // Exclude the bundled fallback when deciding whether a bare `pi` works in the user's terminal.
+    const signInEnv = options.ai?.env ?? process.env;
+    const signInCommand = resolvePi({ env: signInEnv, root: '/dev/null' }) ? 'pi'
+      : `cd '${ROOT.replace(/'/g, `'\\''`)}' && npx pi`;
+    const setupStatus = () => { const status = speechSetup.status(); return { ...status, rows: [...status.rows, { ...ai.status(), signInCommand }] }; };
     const quick: Quick | null = options.quick !== undefined ? options.quick
       : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
     const heavy: Heavy | null = options.heavy !== undefined ? options.heavy
@@ -562,6 +567,9 @@ export async function startServer(options: {
         const url = new URL(req.url ?? '/', origin);
         const staticFiles: Record<string, [string, string]> = {
           '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'],
+          '/setup': ['setup.html', 'text/html'], '/setup.html': ['setup.html', 'text/html'],
+          '/setup.js': ['setup.js', 'text/javascript'], '/setup.css': ['setup.css', 'text/css'], '/setup-ui.js': ['setup-ui.js', 'text/javascript'],
+          '/page-session.js': ['page-session.js', 'text/javascript'],
           '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
           // The mini view (M7): one page, shown by the helper's native window or in Chrome's Picture-in-Picture window.
           '/mini.html': ['mini.html', 'text/html'], '/mini.js': ['mini.js', 'text/javascript'], '/mini.css': ['mini.css', 'text/css'],
@@ -587,7 +595,14 @@ export async function startServer(options: {
         if (req.method === 'GET' && staticFiles[url.pathname]) {
           const [path, type] = staticFiles[url.pathname];
           // The mini page also starts a session: the helper's web view opens it directly.
-          if (url.pathname === '/' || url.pathname === '/mini.html') res.setHeader('Set-Cookie', `meeting_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
+          if (['/', '/setup', '/setup.html', '/mini.html'].includes(url.pathname)) res.setHeader('Set-Cookie', `meeting_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
+          if (url.pathname === '/') {
+            const speech = speechSetup.status().rows.find(row => row.id === 'speech')!;
+            const neededReady = speech.state === 'ready' && !speechSetup.pending && speechSetup.ffmpeg.found;
+            if (!settings.setupSeen || (!neededReady && appStore.meetings().length === 0)) {
+              res.writeHead(302, { Location: '/setup', 'Cache-Control': 'no-store' }).end(); return;
+            }
+          }
           // Chrome's Picture-in-Picture window holds the mini page in a frame of the app's own origin.
           if (url.pathname === '/mini.html') res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'");
           res.writeHead(200, { 'Content-Type': type.startsWith('image/') ? type : `${type}; charset=utf-8`, 'Cache-Control': 'no-store' });

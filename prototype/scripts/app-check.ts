@@ -6,12 +6,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 
 const results: string[] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`); };
 const directory = await mkdtemp(join(tmpdir(), 'meeting-app-'));
 const port = 4394;
-let app = await startServer({ directory, port, quick: null, heavy: null, recognizer: null, drafts: null });
+const setup = await dashboardSetup(directory, true);
+let app = await startServer({ directory, port, setup, quick: null, heavy: null, recognizer: null, drafts: null });
 // A real (not incognito) profile in a temporary folder: Chrome does not offer installing apps in incognito windows.
 const profile = await mkdtemp(join(tmpdir(), 'meeting-app-profile-'));
 const context = await chromium.launchPersistentContext(profile, { executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, viewport: { width: 1280, height: 860 } });
@@ -37,7 +39,7 @@ try {
   await page.locator('text=Starting HearAlong').waitFor({ timeout: 20_000 });
   check('server stopped: the app shows Starting…', true);
   check('server stopped: the Starting page runs (asks Chrome to open the helper)', /allow it/.test(await page.locator('#detail').innerText()));
-  app = await startServer({ directory, port, quick: null, heavy: null, recognizer: null, drafts: null });
+  app = await startServer({ directory, port, setup, quick: null, heavy: null, recognizer: null, drafts: null });
   await page.locator('#meeting-button').waitFor({ timeout: 15_000 });
   check('server back: the app loads by itself', true);
   check('no page errors', errors.length === 0, errors.join(' | '));

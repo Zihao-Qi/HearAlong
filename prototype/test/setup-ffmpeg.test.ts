@@ -7,6 +7,16 @@ import { checkFfmpeg } from '../src/setup/ffmpeg.ts';
 import { runBinary, probeDuration, decodeChunk } from '../src/audio.ts';
 import { SpeechSetup } from '../src/setup/service.ts';
 
+test('FIX2.2 FFmpeg on a temporary PATH reports executable absolute paths without extra processes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'setup-ffmpeg-path-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  for (const name of ['ffmpeg', 'ffprobe']) { await writeFile(join(directory, name), '#!/bin/sh\nexit 0\n'); await chmod(join(directory, name), 0o700); }
+  const calls: string[] = [];
+  const result = await checkFfmpeg({ env: { PATH: directory }, run: async command => { calls.push(command); } });
+  assert.equal(result.ffmpeg, join(directory, 'ffmpeg')); assert.equal(result.ffprobe, join(directory, 'ffprobe'));
+  assert.equal(calls.length, 2, 'only the two version probes; no which subprocess');
+});
+
 test('FFmpeg found on PATH leaves bare command behavior unchanged', async () => {
   const calls: string[] = [];
   const result = await checkFfmpeg({ env: {}, run: async (command, args) => { calls.push(command); assert.deepEqual(args, ['-version']); } });

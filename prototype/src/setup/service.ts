@@ -266,7 +266,7 @@ export class SpeechSetup {
       : this.scan.missingPath ? 'missing' : config.available ? 'ready' : 'none';
     return { seen: this.settings().setupSeen, restartNeeded: this.restartNeeded, rows: [
       { id: 'speech', needed: true, state, ...(config.name ? { label: config.name } : {}),
-        source: config.source, path: config.path, streaming: config.streaming,
+        source: config.source, path: config.path, streaming: config.streaming, downloadTargetPath: this.download.path,
         ...(this.pending ? { pending: { ...this.pending } } : {}), ...(this.switchError ? { switchError: this.switchError } : {}),
         ...(this.scan.missingPath ? { missingPath: this.scan.missingPath } : {}), download },
       { id: 'ffmpeg', needed: true, state: this.ffmpeg.found ? 'found' : 'missing', ...(this.ffmpeg.ffmpeg ? { path: this.ffmpeg.ffmpeg } : {}) },

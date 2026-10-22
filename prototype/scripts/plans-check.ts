@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import { MeetingStore } from '../src/store.ts';
 import type { Recognition } from '../src/recognizer.ts';
 import { plansLifecycleCheck } from './plans-lifecycle-check.ts';
@@ -68,6 +69,7 @@ const notes = async () => ({ model: 'scripted', text: JSON.stringify({
   openQuestions: [item('Is the drop caused by the forest recorders’ lower sample rate?', 3, 9), item('Should the detector tell alarm calls from song?', 10, 12)],
   otherMatters: [{ ...item('Book the field van for next week.', 12, 8), kind: 'todo', label: 'admin' }], otherTalk: [],
 }) });
+await dashboardSetup(directory);
 const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, notes: notes as never, actions: null, board: null });
 let browser: Browser | undefined;
 const results: string[] = [];

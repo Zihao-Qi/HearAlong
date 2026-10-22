@@ -1,4 +1,5 @@
-import { join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { accessSync, statSync, constants } from 'node:fs';
 import { runBinary } from '../audio.ts';
 
 export type FfmpegResult = { found: boolean; ffmpeg?: string; ffprobe?: string; error?: string };
@@ -9,8 +10,17 @@ export async function checkFfmpeg(options: {
   const env = options.env ?? process.env;
   const run = options.run ?? ((command, args) => runBinary(command, args, { timeoutMs: 5000 }));
   const folders = options.fallbackFolders ?? ['/opt/homebrew/bin', '/usr/local/bin'];
+  const pathCommand = (command: string) => {
+    if (command.includes('/')) return command;
+    for (const folder of (env.PATH ?? '').split(delimiter)) {
+      const path = resolve(folder || '.', command);
+      try { accessSync(path, constants.X_OK); if (statSync(path).isFile()) return path; }
+      catch { /* continue to the next PATH entry */ }
+    }
+    return command;
+  };
   const find = async (command: string) => {
-    try { await run(command, ['-version']); return command; }
+    try { await run(command, ['-version']); return pathCommand(command); }
     catch (error) {
       // Only a bare name absent from PATH permits fallback; an explicit broken override stays broken.
       if (command.includes('/') || (error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;

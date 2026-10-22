@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import type { Recognition } from '../src/recognizer.ts';
 
 const out = resolve(process.argv[2] ?? 'artifacts/design-D');
@@ -35,6 +36,7 @@ const notes = async () => ({ model: 'scripted', text: JSON.stringify({ title: 'D
   otherMatters: [item('Book the field van for next week.', 5, { kind: 'todo', label: 'admin' })],
   otherTalk: [{ from: 'S11', to: 'S11', label: 'Conference travel', smallTalk: false }, { from: 'S12', to: 'S12', label: 'Weather', smallTalk: true }],
 }) });
+await dashboardSetup(directory);
 const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, notes, actions: null, board: null });
 let browser: Browser | undefined;
 const errors: string[] = [], shots: string[] = [];
