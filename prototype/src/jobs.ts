@@ -1,7 +1,7 @@
 import type { Recognition } from './recognizer.ts';
 import type { Chunk, MeetingStore } from './store.ts';
 
-export interface Recognizer { transcribe(chunk: Chunk): Promise<Recognition>; close(): void | Promise<void> }
+export interface Recognizer { available?(): boolean; transcribe(chunk: Chunk): Promise<Recognition>; close(): void | Promise<void> }
 
 /** One disk-backed queue, bounded in-flight PCM, and no model duplication. */
 export class JobManager {
@@ -13,12 +13,12 @@ export class JobManager {
   private drained?: Promise<void>;
   constructor(store: MeetingStore, recognizer: Recognizer) { this.store = store; this.recognizer = recognizer; }
   kick() {
-    if (this.running || this.stopped) return;
+    if (this.running || this.stopped || this.recognizer.available?.() === false) return;
     this.running = true;
     this.drained = this.pump().finally(() => { this.running = false; });
   }
   private async pump() {
-    while (!this.stopped) {
+    while (!this.stopped && this.recognizer.available?.() !== false) {
       const job = this.store.nextChunk();
       if (!job) break;
       this.store.setStatus(job.id, 'running');

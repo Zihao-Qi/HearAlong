@@ -24,10 +24,11 @@ export function ownsDisplayInterval(chunk: DisplayChunk, rendered: Set<string>):
  * `sent`: when each feed not yet answered was sent, across windows (the worker answers every feed, in order, including feeds
  * for a window it has already replaced). `queued`: commands held until the model has loaded.
  */
-type Worker = { child: ChildProcess; source: string; startedAt: number; ready: boolean; queued: { window: string; message: unknown }[]; sent: number[]; idle?: NodeJS.Timeout };
+type Worker = { child: ChildProcess; modelPath: string; source: string; startedAt: number; ready: boolean; queued: { window: string; message: unknown }[]; sent: number[]; idle?: NodeJS.Timeout };
 
 export type DraftOptions = {
   modelPath: string;
+  streaming?: boolean;
   workerScript?: URL;
   /** A window whose worker has a feed this old unanswered stops being fed and shows that it is behind. */
   maxBacklogMs?: number;
@@ -58,13 +59,24 @@ export class LiveDrafts {
   private closing = false;
   private watchdog: NodeJS.Timeout;
   constructor(options: DraftOptions) {
-    this.options = { workerScript: new URL('./stt-stream-worker.ts', import.meta.url), maxBacklogMs: 4000, idleCloseMs: 60_000, hangMs: 10_000,
+    this.options = { streaming: true, workerScript: new URL('./stt-stream-worker.ts', import.meta.url), maxBacklogMs: 4000, idleCloseMs: 60_000, hangMs: 10_000,
       loadMs: 30_000, maxQueued: 30, maxSources: 2, ...options };
     this.watchdog = setInterval(() => this.check(), Math.min(1000, this.options.hangMs / 2));
     this.watchdog.unref();
   }
+  /** Existing windows retain their worker until the next begin for that source. */
+  setModel(path: string | null, streaming: boolean) {
+    this.options.modelPath = path ?? '';
+    this.options.streaming = streaming;
+    for (const worker of this.workers.values()) if (!this.covers(worker.source)) this.stop(worker);
+  }
+  /** Whether the current model can produce live previews (workers load lazily per source). */
+  available(): boolean { return !this.closing && Boolean(this.options.modelPath) && this.options.streaming; }
   /** Starts a window's stream. Returns false when no draft will be made (too many live sources, or shutting down). */
   begin(meetingId: string, source: string, window: string, windowStartMs: number): boolean {
+    const existing = this.workers.get(source);
+    if (existing && (existing.modelPath !== this.options.modelPath || !this.options.streaming)) this.stop(existing);
+    if (!this.available()) return false;
     const worker = this.worker(source);
     if (!worker) return false;
     this.windows.set(window, { meetingId, source, window, windowStartMs, text: '', words: [], behind: false, committedUntilMs: windowStartMs, coveredUntilMs: windowStartMs });
@@ -168,7 +180,7 @@ export class LiveDrafts {
     if (existing) { clearTimeout(existing.idle); existing.idle = undefined; return existing; }
     if (this.workers.size + this.retiring.size >= this.options.maxSources) return undefined;
     const child = fork(this.options.workerScript, [this.options.modelPath], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], serialization: 'advanced' });
-    const worker: Worker = { child, source, startedAt: Date.now(), ready: false, queued: [], sent: [] };
+    const worker: Worker = { child, modelPath: this.options.modelPath, source, startedAt: Date.now(), ready: false, queued: [], sent: [] };
     let stderr = '';
     child.stderr?.on('data', part => { stderr = (stderr + part.toString()).slice(-2000); });
     child.on('message', (message: any) => {

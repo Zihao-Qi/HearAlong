@@ -117,8 +117,9 @@ test('round 2 item 3: use true arriving during finalization saves the downloaded
   });
   try {
     hold = true;
-    const work = setup.download.start(false); await entered.promise;
-    assert.equal(setup.download.start(true), work); assert.equal(setup.download.start(false), work);
+    const work = setup.download.start(); await entered.promise;
+    await setup.startDownload(true);
+    assert.equal(setup.download.start(), work);
     release.resolve(); await work;
     assert.equal(setup.settings().speechModelPath, setup.download.path);
     assert.equal(setup.scan.config.path, setup.download.path); assert.equal(setup.restartNeeded, true);

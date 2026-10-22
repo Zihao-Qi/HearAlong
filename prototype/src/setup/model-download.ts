@@ -16,7 +16,8 @@ export type DownloadState =
   | { state: 'done'; path: string }
   | { state: 'noSpace'; neededBytes: number };
 export type DownloadOptions = { directory: string; url?: string; bytes?: number; sha256?: string;
-  freeSpace?: (directory: string) => Promise<number>; onDone?: (path: string, use: boolean) => Promise<void> };
+  freeSpace?: (directory: string) => Promise<number>;
+  onDone?: (path: string) => Promise<void> };
 const RESERVE = 100 * 1024 * 1024;
 
 /** A server-owned single job. All aborting operations await the writer before touching its part. */
@@ -30,7 +31,10 @@ export class ModelDownload {
   private job?: Promise<void>;
   private stopping?: 'pause' | 'cancel';
   private control?: Promise<void>;
-  private use = false;
+  private requests = 0;
+  private finalizing = false;
+  /** The verified file exists, including while its completion callback is still running. */
+  get completed() { return this.finalizing || this.state.state === 'done'; }
   private closed = false;
   constructor(options: DownloadOptions) {
     this.options = { ...options, url: options.url ?? PARAKEET.url, bytes: options.bytes ?? PARAKEET.bytes, sha256: options.sha256 ?? PARAKEET.sha256,
@@ -46,24 +50,46 @@ export class ModelDownload {
     else if (bytes || await stat(this.part).catch(() => null)) this.state = { state: 'paused', bytes };
   }
   /** Starts immediately and returns the shared completion promise (the API need not await it). */
-  start(use = false): Promise<void> {
+  start(): Promise<void> {
     if (this.closed) return Promise.resolve();
-    if (this.control) return this.control.then(() => this.start(use));
-    if (this.job) { this.use ||= use; return this.job; }
+    // Re-run completion if another request arrived while it was applying setup state.
+    // Record this before a control that may itself be waiting for that completion.
+    ++this.requests;
+    if (this.control) return this.control.then(() => this.start());
+    if (this.job) return this.job;
     if (this.state.state === 'done') return Promise.resolve();
-    this.use ||= use;
     this.stopping = undefined;
     const controller = new AbortController();
     this.controller = controller;
     const bytes = 'bytes' in this.state ? this.state.bytes : 0;
     this.state = { state: 'downloading', bytes, total: this.options.bytes, etaSeconds: null };
-    const job = this.run(controller.signal).finally(() => {
-      if (this.job === job) { this.job = undefined; this.controller = undefined; }
-    });
+    let job!: Promise<void>;
+    job = (async () => {
+      let completed = false;
+      try {
+        completed = await this.run(controller.signal);
+        if (completed) {
+          this.finalizing = true;
+          let appliedRequest: number;
+          do {
+            appliedRequest = this.requests;
+            try { await this.options.onDone?.(this.path); }
+            catch (error) { console.warn(`The speech model was downloaded, but setup could not be updated: ${(error as Error).message}`); }
+          } while (appliedRequest !== this.requests);
+        }
+      } finally {
+        // No await between the last promotion check, publishing done, and releasing the shared job.
+        if (this.job === job) {
+          if (completed) this.state = { state: 'done', path: this.path };
+          this.finalizing = false;
+          this.job = undefined; this.controller = undefined;
+        }
+      }
+    })();
     this.job = job;
     return job;
   }
-  private async run(signal: AbortSignal) {
+  private async run(signal: AbortSignal): Promise<boolean> {
     let bytes = 0;
     try {
       await this.ready;
@@ -72,7 +98,7 @@ export class ModelDownload {
       if (bytes > this.options.bytes) { await rm(this.part, { force: true }); bytes = 0; }
       const neededBytes = this.options.bytes - bytes + RESERVE;
       if (await this.options.freeSpace(join(this.options.directory, 'models')) < neededBytes) {
-        this.state = { state: 'noSpace', neededBytes }; return;
+        this.state = { state: 'noSpace', neededBytes }; return false;
       }
       signal.throwIfAborted();
       let hash = createHash('sha256');
@@ -114,21 +140,14 @@ export class ModelDownload {
         } finally { await file.close(); }
       }
       signal.throwIfAborted();
-      if (this.state.state === 'damaged') { await rm(this.part, { force: true }); return; }
+      if (this.state.state === 'damaged') { await rm(this.part, { force: true }); return false; }
       if (bytes !== this.options.bytes) throw new Error('The connection ended before the file was complete.');
       this.state = { state: 'checking' };
       if (hash.digest('hex') !== this.options.sha256) {
-        await rm(this.part, { force: true }); this.state = { state: 'damaged' }; return;
+        await rm(this.part, { force: true }); this.state = { state: 'damaged' }; return false;
       }
       await rename(this.part, this.path);
-      this.state = { state: 'done', path: this.path };
-      try {
-        const appliedUse = this.use;
-        await this.options.onDone?.(this.path, appliedUse);
-        // A chooser request can promote the job while the first completion callback is awaiting a recheck.
-        if (!appliedUse && this.use) await this.options.onDone?.(this.path, true);
-      }
-      catch (error) { console.warn(`The speech model was downloaded, but setup could not be updated: ${(error as Error).message}`); }
+      return true;
     } catch (error) {
       bytes = await this.size();
       if (this.stopping || signal.aborted) this.state = { state: 'paused', bytes };
@@ -137,6 +156,7 @@ export class ModelDownload {
         const reason = error instanceof Error ? error.message : 'The connection was lost.';
         this.state = { state: 'interrupted', bytes, reason: reason.replace(/[\r\n]+/g, ' ').slice(0, 180) };
       }
+      return false;
     }
   }
   private stop(kind: 'pause' | 'cancel'): Promise<void> {
@@ -151,7 +171,7 @@ export class ModelDownload {
       }
       if (['done', 'damaged', 'noSpace', 'idle'].includes(this.state.state)) return;
       if (kind === 'cancel' && (this.state.state === 'paused' || this.state.state === 'interrupted')) {
-        await rm(this.part, { force: true }); this.state = { state: 'idle' }; this.use = false;
+        await rm(this.part, { force: true }); this.state = { state: 'idle' };
       } else if (job && kind === 'pause') this.state = { state: 'paused', bytes: await this.size() };
     });
     const control = operation.finally(() => { if (this.control === control) this.control = undefined; });
