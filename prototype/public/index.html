@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>HearAlong</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/setup.css">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icons/icon-192.png">
 <meta name="theme-color" content="#FFFFFF">
@@ -209,6 +210,7 @@
         <button type="button" data-section="glossary">Glossary</button>
         <button type="button" data-section="export">Export</button>
         <span class="nav-label">This Mac</span><span class="nav-divider" aria-hidden="true"></span>
+        <button type="button" data-section="setup">Setup</button>
         <button type="button" data-section="microphone">Microphone</button>
         <button type="button" data-section="mini">Mini window</button>
         <button type="button" data-section="speech">Speech</button>
@@ -255,6 +257,11 @@
       <h3>Export</h3>
       <div class="row"><a id="export" class="button" href="#">Transcript (.md)</a><a id="export-raw" class="button" href="#">Raw transcript</a><a id="export-notes-panel" class="button" href="#" aria-disabled="true" title="Write notes first">Notes (.md)</a></div>
     </section>
+    <section class="settings-section setup-ui" data-section="setup" hidden>
+      <h3>Setup</h3>
+      <div id="setup-settings"></div>
+      <p id="setup-settings-error" class="su-error" role="alert" hidden></p>
+    </section>
     <section class="settings-section" data-section="microphone" hidden aria-labelledby="mic-heading">
       <h3 id="mic-heading">Microphone</h3>
       <label class="stack small" for="mic-device">Input
@@ -277,7 +284,6 @@
     </section>
     <section class="settings-section" data-section="speech" hidden>
       <h3>Speech on this Mac</h3>
-      <p id="model" class="small">Checking local model…</p>
       <label class="audio-setting" for="audio-retention"><span>Keep audio for</span>
         <select id="audio-retention"><option value="day">1 day</option><option value="week">1 week</option><option value="month">1 month</option><option value="always">Always</option></select>
       </label>
@@ -288,6 +294,7 @@
     <section class="settings-section" data-section="cloud" hidden>
       <h3>Cloud models</h3>
       <p id="cloud" class="small"></p>
+      <div id="setup-web" class="setup-ui small" hidden></div>
       <label class="stack small" for="board-model">Live board model
         <select id="board-model">
           <option value="quick">Quick model (default)</option>

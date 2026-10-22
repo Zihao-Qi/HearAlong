@@ -63,11 +63,10 @@ Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI featu
 git clone https://github.com/Zihao-Qi/HearAlong.git
 cd HearAlong/prototype
 npm ci --ignore-scripts
-export MEETING_MODEL_PATH=/path/to/parakeet.gguf   # the local speech model
-MEETING_CLOUD=0 npm start                          # local only; open http://127.0.0.1:4318
+npm start
 ```
 
-Full setup, settings and privacy details are in [prototype/README.md](prototype/README.md). A one-click model download and a guided first-run setup are planned next.
+The setup page finds or downloads a speech model, checks FFmpeg, and offers optional AI and microphone setup. Full settings and privacy details are in [prototype/README.md](prototype/README.md).
 
 ## Privacy
 
@@ -75,7 +74,6 @@ Audio and speech recognition never leave the Mac. AI features are optional: when
 
 ## Roadmap
 
-- Guided setup: a one-click download of the speech model, and connecting an AI account.
 - A faster live view: pushed updates instead of polling.
 - Lecture mode: slides beside the transcript, explanations grounded in the lecture.
 

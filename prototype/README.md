@@ -8,20 +8,21 @@ Requirements:
 - Node.js ≥ 22.19.0 and npm.
 - Google Chrome. Browser checks default to its standard macOS application location; set `MEETING_TEST_CHROME` to a compatible Chromium executable elsewhere.
 - FFmpeg and ffprobe on PATH for audio import and recognition.
-- A compatible Parakeet GGUF model for `transcribe-cpp`. Set `MEETING_MODEL_PATH=/path/to/model.gguf`, or select an installed model in Pi Voice. This project does not download weights.
-- Optional AI: the authenticated `pi` CLI on PATH with access to the configured provider/models. Calculations also need `uv`; the app prepares a pinned Python environment. Web lookup needs Pi's `pi-web-access` package enabled.
-
-From this directory:
+- A compatible speech model for `transcribe-cpp`; the setup page finds installed models or downloads Parakeet.
+- Optional AI: Pi signed in to your model subscription. A pinned Pi is included; a Pi on PATH is preferred. Calculations also need `uv`; the app prepares a pinned Python environment. Web lookup needs Pi's `pi-web-access` package enabled.
 
 ```sh
+git clone https://github.com/Zihao-Qi/HearAlong.git
+cd HearAlong/prototype
 npm ci --ignore-scripts
-export MEETING_MODEL_PATH=/path/to/model.gguf
-MEETING_CLOUD=0 npm start
+npm start
 ```
+
+The setup page finds or downloads a speech model, checks FFmpeg, and offers optional AI and microphone setup.
 
 Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and origin). Starting the server does not start recording. Use the microphone button only with everyone's consent; Ctrl+C stops the server. The root-level `Start Prototype.command` starts the same server and opens Chrome; set `MEETING_CLOUD=0` in its environment if you want local-only operation.
 
-Without a speech model, the page can still open and existing transcripts remain readable, but real transcription is unavailable. The unit tests and `app-check` below need neither speech weights nor a cloud account.
+If a speech model or FFmpeg goes missing later, existing meetings remain readable; use Settings › This Mac › Setup to restore speech. Advanced options: `MEETING_MODEL_PATH=/path/to/model.gguf` overrides the saved speech choice; Pi Voice settings are also discovered read-only. The unit tests and `app-check` below need neither speech weights nor a cloud account.
 
 ## Use
 
@@ -35,7 +36,7 @@ Without a speech model, the page can still open and existing transcripts remain 
 
 **Cloud AI is enabled by default unless `MEETING_CLOUD=0`.** With it enabled, Pi may send transcript excerpts, selected text, project-memory snapshots, attached-material excerpts, and tool inputs/results to your configured provider. Web tools contact external services. Calculations execute generated Python in a scratch environment; review sensitive inputs before enabling them.
 
-Audio recognition stays local. Do not treat that as a guarantee that all app data stays local when optional AI is on. The default model identifiers are `openai-codex/gpt-6.1-sol` (heavy/correction) and `openai-codex/gpt-6-luna` (quick); availability depends on your Pi configuration. Override with `MEETING_HEAVY_MODEL`, `MEETING_CORRECTION_MODEL`, and `MEETING_QUICK_MODEL`.
+Audio recognition stays local. Do not treat that as a guarantee that all app data stays local when optional AI is on. When Pi lists them, setup defaults to `openai-codex/gpt-6.1-sol` (main/correction) and `openai-codex/gpt-6-luna` (quick). Choose any listed pair in Settings › Setup. Advanced overrides: `MEETING_HEAVY_MODEL`, `MEETING_CORRECTION_MODEL`, and `MEETING_QUICK_MODEL`.
 
 Runtime data lives in `data/`, or `MEETING_DATA_DIR`: SQLite records, audio, imports, notes, project memory, tool scratch files, and AI session logs. These can contain sensitive content and are Git-ignored. Audio retention defaults to one day after completed processing; settings also offer a week, a month, or always. Transcripts and notes are retained. Do not publish runtime folders or logs.
 

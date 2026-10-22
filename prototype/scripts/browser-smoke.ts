@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import type { ActionRunner } from '../src/actions.ts';
 import { LiveDrafts } from '../src/drafts.ts';
 
@@ -43,8 +44,9 @@ const board = async (message: string) => {
     ms: 1, attempts: 1, stopReason: 'stop', aborted: false, usages: [] };
 };
 const noModels = process.env.MEETING_TEST_NO_MODELS === '1';
+const setup = await dashboardSetup(directory, noModels);
 const serve = () => startServer({ directory, port: 0, quick: null, heavy: null, notes, actions, board,
-  ...(noModels ? { recognizer: { async transcribe() { return { text: 'The workshop has thirty-six lanterns ready for the evening parade. Please check the repair cafe intake limit for Saturday.',
+  ...(noModels ? { setup, recognizer: { async transcribe() { return { text: 'The workshop has thirty-six lanterns ready for the evening parade. Please check the repair cafe intake limit for Saturday.',
     backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {} },
   drafts: new LiveDrafts({ modelPath: 'unused', workerScript: new URL('../test/fixtures/fake-stream-worker.ts', import.meta.url) }) } : {}) });
 let app = await serve();

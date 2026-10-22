@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 // The narrowest board pane (public/app.js BOARD_MIN): tabs and the order toggle share one line down to it.
 const BOARD_MIN = 380;
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 
 const [source, out = 'artifacts/layouts'] = process.argv.slice(2);
 if (!source) throw new Error('Usage: layout-check.ts <storeDir> [outDir]');
@@ -17,6 +18,7 @@ await cp(resolve(source), directory, { recursive: true });
 await rm(join(directory, 'server.lock'), { force: true });
 const outDir = resolve(out);
 await mkdir(outDir, { recursive: true });
+await dashboardSetup(directory);
 const app = await startServer({ directory, port: 0, quick: null, heavy: null, notes: null, recognizer: null, drafts: null });
 const browser = await chromium.launch({ executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
 const failures: string[] = [];

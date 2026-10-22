@@ -243,7 +243,9 @@ test('fix 13: discovering new decoder paths reports restart needed for existing 
 
 test('fix 14: app-owned decoder overrides are cleared before rediscovery', async t => {
   restoreEnv(t); let fallback = true;
-  const { setup } = await setupFixture(t, { ffmpeg: async env => checkFfmpeg({ env, fallbackFolders: ['/fictional/brew'], run: async command => {
+  // The runner is fictional; isolate the new filesystem PATH lookup from the owner's installed binaries too.
+  const emptyPath = await directory(t);
+  const { setup } = await setupFixture(t, { ffmpeg: async env => checkFfmpeg({ env: { ...env, PATH: emptyPath }, fallbackFolders: ['/fictional/brew'], run: async command => {
     if (fallback ? !command.startsWith('/fictional/brew/') : command.includes('/')) throw Object.assign(new Error('Example missing binary'), { code: 'ENOENT' });
   } }) });
   assert.equal(process.env.MEETING_FFMPEG, '/fictional/brew/ffmpeg');

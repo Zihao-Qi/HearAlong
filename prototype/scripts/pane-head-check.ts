@@ -6,12 +6,14 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 const out = resolve(process.argv[2] ?? 'artifacts/pane-head-check');
 await mkdir(out, { recursive: true });
 const directory = await mkdtemp(join(tmpdir(), 'pane-head-check-'));
 const quote = 'Check the supplier quote before shipping the display labels on Friday.';
 const notes = async () => ({ model: 'scripted', text: JSON.stringify({ title: 'Label shipment',
   summary: [{ text: quote, cites: ['S1'], quote }], decisions: [], actions: [], openQuestions: [], otherMatters: [], otherTalk: [] }) });
+await dashboardSetup(directory);
 const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, notes, actions: null, board: null });
 let browser: Browser | undefined;
 const screenshots: string[] = [], errors: string[] = [], measurements: Record<string, unknown> = {};
