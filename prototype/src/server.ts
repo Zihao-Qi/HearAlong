@@ -7,6 +7,7 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { numberInRange } from './config.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
+import { AiSetup } from './setup/ai.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
 import { MeetingStore, type Mode } from './store.ts';
@@ -25,7 +26,7 @@ import { Projects, meetingScope, projectScope } from './projects.ts';
 import { Memory, transaction, type Change } from './memory.ts';
 import { Proposals } from './proposals.ts';
 import { MemoryFiles, recentCommits, render as renderMemory } from './memory-files.ts';
-import { PiRpc } from './pi-rpc.ts';
+import { ModelRpc } from './pi-rpc.ts';
 import { runPiTask, extractJson } from './pi-task.ts';
 import { CORRECTION_SYSTEM_PROMPT, Corrector, cleanGlossary, glossaryPrompt } from './correction.ts';
 import { NotesJobs, notesMarkdown, piNotesRunner, type NotesRunner } from './notes.ts';
@@ -35,9 +36,8 @@ import { ensurePython, pythonStatus, stopPython } from './python-env.ts';
 import { Cooldowns } from './quota.ts';
 import { Explorations, recoverExplorations } from './explorations.ts';
 import { AutoPlanning, PlanTodos, PlanVersions } from './plans/index.ts';
-import { PlanJobs } from './plans/jobs.ts';
+import { PlanJobs, planModel } from './plans/jobs.ts';
 import { endLeftoverProcesses } from '../pi-extensions/process-groups.ts';
-import { homedir } from 'node:os';
 
 type Quick = { ask(prompt: string): Promise<{ text: string }>; close?(): Promise<void> };
 type Heavy = (prompt: string, options: { cwd: string; sessionDir: string; signal: AbortSignal }) => Promise<{ text: string; provider?: string; model?: string }>;
@@ -89,6 +89,7 @@ export async function startServer(options: {
   directory?: string; port?: number; recognizer?: Recognizer | null;
   /** Bounded discovery and injectable OS/network boundaries for setup tests. */
   setup?: SetupOptions;
+  ai?: Omit<AiSetup['options'], 'cwd' | 'cloud'>;
   /** Live draft transcription; by default on with the local model, off when a test recognizer is injected. */
   drafts?: LiveDrafts | null;
   /** Cloud model access through Pi; null disables it (MEETING_CLOUD=0 does the same). */
@@ -112,6 +113,7 @@ export async function startServer(options: {
   let live: LiveCapture | undefined;
   let drafts: LiveDrafts | null = null;
   let setup: SpeechSetup | undefined;
+  let aiSetup: AiSetup | undefined;
   try {
     // Before anything else (M7b §4): what a crash left running ends. The Pi group of a run recorded as running and the groups
     // recorded in its process folder first (the run is marked interrupted), then any other task's recorded groups (actions).
@@ -124,15 +126,18 @@ export async function startServer(options: {
     // A committed deletion must finish before recognition, notes/actions, boards or plans load their job records.
     finishPendingMeetingDeletions(store, message => console.log(message));
     const settingsPath = join(directory, 'settings.json');
-    type BoardModel = 'luna' | 'sol';
-    const isBoardModel = (v: unknown): v is BoardModel => v === 'luna' || v === 'sol';
-    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean } = {
-      boardModel: 'luna', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false,
+    type BoardModel = 'quick' | 'main';
+    const isBoardModel = (v: unknown): v is BoardModel => v === 'quick' || v === 'main';
+    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null } = {
+      boardModel: 'quick', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false, mainModel: null, quickModel: null,
     };
     try {
       const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
       if (isAudioRetention(saved.audioRetention)) settings.audioRetention = saved.audioRetention;
       if (isBoardModel(saved.boardModel)) settings.boardModel = saved.boardModel;
+      else if (saved.boardModel === 'luna') settings.boardModel = 'quick';
+      else if (saved.boardModel === 'sol') settings.boardModel = 'main';
+      for (const key of ['mainModel', 'quickModel'] as const) if (typeof saved[key] === 'string' && saved[key].trim()) settings[key] = saved[key];
       if (typeof saved.miniOpensItself === 'boolean') settings.miniOpensItself = saved.miniOpensItself;
       if (typeof saved.speechModelPath === 'string' && saved.speechModelPath.trim()) settings.speechModelPath = saved.speechModelPath;
       if (typeof saved.setupSeen === 'boolean') settings.setupSeen = saved.setupSeen;
@@ -204,20 +209,20 @@ export async function startServer(options: {
     const glossaryFor = async (meetingId: string) => projects.glossaryFor(meetingId);
     const clock = options.clock ?? Date.now;
     const cloud = process.env.MEETING_CLOUD !== '0';
-    const quickModel = process.env.MEETING_QUICK_MODEL ?? 'openai-codex/gpt-6-luna';
-    const heavyModel = process.env.MEETING_HEAVY_MODEL ?? 'openai-codex/gpt-6.1-sol';
-    // The correction model can be selected independently of the heavy model.
-    const correctionModel = process.env.MEETING_CORRECTION_MODEL ?? heavyModel;
     const scratchRoot = join(directory, 'scratch');
     await mkdir(scratchRoot, { recursive: true, mode: 0o700 });
+    const ai = new AiSetup(() => settings, saveSettings, { ...options.ai, cwd: scratchRoot, cloud });
+    aiSetup = ai;
+    ai.start(); // Discovery, package detection and auth must never delay startup.
+    const setupStatus = () => { const status = speechSetup.status(); return { ...status, rows: [...status.rows, ai.status()] }; };
     const quick: Quick | null = options.quick !== undefined ? options.quick
-      : cloud ? new PiRpc({ model: correctionModel, cwd: scratchRoot, systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
+      : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
     const heavy: Heavy | null = options.heavy !== undefined ? options.heavy
-      : cloud ? (prompt, o) => runPiTask(prompt, { model: heavyModel, cwd: o.cwd, sessionDir: o.sessionDir, signal: o.signal, tools: 'read,grep,find,ls', timeoutMs: 600_000 }) : null;
+      : cloud ? async (prompt, o) => runPiTask(prompt, { model: await ai.require('main'), cwd: o.cwd, sessionDir: o.sessionDir, signal: o.signal, tools: 'read,grep,find,ls', timeoutMs: 600_000 }) : null;
     // Notes: one no-tools call on sol; the transcript goes in as a file. Any tool use or non-normal stop is a failure.
     // An explicit `heavy: null` (tests, smoke runs) also disables notes unless a notes runner is injected.
     const notesRunner: NotesRunner | null = options.notes !== undefined ? options.notes
-      : cloud && options.heavy !== null ? piNotesRunner(heavyModel) : null;
+      : cloud && options.heavy !== null ? piNotesRunner(() => ai.require('main')) : null;
     // Always present: saved notes stay readable and exportable with cloud models off; only writing needs a runner.
     // After notes are written for a meeting in a project, memory proposes changes from them (M6 §4). Set below.
     let afterNotes = (_meetingId: string) => {};
@@ -227,7 +232,7 @@ export async function startServer(options: {
     // Memory proposals use sol with no tools (as notes); "Tell the project…" uses the quick model for a sentence.
     const proposals = new Proposals(store, memory, { runner: notesRunner, briefRunner: notesRunner, directory, clock,
       notesFor: id => notesJobs.file(id).load(), projectOf: id => projects.projectOf(id), onChange: id => files.touch(id), cooldowns });
-    const tellRunner: NotesRunner | null = cloud && options.heavy !== null ? piNotesRunner(quickModel) : options.notes ?? null;
+    const tellRunner: NotesRunner | null = cloud && options.heavy !== null ? piNotesRunner(() => ai.require('quick')) : options.notes ?? null;
     // The memory files in each project's repo (§3.3, §6); the quick model reads agents' notes and guesses sources.
     const files: MemoryFiles = new MemoryFiles(store, memory, proposals, { directory, clock, project: id => projects.get(id), projects: () => projects.list(),
       meetingTitle: id => { try { return store!.meeting(id).title; } catch { return 'a meeting'; } }, interpreter: tellRunner, guesser: tellRunner, log: message => console.warn(message) });
@@ -264,10 +269,7 @@ export async function startServer(options: {
     };
     // Select-text actions (M3): sol with per-action tools; an explicit `heavy: null` disables them unless a runner is injected.
     const actionRunner: ActionRunner | null = options.actions !== undefined ? options.actions
-      : cloud && options.heavy !== null ? piActionRunner(heavyModel) : null;
-    // Web tools come from the pi-web-access package; Pi offers no tool listing without a model call, so the check is that the
-    // package is enabled in Pi's settings and registers web_search. A Look up that runs no search is also flagged on its card.
-    const web = await webToolsInstalled();
+      : cloud && options.heavy !== null ? piActionRunner(() => ai.require('main')) : null;
     // Compute's pinned Python environment is prepared once in the background; Compute jobs wait for it (not counted
     // against their limits) and fail clearly if it cannot be prepared.
     const realRunner = Boolean(actionRunner) && options.actions === undefined;
@@ -309,34 +311,19 @@ export async function startServer(options: {
       },
     };
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
-      rootsFor, webAvailable: () => web, pdfText, cooldowns,
+      rootsFor, webAvailable: () => ai.web, pdfText, cooldowns,
       computeReady: realRunner ? () => ensurePython() : undefined });
     await actionJobs.load();
-    // The live board's quick model (M4): luna on its own warm RPC process, a fresh session per scan. An explicit
-    // `heavy: null` (tests, smoke runs) disables it unless a scripted gate is injected.
-    // The user chooses the board's model: luna by default, or sol. Saved in settings.json;
-    // the warm RPC process is replaced on change.
-    const BOARD_MODELS = { luna: quickModel, sol: heavyModel } as const;
-    // The startup settings are shared with setup; all writes use the same atomic queue.
+    // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
-    let gate: PiRpc | null = null;
-    const retiring = new Set<Promise<void>>();
-    const gateFor = () => {
-      if (!boardGates) return null;
-      const model = BOARD_MODELS[settings.boardModel];
-      if (gate?.options.model !== model) {
-        const old = gate;
-        gate = new PiRpc({ model, cwd: scratchRoot, timeoutMs: 90_000, log: message => console.log(`[pi board] ${message}`) });
-        // The old process finishes what it already accepted (another meeting's scan), then retires.
-        if (old) { const retire: Promise<void> = old.drain().then(() => old.close()).finally(() => { retiring.delete(retire); }); retiring.add(retire); }
-      }
-      return gate;
-    };
+    const gate = boardGates ? new ModelRpc(() => ai.require(settings.boardModel), {
+      cwd: scratchRoot, timeoutMs: 90_000, log: message => console.log(`[pi board] ${message}`),
+    }) : null;
     // The scan cadence follows the meeting's own time: the replay position during a replay (60 s of meeting, not of wall time).
     const boardStore = store;
     const meetingClock = (id: string) => { const replay = boardStore.replay(id); return replay ? boardStore.replayPositionMs(replay, clock()) + replay.baseMs : clock(); };
     const boards = new Boards({ store, directory, clock, meetingClock, actions: actionJobs, glossaryFor,
-      ask: options.board !== undefined ? options.board : boardGates ? message => gateFor()!.ask(message) : null,
+      ask: options.board !== undefined ? options.board : gate ? message => gate.ask(message) : null,
       hasMaterials: id => rootsFor(id).length > 0, memoryFor: id => memoryLines(id) });
     // Only meetings being recorded or replayed (or explicitly asked for) are scanned: an old meeting never spends quota on its own.
     const boardActive = new Set<string>();
@@ -364,7 +351,7 @@ export async function startServer(options: {
     const recordingAnywhere = () => capture.recording() || [...recording.keys()].some(id => isRecording(id));
     // The plans' Pi: the real one with cloud models on (an explicit `heavy: null` turns it off, as for notes), or a test's.
     const planPi = options.plans !== undefined ? options.plans : cloud && options.heavy !== null ? runPiTask : null;
-    const explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => web, onEnd: job => planJobs.ended(job),
+    const explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => ai.web, onEnd: job => planJobs.ended(job),
       recording: () => recordingAnywhere() ? 'the recording to end' : replaying() ? 'the replay to end' : null,
       meetingWork: () => {
         const meetings = appStoreRef.meetings();
@@ -375,7 +362,8 @@ export async function startServer(options: {
     // The plans of a meeting (M7b §2b): published versions in data/plans, their to-dos and automatic attempts in the database.
     const planJobs = new PlanJobs({ store, directory, clock, explorations, cooldowns, memory, projects, notes: notesJobs, pdfText,
       versions: new PlanVersions(directory, clock), todos: new PlanTodos(store, memory, clock), auto: new AutoPlanning(store, clock),
-      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython() : undefined, web: () => web,
+      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython() : undefined, web: () => ai.web,
+      models: kind => planModel(kind, () => ai.require('main')),
       materialEvidence: (path, blocks) => files.evidenceAllowed(path, blocks),
       final: id => !stillComing(id), stale: id => notesJobs.status(id).then(s => s.stale), changed: id => changed(id) });
     /** What is running for a meeting, in words; a move waits for all of it (§8.2). Synchronous, so the caller can move right after. */
@@ -626,7 +614,9 @@ export async function startServer(options: {
           audioRetention.observe();
           res.writeHead(204).end(); return;
         }
-        if (req.method === 'GET' && url.pathname === '/api/setup') { send(res, 200, speechSetup.status()); return; }
+        if (req.method === 'GET' && url.pathname === '/api/setup') { send(res, 200, setupStatus()); return; }
+        if (req.method === 'GET' && url.pathname === '/api/setup/ai/models') { send(res, 200, await ai.models(url.searchParams.get('refresh') === '1')); return; }
+        if (req.method === 'PUT' && url.pathname === '/api/setup/ai') { await ai.use(await json(req)); send(res, 200, setupStatus()); return; }
         if (req.method === 'GET' && url.pathname === '/api/setup/speech-models') { send(res, 200, speechSetup.models()); return; }
         if (req.method === 'POST' && url.pathname.startsWith('/api/setup/')) {
           const action = url.pathname.slice('/api/setup/'.length);
@@ -641,7 +631,7 @@ export async function startServer(options: {
           }
           if (action === 'speech/pause') { await speechSetup.download.pause(); send(res, 200, speechSetup.status()); return; }
           if (action === 'speech/cancel') { send(res, 200, await speechSetup.cancelDownload()); return; }
-          if (action === 'recheck') { await speechSetup.recheck(); send(res, 200, speechSetup.status()); return; }
+          if (action === 'recheck') { await Promise.all([speechSetup.recheck(), ai.recheck()]); send(res, 200, setupStatus()); return; }
           if (action === 'seen') { send(res, 200, await speechSetup.seen()); return; }
           throw new HttpError(404, 'Not found.');
         }
@@ -652,7 +642,7 @@ export async function startServer(options: {
             // One setting or both; the others stay as they are.
             const change: Partial<typeof settings> = {};
             if (value.boardModel !== undefined) {
-              if (!isBoardModel(value.boardModel)) throw new HttpError(400, 'boardModel is luna or sol.');
+              if (!isBoardModel(value.boardModel)) throw new HttpError(400, 'boardModel is quick or main.');
               change.boardModel = value.boardModel;
             }
             if (value.miniOpensItself !== undefined) {
@@ -663,6 +653,7 @@ export async function startServer(options: {
               if (!isAudioRetention(value.audioRetention)) throw new HttpError(400, 'audioRetention is day, week, month or always.');
               change.audioRetention = value.audioRetention;
             }
+            if ('mainModel' in value || 'quickModel' in value) throw new HttpError(400, 'Choose AI models through setup, not settings.');
             if ('speechModelPath' in value) throw new HttpError(400, 'Choose a speech model through setup, not settings.');
             if (value.setupSeen !== undefined) {
               if (typeof value.setupSeen !== 'boolean') throw new HttpError(400, 'setupSeen is true or false.');
@@ -674,7 +665,7 @@ export async function startServer(options: {
             await saveSettings(change);
             void audioRetention.run();
           } else if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
-          send(res, 200, { ...settings, boardModels: Object.entries(BOARD_MODELS).map(([id, model]) => ({ id, model })), boardEnabled: boardGates || options.board != null }); return;
+          send(res, 200, { ...settings, boardModels: (['quick', 'main'] as const).map(id => ({ id, model: ai.current(id) })), boardEnabled: boardGates || options.board != null }); return;
         }
         if (url.pathname === '/api/audio-retention') {
           if (req.method === 'POST') {
@@ -714,7 +705,7 @@ export async function startServer(options: {
         if (req.method === 'GET' && url.pathname === '/api/status') {
           send(res, 200, { config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), shuttingDown, audioRetentionNotice: audioRetention.notice,
             queued: appStore.queuedCount(), sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
-            capabilities: { microphone: true, systemAudio: false, cloudModels: Boolean(quick), correctionModel: quick ? correctionModel : null, notesModel: notesRunner ? heavyModel : null, actionModel: actionRunner ? heavyModel : null, quickModel: quick ? quickModel : null, heavyModel: heavy ? heavyModel : null, participationScheduler: false, pdfExtraction: false },
+            capabilities: { microphone: true, systemAudio: false, cloudModels: Boolean(quick), mainModel: ai.current('main'), correctionModel: quick ? ai.currentCorrection() : null, notesModel: notesRunner ? ai.current('main') : null, actionModel: actionRunner ? ai.current('main') : null, quickModel: quick ? ai.current('quick') : null, heavyModel: heavy ? ai.current('main') : null, participationScheduler: false, pdfExtraction: false },
           }); return;
         }
         if (req.method === 'POST' && url.pathname === '/api/meetings') {
@@ -964,7 +955,7 @@ export async function startServer(options: {
           res.end(notesMarkdown(status.notes, status.stale, status.coverage)); return;
         }
         if (req.method === 'GET' && action === 'actions') {
-          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled, pausedUntil: actionJobs.paused(), web, python: pythonStatus(),
+          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled, pausedUntil: actionJobs.paused(), web: ai.web, python: pythonStatus(),
             materials: rootsFor(meetingId).length > 0 }); return;
         }
         if (req.method === 'POST' && action === 'actions') {
@@ -1226,6 +1217,7 @@ export async function startServer(options: {
     let closed: Promise<void> | undefined;
     async function closeOnce() {
       closing = true;
+      const aiClosing = ai.close(); // Abort probes before waiting for HTTP handlers that may be awaiting those probes.
       speechSetup.stopSwitches();
       await speechSetup.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
       audioRetention.close();
@@ -1255,7 +1247,7 @@ export async function startServer(options: {
       clearInterval(boardLoop);
       await boards.close();
       await gate?.close();
-      await Promise.allSettled([...retiring]);
+      await aiClosing;
       stopPython(); // first, so jobs waiting on preparation are released
       await pdfText.close(); // waits for an extraction being stopped
       await actionJobs.close();
@@ -1272,6 +1264,7 @@ export async function startServer(options: {
     return app;
   } catch (error) {
     setup?.stopSwitches();
+    await aiSetup?.close();
     await setup?.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
     retention?.close();
     clearInterval(retentionLoop);
@@ -1296,20 +1289,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
   // A quit lets a recording page stop first (up to 20 s); a second signal closes at once.
   for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { void app.shutdown().then(() => process.exit(0)); });
-}
-
-/** True when Pi's settings enable the pi-web-access package and it registers web_search. */
-async function webToolsInstalled(): Promise<boolean> {
-  try {
-    const agent = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), '.pi', 'agent');
-    const settings = JSON.parse(await readFile(join(agent, 'settings.json'), 'utf8')) as { packages?: unknown[] };
-    // A package is declared as "npm:pi-web-access" or as { source: "npm:pi-web-access", extensions: [...] } (filtered).
-    const declared = settings.packages?.find(p => String(typeof p === 'string' ? p : (p as { source?: unknown })?.source ?? '').includes('pi-web-access'));
-    if (!declared) return false;
-    const filter = typeof declared === 'object' ? (declared as { extensions?: unknown }).extensions : undefined;
-    if (Array.isArray(filter) && filter.length === 0) return false; // its extensions are filtered out
-    const source = await readFile(join(agent, 'npm', 'node_modules', 'pi-web-access', 'index.ts'), 'utf8').catch(() => '');
-    const core = await readFile(join(agent, 'npm', 'node_modules', 'pi-web-access', 'web-tool-core.ts'), 'utf8').catch(() => '');
-    return /web_search/.test(source + core);
-  } catch { return false; }
 }

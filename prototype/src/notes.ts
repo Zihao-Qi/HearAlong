@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { checkCompleted, extractJson, runPiTask, type PiTaskResult } from './pi-task.ts';
+import { checkCompleted, extractJson, runPiTask, taskModel, type TaskModel, type PiTaskResult } from './pi-task.ts';
 import type { MeetingStore } from './store.ts';
 import type { Glossary } from './correction.ts';
 import { ROLE_LABEL, compareSegments, speakerPrefix } from './speakers.ts';
@@ -402,9 +402,9 @@ export type NotesRunner = (input: { instructions: string; inputPath: string; cwd
  * The production runner: one no-tools Pi call. Only a complete run counts: clean exit, Pi settled and not aborted, a normal
  * stop and a non-empty answer. Any tool event is a failure.
  */
-export function piNotesRunner(model: string): NotesRunner {
+export function piNotesRunner(model: TaskModel): NotesRunner {
   return async ({ instructions, inputPath, cwd, sessionDir, signal }) =>
-    checkNotesRun(await runPiTask(instructions, { model, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal }));
+    checkNotesRun(await runPiTask(instructions, { model: await taskModel(model), cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal }));
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {
   if (result.toolEvents) throw new Error(`The notes task tried to use tools (${result.tools.map(t => t.name).join(', ') || 'unnamed'}).`);

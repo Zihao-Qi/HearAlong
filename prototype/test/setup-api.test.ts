@@ -17,6 +17,7 @@ async function fixture(t: any, setup: SetupOptions = {}, prepare?: (directory: s
   const app = await startServer(options);
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
   const request = (path: string, options: RequestInit = {}) => fetch(`${app.url}${path}`, { ...options, headers: { Cookie: cookie, Origin: app.url, 'Content-Type': 'application/json', ...options.headers } });
+  await request('/api/setup/ai/models'); // Settle the fake Pi's initial catalog read.
   const get = async (path = '/api/setup') => { const response = await request(path); assert.equal(response.status, 200); return response.json(); };
   const post = (path: string, value: unknown = {}) => request(path, { method: 'POST', body: JSON.stringify(value) });
   t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
@@ -27,7 +28,7 @@ async function waitFor(test: () => Promise<boolean>) { const deadline = Date.now
 test('setup API returns keyed rows and stable status config fields', async t => {
   const f = await fixture(t, {}, async directory => { await model(join(directory, 'models/example.gguf')); });
   const setup = await f.get(); assert.equal(setup.seen, false); assert.equal(setup.restartNeeded, false);
-  assert.deepEqual(setup.rows.map((r: any) => [r.id, r.needed, r.state]), [['speech', true, 'ready'], ['ffmpeg', true, 'found']]);
+  assert.deepEqual(setup.rows.map((r: any) => [r.id, r.needed, r.state]), [['speech', true, 'ready'], ['ffmpeg', true, 'found'], ['ai', false, 'signed-out']]);
   const { config } = await f.get('/api/status');
   assert.equal(config.available, true); assert.equal(config.name, 'Example speech'); assert.equal(config.streaming, true);
   for (const key of ['available', 'path', 'source', 'bytes', 'error']) assert.ok(key in config);
@@ -54,7 +55,7 @@ test('setup API reports a missing saved choice while startup falls back', async 
 
 test('setup API none and FFmpeg missing rows', async t => {
   const f = await fixture(t, { ffmpeg: async () => ({ found: false, error: 'Missing tools.' }) });
-  assert.deepEqual((await f.get()).rows.map((r: any) => r.state), ['none', 'missing']);
+  assert.deepEqual((await f.get()).rows.map((r: any) => r.state), ['none', 'missing', 'signed-out']);
 });
 
 test('setup POST endpoints all require the dashboard origin and session', async t => {
@@ -211,7 +212,7 @@ test('setup recheck rescans models and reruns FFmpeg discovery', async t => {
   const f = await fixture(t, { ffmpeg: async () => ({ found }) });
   await model(join(f.directory, 'models/new.gguf')); found = true;
   const response = await f.post('/api/setup/recheck'); assert.equal(response.status, 200);
-  assert.deepEqual((await response.json()).rows.map((r: any) => r.state), ['ready', 'found']);
+  assert.deepEqual((await response.json()).rows.map((r: any) => r.state), ['ready', 'found', 'signed-out']);
 });
 
 for (const existing of [false, true]) for (const use of [false, true]) test(`setup finished download saves choice if no running model or use=true (existing=${existing}, use=${use})`, async t => {
