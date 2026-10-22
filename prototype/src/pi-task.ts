@@ -1,6 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
+import { piCommand } from './pi-command.ts';
 import { endRecorded, signalGroup, spawnGated, type ProcessRecord } from '../pi-extensions/process-groups.ts';
+
+export type TaskModel = string | (() => string | Promise<string>);
+export const taskModel = (model: TaskModel): string | Promise<string> => typeof model === 'function' ? model() : model;
 
 export type PiTaskResult = {
   text: string; provider?: string; model?: string; usage?: unknown; ms: number;
@@ -48,7 +52,7 @@ export type PiTaskOptions = {
   /** `false` turns the user's skills off for this task (`--no-skills`); omitted: Pi's default, skills on. */
   skills?: boolean;
   /** Environment for this task's Pi on top of the server's (e.g. RUN_PYTHON_MAX_RUNS for its run_python). */
-  env?: Record<string, string>;
+  env?: NodeJS.ProcessEnv;
   /**
    * Process ownership (M7b §4): Pi runs as the leader of a process group of its own, recorded in this folder before it
    * starts, and run_python records each script's group here too (MEETING_PROCESS_DIR). The time limit, Cancel and Pi's exit
@@ -104,6 +108,9 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
   const limitMs = options.timeoutMs ?? 300_000;
   // Cancelled before it started: never spawn a (cloud-calling) process.
   if (options.signal?.aborted) return Promise.reject(stopped('Pi task was cancelled.', 'cancelled'));
+  let command: string;
+  try { command = piCommand(options.command, { ...process.env, ...options.env }); }
+  catch (error) { return Promise.reject(error); }
   const processDir = options.processDir;
   const env = options.env || processDir ? { ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) } : undefined;
   return new Promise((resolve, reject) => {
@@ -198,7 +205,7 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
     };
     options.signal?.addEventListener('abort', abort, { once: true });
     if (!processDir) {
-      child = spawn(options.command ?? 'pi', args, { cwd: options.cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(command, args, { cwd: options.cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
       attach(child);
       if (options.signal?.aborted) abort();
       return;
@@ -206,7 +213,7 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
     // Pi is recorded (and the caller has saved its worker) before it starts; until then it waits in a shell of its own group.
     void (async () => {
       let gated;
-      try { gated = await spawnGated(options.command ?? 'pi', args, { dir: processDir, kind: 'pi', cwd: options.cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
+      try { gated = await spawnGated(command, args, { dir: processDir, kind: 'pi', cwd: options.cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
       catch (error) {
         clearTimeout(timer);
         options.signal?.removeEventListener('abort', abort);

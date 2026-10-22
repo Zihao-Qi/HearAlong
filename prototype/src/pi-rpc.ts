@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { piCommand } from './pi-command.ts';
 
 export type PiAnswer = {
   text: string; provider?: string; model?: string; usage?: unknown; ms: number; attempts: number;
@@ -21,6 +22,35 @@ export type PiRpcOptions = {
   /** Replaces Pi's default coding-assistant system prompt (about 400 tokens on every request) for tasks that do not need it. */
   systemPrompt?: string;
 };
+
+/** Select at admission, not after earlier requests finish. Retired processes drain accepted work before closing. */
+export class ModelRpc {
+  private current?: PiRpc;
+  private retiring = new Set<Promise<void>>();
+  private closed = false;
+  private model: () => Promise<string>;
+  private options: Omit<PiRpcOptions, 'model'>;
+  constructor(model: () => Promise<string>, options: Omit<PiRpcOptions, 'model'>) { this.model = model; this.options = options; }
+  async ask(message: string): Promise<PiAnswer> {
+    const model = await this.model();
+    if (this.closed) throw new Error('Pi quick lane has stopped.');
+    if (this.current?.options.model !== model) {
+      const old = this.current;
+      this.current = new PiRpc({ ...this.options, model });
+      if (old) {
+        const retiring = old.drain().then(() => old.close()).finally(() => this.retiring.delete(retiring));
+        this.retiring.add(retiring);
+      }
+    }
+    return this.current.ask(message);
+  }
+  async close() {
+    this.closed = true;
+    await this.current?.drain();
+    await this.current?.close();
+    await Promise.allSettled([...this.retiring]);
+  }
+}
 
 type Pending = { resolve: (response: any) => void; reject: (error: Error) => void };
 const DIALOGS = new Set(['select', 'confirm', 'input', 'editor']);
@@ -133,7 +163,7 @@ export class PiRpc {
     if (this.closing) throw new Error('Pi quick lane has stopped.');
     const args = this.options.args ?? ['--mode', 'rpc', '--no-session', '--no-tools', '--no-context-files', '--model', this.options.model, '--thinking', 'low',
       ...(this.options.systemPrompt ? ['--system-prompt', this.options.systemPrompt] : [])];
-    const child = spawn(this.options.command ?? 'pi', args, { cwd: this.options.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(piCommand(this.options.command), args, { cwd: this.options.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     this.buffer = '';
     child.stdout!.setEncoding('utf8');

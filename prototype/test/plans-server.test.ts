@@ -11,6 +11,7 @@ import { EXPLORATION_LIMITS } from '../src/explorations.ts';
 import type { PiTaskOptions, PiTaskResult } from '../src/pi-task.ts';
 import { EXPLORE_PROMPT, PLAN_PROMPT, PlanVersions, loadRunPlans, type PlansPage } from '../src/plans/index.ts';
 import type { Recognition } from '../src/recognizer.ts';
+import { fakePi } from './helpers/setup-pi.ts';
 
 // The Plans routes (M7b §2b, §4) against the real server, with a fake Pi: it streams one read of the materials and answers with
 // plans as the model writes them. No model is called. Invented content only.
@@ -51,7 +52,7 @@ function answer(over: { long?: boolean; step?: string; further?: boolean } = {})
 }
 
 type Script = { answer?: unknown; text?: string; gate?: Promise<unknown> };
-async function setup(meetings = 1) {
+async function setup(meetings = 1, aiEnv: NodeJS.ProcessEnv = { ...process.env, MEETING_HEAVY_MODEL: 'example/main' }) {
   const directory = await mkdtemp(join(tmpdir(), 'meeting-plans-server-'));
   const materials = await realpath(await mkdtemp(join(tmpdir(), 'meeting-plans-mat-')));
   await writeFile(join(materials, 'plan.md'), MATERIAL.join('\n'));
@@ -84,6 +85,7 @@ async function setup(meetings = 1) {
     return { text: script.text ?? JSON.stringify(script.answer ?? answer()), ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 2, toolResults: [] };
   };
   const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, actions: null, board: null,
+    ai: { env: aiEnv },
     notes: async () => { const gate = notesGate; notesGate = null; if (gate) await gate; return { text: NOTES, model: 'scripted' }; }, plans });
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
   const call = async (path: string, method = 'GET', body?: unknown) => {
@@ -112,12 +114,35 @@ async function setup(meetings = 1) {
     scripts.push(script);
     const started = await call(`/api/meetings/${id}/plans/runs`, 'POST', { opId: op() });
     assert.equal(started.status, 202, JSON.stringify(started.body));
-    await until(async () => ((await page(id)).current?.version ?? 0) > before, 'the plans');
+    await until(async () => ((await page(id)).current?.version ?? 0) > before && app.explorations.get(started.body.run.id)?.state === 'done', 'the plans and their durable job completion');
     return started.body.run as PlansPage['run'] & {};
   };
   return { directory, materials, ids, app, call, until, page, plan, writeNotes, intoProject, scripts, calls, holdNotes: (gate: Promise<unknown>) => { notesGate = gate; },
     async close() { await app.close(); await rm(directory, { recursive: true, force: true }); await rm(materials, { recursive: true, force: true }); } };
 }
+test('changing saved AI choices applies to the next plan, not a running plan', async t => {
+  const fake = await fakePi(t);
+  const s = await setup(1, fake.env);
+  let release!: () => void;
+  try {
+    const [id] = s.ids;
+    await s.intoProject(id); await s.writeNotes(id);
+    const choose = async (main: string) => {
+      const result = await s.call('/api/setup/ai', 'PUT', { main, quick: 'example/example-quick:0' });
+      assert.equal(result.status, 200); assert.equal(result.body.rows.find((r: any) => r.id === 'ai').state, 'checking');
+    };
+    await choose('example/example-main');
+    s.scripts.push({ gate: new Promise<void>(resolve => { release = resolve; }) });
+    const started = await s.call(`/api/meetings/${id}/plans/runs`, 'POST', { opId: op() }); assert.equal(started.status, 202);
+    await s.until(() => s.calls.length === 1, 'first model call'); assert.equal(s.calls[0].options.model, 'example/example-main');
+    await choose('example/example-quick:0'); release();
+    await s.until(() => s.app.explorations.get(started.body.run.id)?.state === 'done', 'first run to finish');
+    await s.plan(id);
+    assert.equal(s.calls[0].options.model, 'example/example-main');
+    assert.equal(s.calls[1].options.model, 'example/example-quick:0'); assert.equal(s.calls[1].options.thinking, 'low');
+  } finally { release?.(); await s.close(); }
+});
+
 const op = () => `op-${randomUUID()}`;
 const todo = (id: string, version: number, step: string) => `/api/meetings/${id}/plans/${version}/steps/${step}/todo`;
 const undo = (id: string, version: number, step: string) => `/api/meetings/${id}/plans/${version}/steps/${step}/undo`;
@@ -143,7 +168,8 @@ test('Plan runs the plan pass as an exploration: pinned input, the frozen prompt
     await s.until(() => s.app.explorations.get(first.body.run.id)?.state === 'done', 'the published run to finish');
     const call = s.calls[0];
     assert.equal(call.prompt, PLAN_PROMPT);
-    assert.equal(call.options.model, 'openai-codex/gpt-6.1-sol:low');
+    assert.equal(call.options.model, 'example/main');
+    assert.equal(call.options.thinking, 'low');
     assert.deepEqual([call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['3', '60000']);
     assert.match(call.options.tools!, /^read,grep,find,ls,.*run_python$/);
     assert.match(call.input, /# Notes \(N-numbers\)\n## Open questions\nN1 Where should the robot dock during carpet cleaning\?/);
@@ -310,7 +336,7 @@ test('Explore further: only on a click, its own instruction after the frozen pro
     await s.until(async () => (await s.page(id)).current?.version === 2, 'version 2');
     const call = s.calls[1];
     assert.ok(call.prompt.startsWith(`${PLAN_PROMPT}\n\n`) && call.prompt === EXPLORE_PROMPT, 'the frozen prompt, then the instruction for one plan');
-    assert.deepEqual([call.options.model, call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['openai-codex/gpt-6.1-sol:high', '8', '120000']);
+    assert.deepEqual([call.options.model, call.options.thinking, call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['example/main', 'high', '8', '120000']);
     assert.match(call.input, /# The plan to explore further\nQuestion: Where should the robot dock during carpet cleaning\?/);
     assert.match(call.input, /Further \(this run's deliverable\): Measure the clearance beside the returns chute/);
     assert.equal(s.app.explorations.get(started.body.run.id)!.limitMs, 20 * 60_000);

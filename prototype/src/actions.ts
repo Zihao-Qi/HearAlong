@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { checkCompleted, runPiTask, toolResultOf, type PiTaskResult, type ToolResult } from './pi-task.ts';
+import { checkCompleted, runPiTask, taskModel, toolResultOf, type TaskModel, type PiTaskResult, type ToolResult } from './pi-task.ts';
 import { clock, contains, mergeGaps, takeSnapshot, tokens, type Gap } from './notes.ts';
 import type { MeetingStore } from './store.ts';
 import type { Glossary } from './correction.ts';
@@ -523,9 +523,9 @@ export type ActionRunner = (input: {
   /** Where the task's processes are recorded (Pi's group, Compute's scripts): a server start ends what a crash left there. */
   processDir: string;
 }) => Promise<PiTaskResult>;
-export function piActionRunner(model: string, timeoutMs = 600_000): ActionRunner {
-  return ({ action, tools, instructions, inputPath, cwd, sessionDir, signal, onEvent, processDir }) => runPiTask(instructions, {
-    model, cwd, sessionDir, tools, extensions: ACTIONS[action].extensions, files: [inputPath], timeoutMs, signal, onEvent, processDir,
+export function piActionRunner(model: TaskModel, timeoutMs = 600_000): ActionRunner {
+  return async ({ action, tools, instructions, inputPath, cwd, sessionDir, signal, onEvent, processDir }) => runPiTask(instructions, {
+    model: await taskModel(model), cwd, sessionDir, tools, extensions: ACTIONS[action].extensions, files: [inputPath], timeoutMs, signal, onEvent, processDir,
   });
 }
 /** The tools an action gets: without working web tools, Explain and Other fall back to the materials alone. */

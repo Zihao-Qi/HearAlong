@@ -35,7 +35,9 @@ export const PYTHON_LIMITS: Record<ExplorationKind, { ms: number; runs: number }
  * The model and thinking level: the plan pass as the held-out tests ran it (scripts/plan-probe.ts; PLAN_MODEL overrides it);
  * Explore further, which has 20 minutes, at high thinking (EXPLORE_MODEL overrides it).
  */
-export const planModels = () => ({ plan: process.env.PLAN_MODEL || 'openai-codex/gpt-6.1-sol:low', explore: process.env.EXPLORE_MODEL || 'openai-codex/gpt-6.1-sol:high' });
+export async function planModel(kind: ExplorationKind, main: () => Promise<string>): Promise<string> {
+  return (kind === 'plan' ? process.env.PLAN_MODEL : process.env.EXPLORE_MODEL) || main();
+}
 
 const fail = (status: number, code: string, message: string, extra: object = {}) => Object.assign(new Error(message), { status, code, ...extra });
 const OP = /^[\w:-]{8,100}$/;
@@ -61,7 +63,7 @@ export class PlanJobs {
     stale: (meetingId: string) => Promise<boolean>;
     /** A to-do was added or undone in this project: its memory files are written again. */
     changed: (projectId: string) => void;
-    models?: { plan: string; explore: string };
+    models?: { plan: string; explore: string } | ((kind: ExplorationKind) => Promise<string>);
   };
   private cache = new Map<string, PublishedVersion>();
   private manifests = new Map<string, { at: number; key: string; digest: Promise<string> }>();
@@ -342,11 +344,15 @@ export class PlanJobs {
         await ctx.wait(writeFile(inputPath, `${built.text}${further}`, { mode: 0o600 }));
         const evidence = new EvidenceRecorder(ctx.folder, { cwd: ctx.cwd, locate: materialLocator({ roots: built.refs.roots, view, pdfs }), eligible: o.materialEvidence });
         const tools = await this.tools(kind, ctx);
-        const models = o.models ?? planModels();
+        const model = typeof o.models === 'function' ? await o.models(kind) : o.models?.[kind];
+        if (!model) throw new Error('Choose AI models in setup.');
+        // Keep legacy environment strings (including their optional :thinking suffix) exactly as supplied.
+        // Defaults use a separate flag: colons can be part of a real model id.
+        const thinking = (kind === 'plan' ? process.env.PLAN_MODEL : process.env.EXPLORE_MODEL) ? undefined : kind === 'plan' ? 'low' : 'high';
         let answer: unknown;
         try {
           const result = checkCompleted(await ctx.pi(kind === 'plan' ? PLAN_PROMPT : EXPLORE_PROMPT, {
-            model: models[kind], files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env,
+            model, thinking, files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env,
             onEvent: event => { evidence.piEvent(event); this.count(ctx.job.id, event); },
           }), kind === 'plan' ? 'The plan pass' : 'Explore further');
           try { answer = extractJson(result.text); } catch { throw new Error('The model\'s answer could not be read as plans.'); }
