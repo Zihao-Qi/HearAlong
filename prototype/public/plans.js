@@ -5,6 +5,81 @@
 // All server calls go through one API object (realPlansApi); with ?plans-fixture=<state> in the page URL, plans-fixtures.js
 // answers them instead (a dev switch, off unless asked for).
 import { stamp } from '/live-shared.js';
+// A progress card owns only its own DOM; neither polling nor its clock touches saved notes/plans.
+const progressNode = (tag, cls, text) => { const n = document.createElement(tag); n.className = cls; if (text !== undefined) n.textContent = text; return n; };
+const elapsedClock = startedAt => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+function tickProgress(card) {
+  const startedAt = Number(card.dataset.startedAt), estimate = Number(card.dataset.estimate);
+  const rounded = Math.max(60_000, Math.round(estimate / 30_000) * 30_000);
+  const minutes = rounded / 60_000;
+  const about = estimate > 0 && Number.isFinite(estimate) && Date.now() - startedAt <= rounded
+    ? ` of about ${Math.floor(minutes)}${minutes % 1 ? '½' : ''} min` : '';
+  card.querySelector('.progress-heading').textContent = `${card.dataset.kind === 'notes' ? 'Writing notes' : 'Making plans'} · ${elapsedClock(startedAt)}${about}`;
+}
+const progressPlural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`.replaceAll(' ', '\u00a0');
+const progressCountKnown = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+let progressClockStarted = false;
+const progressIcons = {
+  done: '<path d="M3 8.5l3.2 3L13 4.5" fill="none" stroke="#23693F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  now: '<circle cx="8" cy="8" r="6.5" fill="none" stroke="#C9D0DB" stroke-width="2"/><path class="progress-spin" d="M8 1.5a6.5 6.5 0 0 1 6.5 6.5" fill="none" stroke="#2F56C6" stroke-width="2" stroke-linecap="round"/>',
+  todo: '<circle cx="8" cy="8" r="6" fill="none" stroke="#C9D0DB" stroke-width="1.5"/>'
+};
+export function progressCard(kind, p, cancel, existing = null) {
+  if (!progressClockStarted) { progressClockStarted = true; setInterval(() => document.querySelectorAll('.job-progress').forEach(tickProgress), 1000); }
+  const node = progressNode;
+  const card = existing ?? node('div', 'job-progress');
+  if (!existing) {
+    const header = node('div', 'progress-header');
+    const button = node('button', 'text-action progress-cancel', 'Cancel'); button.type = 'button';
+    button.setAttribute('aria-label', kind === 'notes' ? 'Cancel writing notes' : kind === 'explore' ? 'Cancel Explore further' : 'Cancel planning');
+    header.append(node('span', 'progress-heading'), button);
+    card.append(header, node('div', 'progress-steps'));
+  }
+  card.querySelector('.progress-cancel').onclick = cancel;
+  card.dataset.kind = kind; card.dataset.startedAt = p.startedAt; card.dataset.estimate = p.estimate ?? '';
+  tickProgress(card);
+  const signature = JSON.stringify(p);
+  if (card.dataset.progress === signature) return card;
+  card.dataset.progress = signature;
+  const phases = kind === 'notes' ? ['read', 'write', 'check'] : ['notes', 'materials', 'write', 'check'];
+  const current = phases.indexOf(p.phase);
+  const step = (phase, label, detail, latest, reserveDetail = false) => {
+    const state = phases.indexOf(phase) < current ? 'done' : phase === p.phase ? 'now' : 'todo';
+    const row = node('div', 'progress-step'); row.dataset.phase = phase; row.dataset.state = state;
+    const icon = node('span', 'progress-icon');
+    icon.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">${progressIcons[state]}</svg>`;
+    const body = node('div', 'progress-step-body');
+    const title = node('div', 'progress-label', label); title.setAttribute('aria-label', `${label}: ${state === 'now' ? 'in progress' : state === 'todo' ? 'not started' : 'done'}`);
+    body.append(title);
+    if (detail || reserveDetail) body.append(node('div', `progress-detail${reserveDetail ? ' progress-detail-reserved' : ''}`, detail));
+    if (kind === 'notes' && phase === 'write' && p.phase !== 'read') {
+      const parts = node('div', 'progress-parts');
+      for (const [key, label] of [['project', 'Project points'], ['tasks', 'Decisions and to-dos'], ['other', 'Other matters']]) {
+        const part = p.parts?.[key] ?? {};
+        const line = node('div', 'progress-part'); line.dataset.part = key;
+        line.append(node('span', 'progress-part-label', label), node('span', 'progress-count', progressCountKnown(part.count) ? String(part.count) : ''), node('span', 'progress-part-done', part.done ? '✓' : ''));
+        parts.append(line);
+      }
+      body.append(parts);
+    }
+    if (latest) body.append(node('div', 'progress-latest', `Latest: ${kind === 'notes' ? `“${latest}”` : latest}`));
+    row.append(icon, body); return row;
+  };
+  const writtenDetail = progressCountKnown(p.written) ? p.expected != null && p.written < p.expected ? `${p.written} of about ${p.expected}` : `${p.written} so far` : '';
+  const steps = kind === 'notes' ? [
+    step('read', 'Read the transcript', progressCountKnown(p.minutes) && progressCountKnown(p.lines) ? `${p.minutes} min · ${p.lines} lines` : '', null, true),
+    step('write', 'Write the notes', p.phase === 'write' ? 'Three parts at once' : '', p.phase === 'write' ? p.latest : null),
+    step('check', 'Check every quote', p.phase === 'check' ? 'Against the lines each item cites' : '')
+  ] : [
+    step('notes', 'Read the notes', progressCountKnown(p.questions) ? progressPlural(p.questions, 'open question') : '', null, true),
+    step('materials', 'Read your materials', [...(p.materials ?? []).slice(0, 3), ...((p.materials?.length ?? 0) > 3 ? [`+${p.materials.length - 3}\u00a0more`] : []), ...(p.pages ? [progressPlural(p.pages, 'web page')] : []), ...(p.checks ? [progressPlural(p.checks, 'check run', 'checks run')] : [])].join(' · ')),
+    step('write', 'Write the plans', current >= 2 ? writtenDetail : '', p.phase === 'write' ? p.latest : null, current >= 2),
+    step('check', 'Check every source', p.phase === 'check' ? 'Quotes, files and the check' : '')
+  ];
+  card.querySelector('.progress-steps').replaceChildren(...steps);
+  return card;
+}
+// ---------- End job progress ----------
 
 export const TRUST = 'Sources checked, not the ideas themselves.';
 const SHOWN = 3;
@@ -246,6 +321,8 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
       const signature = JSON.stringify(data);
       // Compare with what is actually shown, including authoritative mutation replies applied locally.
       const changed = v.owner !== owner || signature !== JSON.stringify(v.data);
+      const withoutProgress = value => JSON.stringify(value ? { ...value, run: value.run ? { ...value.run, progress: null } : null } : null);
+      const progressOnly = changed && v.owner === owner && withoutProgress(data) === withoutProgress(v.data);
       // Equal snapshots retain the objects captured by the existing controls' handlers.
       if (changed) v.data = data;
       v.owner = owner; v.signature = signature; v.lastError = null;
@@ -256,7 +333,8 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
       // Eligibility refusals are now explained by the authoritative slots/banner, not repeated as another warning.
       const clearRefusal = Boolean(v.notice?.refusal);
       if (clearRefusal || (changed && v.notice && Date.now() - v.notice.at > 2000)) v.notice = null;
-      if (changed || clearRefusal) render();
+      if (progressOnly && !clearRefusal && content.querySelector('.job-progress')) updateProgress(data.run, content.querySelector('.job-progress'));
+      else if (changed || clearRefusal) render();
     } catch (error) {
       // A server without the plans routes (404) shows no section; any other error is logged once, not on every poll.
       if (sequence === v.sequence && error.status === 404) { v.data = null; v.signature = null; render(); }
@@ -428,8 +506,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
     }
     const parts = [head(doc, run, active, kept)];
     parts.push(...notices(doc, run, active, kept));
-    if (active && !doc) parts.push(el('div', 'Reading the notes and the materials. The plans appear here when they are checked.', 'plans-panel plans-reading'));
-    else if (!doc) parts.push(idlePanel(run));
+    if (!active && !doc) parts.push(idlePanel(run));
     if (doc) parts.push(...body(doc, kept));
     content.replaceChildren(...parts.filter(Boolean));
     // The focus stays where it was; when that control is gone (a step that can no longer be added), on its plan's chevron.
@@ -531,10 +608,17 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
     return box;
   }
 
+  function updateProgress(run, existing = null) {
+    const card = progressCard(run.kind === 'explore' ? 'explore' : 'plans', { phase: 'notes', startedAt: run.startedAt ?? run.createdAt, ...run.progress }, () => cancelRun(v.epoch, run).catch(error => hooks.log(error.message, true)), existing);
+    card.classList.add('plans-status');
+    return card;
+  }
+
   function notices(doc, run, active, kept) {
     const out = [];
     const current = v.data.current;
-    if (active) {
+    if (active && run.state === 'running') out.push(updateProgress(run));
+    else if (active) {
       const line = el('div', undefined, `plans-status${run.state === 'waiting' ? ' waiting' : ''}`);
       line.setAttribute('role', 'status');
       let text;

@@ -218,10 +218,10 @@ try {
   await mkdir(resolve('artifacts'), { recursive: true });
   await pickMeeting(replayMeeting.title);
   await page.waitForFunction(() => document.getElementById('transcript')?.textContent?.includes('parade'));
-  // Notes tab: write notes, then a citation chip scrolls to and highlights the cited line.
+  // Notes tab: write notes, then the summary sentence scrolls to and highlights its cited line.
   await page.locator('#tab-notes').click();
   await page.locator('#write-notes').click();
-  await page.locator('#notes-body .note').first().waitFor({ timeout: 30_000 });
+  await page.locator('#notes-body .notes-summary > .note-sentence').first().waitFor({ timeout: 30_000 });
   assert.equal(await page.locator('#write-notes').isVisible(), false);
   assert.equal(await page.locator('#notes-warnings').isVisible(), false);
   await page.locator('#notes-options').click();
@@ -241,9 +241,9 @@ try {
   await page.locator('#copy-notes').click();
   await page.waitForFunction(() => typeof (window as any).__copiedNotes === 'string');
   assert.equal(await page.evaluate(() => (window as any).__copiedNotes), exported, 'Copy uses the same Markdown, including warnings');
-  await page.locator('#notes-body .note-time').first().click();
-  assert.equal(await page.locator('#notes-body .note-details').first().isVisible(), true);
-  await page.locator('#notes-body .cite').first().click();
+  assert.equal(await page.locator('#notes-body .note-time, #notes-body .note-details').count(), 0, 'text replaces times and details');
+  assert.equal(await page.locator('#notes-body .notes-summary').count(), 1);
+  await page.locator('#notes-body .notes-summary .note-sentence').first().click();
   await page.locator('#transcript span.flash').first().waitFor();
 
   // M3: select text → Answer → a card streams its status, then shows the answer with a checked citation.
@@ -270,7 +270,7 @@ try {
   // Look into it on an Other matters card: runs as Look up, feedback on the Notes tab, badge on Board.
   await page.locator('#tab-notes').click();
   await page.locator('#notes-body > .notes-fold > summary', { hasText: 'Not about the project' }).click();
-  await page.locator('#notes-body .notes-fold .note-time').first().click();
+  assert.equal(await page.locator('#notes-body .notes-fold .notes-list > li').count(), 1);
   await page.locator('.look-into button', { hasText: 'Look into it' }).click();
   await page.locator('.look-form button', { hasText: 'Look up on the web' }).click();
   await page.locator('.look-into button', { hasText: 'View on Board' }).waitFor();

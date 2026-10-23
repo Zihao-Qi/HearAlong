@@ -988,6 +988,10 @@ export async function startServer(options: {
           catch (error) { throw new HttpError((error as { status?: number }).status ?? 500, (error as Error).message); }
           send(res, 202, { started: true }); return;
         }
+        if (req.method === 'POST' && action === 'notes/cancel') {
+          const value = await json(req);
+          send(res, 200, await notesJobs.cancel(meetingId, value?.jobId)); return;
+        }
         if (req.method === 'GET' && action === 'notes') {
           send(res, 200, { ...(await notesJobs.status(meetingId)), enabled: notesJobs.enabled }); return;
         }

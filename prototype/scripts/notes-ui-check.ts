@@ -32,12 +32,12 @@ const notes = async () => ({ model: 'scripted', text: JSON.stringify({ title: 'D
   decisions: [item('Report recall per site in the paper, not one average.', 7)],
   actions: [item('Label 200 forest clips in November.', 1, { owner: 'Marta' }), item('Rewrite the recall sentence in Section 4.', 8, { owner: 'You' }),
     item('Confirm the uncertain assignment.', 8, { quote: 'This quote is deliberately not in the transcript.' })],
-  openQuestions: [item('Why do forest clips score lower?', 9), item('Does the forest sample rate hurt the detector?', 10), item('Can the current labels tell alarm calls from song?', 4)],
+  openQuestions: [item('Why do forest clips score lower?', 9), item('Does the forest sample rate hurt the detector?', 10), item('Can the current labels tell alarm calls from song?', 4, { cites: ['S3', 'S4'] })],
   otherMatters: [item('Book the field van for next week.', 5, { kind: 'todo', label: 'admin' })],
   otherTalk: [{ from: 'S11', to: 'S11', label: 'Conference travel', smallTalk: false }, { from: 'S12', to: 'S12', label: 'Weather', smallTalk: true }],
 }) });
 await dashboardSetup(directory);
-const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, notes, actions: null, board: null });
+const app = await startServer({ directory, port: 0, publicRoot: process.env.PROGRESS_PUBLIC_ROOT, recognizer: null, drafts: null, quick: null, heavy: null, notes, actions: null, board: null });
 let browser: Browser | undefined;
 const errors: string[] = [], shots: string[] = [];
 const measurements: Record<string, unknown> = {};
@@ -63,9 +63,10 @@ try {
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
   const post = async (path: string, body: unknown) => {
     const response = await fetch(`${app.url}${path}`, { method: 'POST', headers: { Cookie: cookie, Origin: app.url, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    assert.ok(response.ok, await response.text());
+    const text = await response.text(); assert.ok(response.ok, text); return JSON.parse(text);
   };
-  await post('/api/projects', { name: 'Bird-call detector', repoPath: null, fromMeetingId: meeting.id });
+  const project = await post('/api/projects', { name: 'Bird-call detector', repoPath: null, fromMeetingId: meeting.id });
+  await post(`/api/meetings/${empty.id}/project`, { projectId: project.id });
   await post(`/api/meetings/${meeting.id}/notes`, {});
   let ready = false;
   for (let i = 0; i < 100; i++) {
@@ -166,28 +167,60 @@ try {
           assert.equal(await page.locator(`#${opener}`).evaluate(n => n === document.activeElement), true);
         }
         if (phase === 'fresh') {
-          await page.locator('#notes-body .note-time').first().click();
-          assert.equal(await page.locator('#notes-body .note-details').first().isVisible(), true);
-          await shot(page, `notes-details-${config.name}`);
-          const go = page.locator('#notes-body .note-details .cite').first();
-          assert.match(await go.innerText(), /Go to 14:02 in the transcript/);
-          await go.click(); await page.locator('#transcript .cited').waitFor();
+          assert.equal(await page.locator('#notes-body .notes-summary').count(), 1, 'one summary paragraph');
+          assert.equal(await page.locator('.notes-summary > a[href^="#transcript-"]').count(), 3, 'each sentence is its own transcript link');
+          assert.equal(await page.locator('.notes-group > .notes-list').count(), 3, 'Decided, To do and Open questions are lists');
+          assert.equal(await page.locator('#notes-body .note-time, #notes-body .note-details, #notes-body .cite').count(), 0, 'no times, detail toggles or citation markers');
+          const sentence = page.locator('.notes-summary > a').first();
+          await sentence.hover();
+          assert.equal(await sentence.evaluate(n => getComputedStyle(n).backgroundColor), 'rgb(238, 242, 253)');
+          assert.equal(await sentence.evaluate(n => getComputedStyle(n).color), 'rgb(31, 62, 153)');
+          await shot(page, `notes-hover-${config.name}`);
+          await sentence.focus(); await page.keyboard.press('Tab');
+          assert.equal(await page.locator('.notes-summary > a').nth(1).evaluate(n => n === document.activeElement), true);
+          await shot(page, `notes-focus-${config.name}`);
+          await page.keyboard.press('Enter'); await page.locator('#transcript .cited').waitFor();
+          if (config.width === 390) { assert.equal(await page.locator('#ctab-live').getAttribute('aria-selected'), 'true'); await page.locator('#ctab-notes').click(); }
+          const multi = page.locator('.notes-group').last().locator('.note-sentence').last();
+          await multi.click();
+          assert.equal(await page.locator('#transcript .cited').count(), 2, 'every cited line highlights');
+          await page.waitForTimeout(2600);
+          assert.ok(await page.locator('#transcript .cited').evaluateAll(nodes => nodes.every(n => getComputedStyle(n).backgroundColor === 'rgb(255, 243, 196)')), 'the cited lines stay highlighted after the flash');
+          assert.ok(await page.locator('#transcript .cited').first().evaluate(n => {
+            const r = n.getBoundingClientRect(), pane = document.getElementById('transcript')!.getBoundingClientRect();
+            return r.bottom > pane.top && r.top < pane.bottom;
+          }), 'the first cited line scrolls into view');
+          await shot(page, `notes-transcript-${config.name}`);
           if (config.width === 390) await page.locator('#ctab-notes').click();
-          assert.equal(await go.evaluate(n => n.classList.contains('visited')), true);
+          assert.equal(await multi.evaluate(n => n.classList.contains('lit')), true);
+          await shot(page, `notes-cited-${config.name}`);
           await page.locator('#notes-body > .notes-fold > summary').first().click();
           await page.locator('#notes-body .notes-fold .notes-fold > summary').click();
           await page.locator('#notes-body > .notes-fold > summary').last().click();
-          await page.locator('#notes-body .notes-fold .note-time').first().click();
           await page.locator('#notes-body .notes-fold .look-into').waitFor();
           await page.locator('#notes-body > .notes-fold').last().scrollIntoViewIfNeeded();
           await shot(page, `notes-folds-${config.name}`);
           const look = page.locator('#notes-body .look-into > button').first();
           assert.equal(await look.evaluate(n => getComputedStyle(n).borderTopWidth), '0px', 'Look into it is a secondary text action');
+          await look.locator('..').locator('..').hover();
+          assert.equal(await look.locator('..').evaluate(n => getComputedStyle(n).opacity), '1', 'Look into it shows on item hover');
+          await shot(page, `notes-look-hover-${config.name}`);
+          await page.mouse.move(0, 0); await look.focus();
+          assert.equal(await look.locator('..').evaluate(n => getComputedStyle(n).opacity), '1', 'Look into it shows on keyboard focus');
+          await shot(page, `notes-look-focus-${config.name}`);
           await look.click();
           await page.locator('#notes-body .look-into textarea').waitFor();
-          assert.ok(await page.locator('#notes-body').evaluate(body => [...body.querySelectorAll('button, summary, textarea')]
-            .filter(n => (n as HTMLElement).offsetParent).every(n => n.getBoundingClientRect().height >= 44)), 'every visible Notes control is at least 44 px');
+          assert.ok(await page.locator('#notes-body').evaluate(body => [...body.querySelectorAll('summary, textarea')]
+            .filter(n => (n as HTMLElement).offsetParent).every(n => n.getBoundingClientRect().height >= 44)), 'folds and request input retain 44 px targets; sentences are inline text');
+          assert.match(await page.locator('#notes-body .note-review').innerText(), /quote not found/);
           await shot(page, `notes-look-into-form-${config.name}`);
+          await page.locator('#meeting-button').click();
+          await page.locator('#meeting-list [role="menuitemradio"]').filter({ hasText: empty.title }).click();
+          await page.locator('#notes-body .board-empty').waitFor();
+          await page.locator('#meeting-button').click();
+          await page.locator('#meeting-list [role="menuitemradio"]').filter({ hasText: meeting.title }).click();
+          await page.locator('#notes-body .notes-summary > a').first().waitFor();
+          assert.equal(await page.locator('#notes-body .notes-summary > a').count(), 3, 'returning to the same notes version restores its body');
         }
         // Plans screenshots at the same widths, independently of Notes.
         if (phase === 'fresh') for (const state of ['no-notes', 'idle', 'running', 'planned', 'menu', 'stale', 'off-cloud', 'more', 'not-planned', 'review']) {
@@ -205,7 +238,11 @@ try {
           } else if (state === 'off-cloud') {
             assert.match(await page.locator('#plans').innerText(), /cloud models, which are off/);
             assert.equal(await page.locator('#plans button').count(), 0);
-          } else if (state === 'running') assert.match(await page.locator('#plans .plans-status').innerText(), /Planning · 3 pages read/);
+          } else if (state === 'running') {
+            assert.match(await page.locator('#plans .job-progress').innerText(), /Making plans · .*Cancel/s);
+            assert.deepEqual(await page.locator('#plans .progress-label').allTextContents(), ['Read the notes', 'Read your materials', 'Write the plans', 'Check every source']);
+            assert.match(await page.locator('#plans .progress-detail').allTextContents().then(a => a.join(' ')), /3\u00a0web\u00a0pages · 1\u00a0check\u00a0run/);
+          }
           else {
             await page.locator('#plans .plan-row').first().waitFor();
             assert.equal(await page.locator('#plans .plans-stale').isVisible(), state === 'stale');
@@ -246,6 +283,7 @@ try {
   }
   assert.deepEqual(errors, []);
   await writeFile(join(out, 'measurements.json'), JSON.stringify(measurements, null, 2));
+  await writeFile(join(out, 'index.md'), shots.map(path => `- [${path.split('/').at(-1)}](${path.split('/').at(-1)})`).join('\n'));
   console.log(`Notes and Plans UI checks passed; ${shots.length} screenshots in ${out}`);
 } finally {
   await browser?.close();

@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { folderOf, type ExplorationContext, type ExplorationJob, type Explorations } from '../explorations.ts';
 import { checkCompleted, extractJson } from '../pi-task.ts';
+import { DurationHistory, ItemScanner, planProgress, updatePlanProgress, type PlanProgress } from '../progress.ts';
 import { RATE_LIMIT, clockTime, type Cooldowns } from '../quota.ts';
 import type { Memory } from '../memory.ts';
 import type { NotesJobs } from '../notes.ts';
@@ -24,7 +25,7 @@ import {
   changedFiles, changedSinceRead, currentPins, loadRunPlans, materialsManifest, pinRun, plansDocument, saveRunPlans,
   type ExplorationKind, type PlanVersions, type PublishedVersion,
 } from './versions.ts';
-import { activeJob, jobData, plansPage, runView, shownJobs, type ListedJob, type PlanJobData, type PlanJobResult, type Progress } from './view.ts';
+import { activeJob, jobData, plansPage, runView, shownJobs, type ListedJob, type PlanJobData, type PlanJobResult } from './view.ts';
 
 const RUN_PYTHON = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'pi-extensions', 'run-python.ts');
 /** The tools of §2: reading (any path, like the actions; the input points at the materials), the web, and run_python. */
@@ -67,7 +68,7 @@ export class PlanJobs {
   };
   private cache = new Map<string, PublishedVersion>();
   private manifests = new Map<string, { at: number; key: string; digest: Promise<string> }>();
-  private progress = new Map<string, Progress>();
+  private progress = new Map<string, PlanProgress>();
   private submitting = new Map<string, Promise<unknown>>();
   private admissions = new Map<string, Promise<unknown>>();
   /** Meetings whose automatic attempt waits for a running plan run to end. */
@@ -306,16 +307,6 @@ export class PlanJobs {
     const limits = PYTHON_LIMITS[kind];
     return { tools, extensions: python ? [RUN_PYTHON] : [], env: { RUN_PYTHON_MS: String(limits.ms), RUN_PYTHON_MAX_RUNS: String(limits.runs) }, warnings };
   }
-  /** Progress from the stream: material files read, web pages read, quick checks run. */
-  private count(id: string, event: any) {
-    if (event?.type !== 'tool_execution_end') return;
-    const p = this.progress.get(id) ?? { files: 0, pages: 0, checks: 0 };
-    if (event.toolName === 'read' || event.toolName === 'grep') p.files++;
-    else if (event.toolName === 'fetch_content' || event.toolName === 'get_search_content') p.pages++;
-    else if (event.toolName === 'run_python') p.checks++;
-    this.progress.set(id, p);
-  }
-
   /** The work of one run: from its pins to its publication. Throws on failure; a stop ends it through its Pi call. */
   private work(meetingId: string, kind: ExplorationKind, data: PlanJobData) {
     return async (ctx: ExplorationContext): Promise<PlanJobResult> => {
@@ -324,6 +315,11 @@ export class PlanJobs {
       try {
         const notes = await o.notes.file(meetingId).load();
         if (!notes) throw new Error('The meeting has no notes to plan from.');
+        const progress = planProgress(ctx.job.startedAt ?? o.clock(), notes.notes.openQuestions.length);
+        this.progress.set(ctx.job.id, progress);
+        const history = new DurationHistory(o.directory);
+        progress.estimate = kind === 'plan' ? await history.estimate('plans').catch(() => null) : null;
+        const scanner = new ItemScanner(['plans'], (_, item) => { progress.written++; if (typeof item.label === 'string') progress.latest = item.label; });
         const project = o.projects.projectOf(meetingId);
         const materials = o.projects.rootsFor(meetingId);
         const roots = planRoots(materials);
@@ -353,8 +349,9 @@ export class PlanJobs {
         try {
           const result = checkCompleted(await ctx.pi(kind === 'plan' ? PLAN_PROMPT : EXPLORE_PROMPT, {
             model, thinking, files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env,
-            onEvent: event => { evidence.piEvent(event); this.count(ctx.job.id, event); },
+            onEvent: event => { evidence.piEvent(event); updatePlanProgress(progress, event, scanner); },
           }), kind === 'plan' ? 'The plan pass' : 'Explore further');
+          progress.phase = 'check';
           try { answer = extractJson(result.text); } catch { throw new Error('The model\'s answer could not be read as plans.'); }
         } catch (error) {
           const until = o.cooldowns.pausedUntil('model');
@@ -377,6 +374,7 @@ export class PlanJobs {
         await saveRunPlans(ctx.folder, doc);
         ctx.signal.throwIfAborted();
         const published = await o.versions.publish(meetingId, doc, ctx.commit);
+        if (kind === 'plan' && ('published' in published || 'conflict' in published)) await history.record('plans', o.clock() - progress.startedAt).catch(error => console.warn('Plans duration:', error));
         if ('published' in published) return { outcome: 'published', version: published.published.version };
         if ('conflict' in published) return { outcome: 'kept', newest: published.conflict.newest };
         return { outcome: 'refused', message: published.refused };

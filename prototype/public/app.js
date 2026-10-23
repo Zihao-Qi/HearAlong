@@ -1,5 +1,5 @@
 import { stamp, TYPE_LABELS, NOTICES, SAVING_BEHIND_FRAMES } from '/live-shared.js';
-import { choosePlansApi, createPlansView } from '/plans.js';
+import { choosePlansApi, createPlansView, progressCard } from '/plans.js';
 import { createTranscriptView } from '/transcript-view.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { SetupUI, setupRequest, copyCommand } from '/setup-ui.js';
@@ -91,6 +91,7 @@ function inlineError(control, message) {
 function segmentNode(segment) {
   const span = el('span');
   span.dataset.id = segment.id;
+  span.id = `transcript-${segment.id}`;
   let at = 0;
   for (const edit of [...segment.edits].sort((a, b) => a.start - b.start)) {
     if (edit.start < at || edit.end > segment.text.length) continue;
@@ -415,8 +416,9 @@ function selectMeeting(id) {
   $('export-raw').href = id ? `/api/meetings/${id}/transcript.md?mode=raw` : '#';
   // Invalidate everything shown for the previous meeting's notes, including in-flight requests and the export link.
   notesView.owner = null; notesView.signature = null; notesView.data = null; notesView.sequence++; notesView.busy = false;
-  $('notes-body').replaceChildren(); $('notes-body').classList.remove('has-notes');
+  $('notes-body').replaceChildren(); $('notes-body').classList.remove('has-notes'); delete $('notes-body').dataset.record;
   $('notes-warnings').replaceChildren(); $('notes-status').textContent = ''; $('notes-status').hidden = true;
+  $('notes-progress').replaceChildren(); $('notes-progress').hidden = true;
   closeNotesMenu();
   $('notes-options').hidden = true; $('notes-stale').hidden = true;
   $('export-notes').href = '#';
@@ -660,13 +662,8 @@ window.addEventListener('resize', () => {
   layoutFrame = requestAnimationFrame(() => { closeSelectionMenu(); applyLayout(); });
 });
 
-/** Scrolls the transcript to a cited line, if this meeting is still shown and the line still exists. */
-function jumpTo(owner, segmentId, version) {
-  if (version !== notesView.data?.notes?.version) return;
-  scrollToSegment(owner, segmentId);
-}
 /** Scrolls the transcript to a line, if this meeting is still shown and the line still exists. */
-function scrollToSegment(owner, segmentId) {
+function scrollToSegment(owner, segmentId, citedIds = [segmentId]) {
   if (owner !== meetingId) return;
   // A hidden transcript cannot scroll; after switching tabs, jump at once (a smooth scroll from the top takes seconds).
   const switched = layoutView.compact && layoutView.tab !== 'live';
@@ -678,51 +675,40 @@ function scrollToSegment(owner, segmentId) {
   $('transcript').querySelectorAll('.cited').forEach(old => old.classList.remove('cited'));
   node.classList.remove('flash');
   void node.offsetWidth;
-  node.classList.add('flash', 'cited');
+  node.classList.add('flash');
+  for (const id of citedIds) $('transcript').querySelector(`span[data-id="${CSS.escape(id)}"]`)?.classList.add('cited');
   updateJump();
 }
+function noteControl(text, cites, record, owner) {
+  const link = el('a', text, 'note-sentence');
+  link.href = `#transcript-${encodeURIComponent(cites[0])}`;
+  link.setAttribute('aria-describedby', 'note-transcript-hint');
+  link.onclick = event => {
+    event.preventDefault();
+    if (owner !== meetingId || record.version !== notesView.data?.notes?.version) return;
+    $('notes-body').querySelectorAll('.note-sentence.lit').forEach(n => n.classList.remove('lit'));
+    link.classList.add('lit');
+    scrollToSegment(owner, cites[0], cites);
+  };
+  return link;
+}
 function noteItem(item, record, owner) {
-  const card = el('div', undefined, 'note');
-  const row = el('div', undefined, 'note-row');
-  const head = el('span', undefined, 'note-text');
-  head.append(el('span', item.text));
-  if (item.owner) head.append(' ', el('span', item.owner, 'owner'));
-  else if (item.ownerProposed) {
-    const tag = el('span', `${item.ownerProposed}?`, 'owner unconfirmed');
-    tag.title = 'The model named this person, but no cited line clearly assigns the task to them.';
-    head.append(' ', tag);
+  const card = el('li', undefined, 'note');
+  const control = noteControl(item.text, item.cites, record, owner);
+  if (item.owner || item.ownerProposed) {
+    const tag = el('span', item.owner || `${item.ownerProposed}?`, item.owner ? 'owner' : 'owner unconfirmed');
+    if (!item.owner) tag.title = 'The model named this person, but no cited line clearly assigns the task to them.';
+    const lastWord = Math.max(0, item.text.search(/\S+\s*$/));
+    control.textContent = item.text.slice(0, lastWord);
+    const tail = el('span', undefined, 'note-owner-tail');
+    tail.append(item.text.slice(lastWord), ' ', tag);
+    control.append(tail);
   }
-  if (item.label) head.append(' ', el('span', `${item.label} · ${item.kind}`, 'note-memory'));
-  const first = record.sources[item.cites[0]];
-  const time = stamp(first?.startMs ?? item.startMs);
-  const toggle = el('button', time, 'note-time');
-  toggle.setAttribute('aria-label', `Quote at ${time}`);
-  toggle.setAttribute('aria-expanded', 'false');
-  const details = el('div', undefined, 'note-details');
-  details.id = `note-details-${record.version}-${Object.values(record.notes).filter(Array.isArray).flat().indexOf(item)}`;
-  toggle.setAttribute('aria-controls', details.id);
-  toggle.dataset.focus = details.id;
-  details.hidden = true;
-  toggle.onclick = () => { details.hidden = !details.hidden; toggle.setAttribute('aria-expanded', String(!details.hidden)); };
-  const quote = el('blockquote', `“${item.quote || '—'}”`, 'note-quote');
-  if (item.quoteIn === 'original') quote.append(el('span', ' as originally heard', 'muted'));
-  details.append(quote);
-  if (item.reviewReason) details.append(el('div', item.reviewReason, 'note-review'));
-  const cites = el('div', undefined, 'cites');
-  for (const id of item.cites) {
-    const source = record.sources[id];
-    const chip = el('button', `Go to ${stamp(source?.startMs ?? item.startMs)} in the transcript`, 'cite');
-    chip.dataset.cite = id;
-    chip.dataset.focus = `${details.id}:${id}`;
-    const heard = item.quoteIn === 'original' && source?.originalText && source.originalText !== source.text;
-    chip.title = source ? (heard ? `Line as heard: ${source.originalText}\nCorrected: ${source.text}` : `Line as used for these notes: ${source.text}`) : 'Cited line';
-    chip.onclick = () => { chip.classList.add('visited'); jumpTo(owner, id, record.version); };
-    cites.append(chip);
+  card.append(control);
+  if (item.section === 'otherMatters' && !item.reviewReason) {
+    const action = lookIntoIt(item, owner); action.classList.add('note-look'); action.querySelector('button').classList.add('text-action'); card.append(' ', action);
   }
-  details.append(cites);
-  if (item.section === 'otherMatters' && !item.reviewReason) details.append(lookIntoIt(item, owner));
-  row.append(head, toggle);
-  card.append(row, details);
+  if (item.reviewReason) card.append(el('div', item.reviewReason, 'note-review'));
   return card;
 }
 /** Adjacent gaps with the same reason read as one stretch: "47:20–48:00 (unrecognised)". Same rule as mergeGaps() in notes.ts. */
@@ -740,7 +726,7 @@ function renderNotes(data, owner) {
   const job = data.job;
   const running = job?.state === 'running';
   $('write-notes').textContent = running ? 'Writing…' : 'Write notes';
-  $('write-notes').hidden = Boolean(record);
+  $('write-notes').hidden = Boolean(record) || running;
   $('write-notes').disabled = running || !data.enabled || !meetingId;
   $('rewrite-notes').setAttribute('aria-disabled', String($('write-notes').disabled));
   $('notes-options').hidden = !record;
@@ -753,8 +739,20 @@ function renderNotes(data, owner) {
   let statusText = '';
   $('write-notes').title = data.enabled ? '' : 'Writing notes needs cloud models, which are off (see Settings).';
   $('rewrite-notes').title = running ? 'Notes are being written.' : $('write-notes').title;
-  if (running) statusText = `Writing notes with the heavy model… started ${new Date(job.startedAt).toLocaleTimeString()} (usually 2–5 minutes)`;
-  else if (job?.state === 'failed') statusText = `Last attempt failed: ${job.error}`;
+  const progressHost = $('notes-progress');
+  progressHost.hidden = !running;
+  progressHost.dataset.jobId = job?.id ?? '';
+  if (running) {
+    const card = progressCard('notes', job.progress ?? { phase: 'read', startedAt: job.startedAt }, async () => {
+      try {
+        const result = await post(`/api/meetings/${owner}/notes/cancel`, { jobId: job.id });
+        if (result.outcome === 'already-saved') log('These notes were already saved.');
+      } catch (error) { log(error.message, true); }
+      finally { notesView.signature = null; await refreshNotes(); }
+    }, progressHost.firstElementChild);
+    if (!card.parentNode) progressHost.append(card);
+  } else progressHost.replaceChildren();
+  if (job?.state === 'failed') statusText = `Last attempt failed: ${job.error}`;
   else if (job?.state === 'interrupted') statusText = `Last attempt was interrupted: ${job.error ?? ''} Try again.`;
 
   $('notes-status').textContent = statusText;
@@ -776,22 +774,26 @@ function renderNotes(data, owner) {
   if (record) warnings.push(['draft', 'AI notes: check a quote before relying on it.']);
   $('notes-warnings').replaceChildren(...warnings.map(([, text]) => el('p', text, 'notes-warning')));
   if (!record) {
-    $('notes-body').replaceChildren(el('p', 'After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.', 'board-empty'));
+    $('notes-body').replaceChildren(...(running ? [] : [el('p', 'After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.', 'board-empty')]));
     return;
   }
   // Transcript/coverage polling must not close what someone is reading or erase checked citations.
   const host = $('notes-body'), key = `${owner}:${record.version}`;
   const retained = host.dataset.record === key;
-  const opened = new Set(retained ? [...host.querySelectorAll('.note-time')].filter(n => n.getAttribute('aria-expanded') === 'true').map(n => n.getAttribute('aria-controls')) : []);
-  const folds = new Set(retained ? [...host.querySelectorAll('.notes-fold')].filter(n => n.open).map(n => n.querySelector('summary').textContent) : []);
-  const visited = new Set(retained ? [...host.querySelectorAll('.cite')].filter(n => n.classList.contains('visited')).map(n => n.dataset.cite) : []);
-  const focus = retained && host.contains(document.activeElement) ? document.activeElement.dataset.focus : null;
+  if (retained) return; // Progress and warnings never rebuild saved content, focus or folds.
   const body = [];
   for (const section of ['summary', 'decisions', 'actions', 'openQuestions']) {
     const items = record.notes[section];
     if (!items.length) continue;
     const group = el('section', undefined, 'notes-group');
-    group.append(el('h4', SECTION_TITLES[section], 'notes-section'), ...items.map(item => noteItem(item, record, owner)));
+    group.append(el('h4', SECTION_TITLES[section], 'notes-section'));
+    if (section === 'summary') {
+      const paragraph = el('p', undefined, 'notes-summary');
+      for (const item of items) paragraph.append(noteControl(item.text, item.cites, record, owner), ' ');
+      group.append(paragraph);
+    } else {
+      const list = el('ul', undefined, 'notes-list'); list.append(...items.map(item => noteItem(item, record, owner))); group.append(list);
+    }
     body.push(group);
   }
   const other = record.notes.otherMatters ?? [];
@@ -800,29 +802,33 @@ function renderNotes(data, owner) {
     const box = el('details', undefined, 'notes-fold');
     const summary = el('summary', label);
     summary.dataset.focus = label;
-    box.open = folds.has(label);
     box.append(summary, ...items);
     return box;
   };
   const rangeRow = range => {
-    const row = el('div', undefined, 'offtopic-row');
-    const chip = el('button', `${stamp(range.startMs)}–${stamp(range.endMs)}`, 'cite');
+    const row = el('li', undefined, 'note offtopic-row');
+    const chip = noteControl(range.label, [range.fromId], record, owner);
     chip.dataset.cite = range.fromId;
     chip.dataset.focus = `range:${range.fromId}`;
-    chip.onclick = () => { chip.classList.add('visited'); jumpTo(owner, range.fromId, record.version); };
-    row.append(chip, el('span', range.label));
+    row.append(chip);
     return row;
   };
   const content = ranges.filter(r => !r.smallTalk), small = ranges.filter(r => r.smallTalk);
-  const otherRows = [...other.map(item => noteItem(item, record, owner)), ...content.map(rangeRow)];
-  if (small.length) otherRows.push(fold(`Small talk (${small.length})`, small.map(rangeRow)));
+  const otherList = el('ul', undefined, 'notes-list');
+  otherList.append(...other.map(item => noteItem(item, record, owner)), ...content.map(rangeRow));
+  const otherRows = [otherList];
+  if (small.length) {
+    const smallList = el('ul', undefined, 'notes-list'); smallList.append(...small.map(rangeRow));
+    otherRows.push(fold(`Small talk (${small.length})`, [smallList]));
+  }
   if (other.length + ranges.length) body.push(fold(`Not about the project (${other.length + ranges.length})`, otherRows));
-  if (record.notes.needsReview.length) body.push(fold(`Needs review (${record.notes.needsReview.length})`, record.notes.needsReview.map(item => noteItem(item, record, owner))));
-  host.replaceChildren(...body);
+  if (record.notes.needsReview.length) {
+    const list = el('ul', undefined, 'notes-list'); list.append(...record.notes.needsReview.map(item => noteItem(item, record, owner)));
+    body.push(fold(`Needs review (${record.notes.needsReview.length})`, [list]));
+  }
+  const hint = el('span', 'Shows this in the transcript'); hint.id = 'note-transcript-hint'; hint.hidden = true;
+  host.replaceChildren(...body, hint);
   host.dataset.record = key;
-  for (const toggle of host.querySelectorAll('.note-time')) if (opened.has(toggle.getAttribute('aria-controls'))) toggle.click();
-  for (const cite of host.querySelectorAll('.cite')) if (visited.has(cite.dataset.cite)) cite.classList.add('visited');
-  if (focus) [...host.querySelectorAll('[data-focus]')].find(n => n.dataset.focus === focus)?.focus();
 }
 async function refreshNotes() {
   if (!meetingId || notesView.busy) return;
@@ -840,7 +846,7 @@ async function refreshNotes() {
     if (unchanged) return;
     notesView.signature = signature;
     renderNotes(data, owner);
-    plansView?.render(); // idle copy uses the current notes' question and action counts
+    if (!data.job || data.job.state !== 'running') plansView?.render(); // progress must not rebuild the plans either
   } catch (error) { if (owner === meetingId && sequence === notesView.sequence) { $('notes-status').hidden = false; $('notes-status').textContent = error.message; } }
   finally { if (sequence === notesView.sequence) notesView.busy = false; }
 }

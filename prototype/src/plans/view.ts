@@ -22,7 +22,7 @@ export type PlanJobData = {
 /** What its work returns (ExplorationJob.result): published, kept beside a newer version, or refused by publication. */
 export type PlanJobResult = { outcome: 'published'; version: number } | { outcome: 'kept'; newest: number | null } | { outcome: 'refused'; message: string };
 /** Counted from the run's stream: material files read, web pages read, quick checks run. */
-export type Progress = { files: number; pages: number; checks: number };
+export type Progress = { files: number; pages: number; checks: number } & Partial<import('../progress.ts').PlanProgress>;
 export type ListedJob = ExplorationJob & { waiting: WaitingReason | null };
 
 export type RunView = {

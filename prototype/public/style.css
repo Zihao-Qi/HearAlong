@@ -172,12 +172,8 @@ body.layout-compact .para p { font-size: 16px; }
 .notes-group { padding: 10px 16px 2px; }
 .notes-body .notes-section { margin: 0 0 2px; font-size: 13px; font-weight: 600; letter-spacing: normal; text-transform: none; color: var(--muted); }
 .notes-body .note { padding: 0; margin: 0; border: none; border-radius: 0; box-shadow: none; background: none; }
-.note-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px; min-height: 44px; }
-.notes-body .note-text { display: block; padding: 4px 0; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
 .notes-body .owner, .notes-body .owner.unconfirmed { margin-left: 6px; background: #FFF1E0; color: #8A4B08; white-space: nowrap; }
 .note-memory { margin-left: 6px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.note-time { min-height: 44px; min-width: 52px; padding: 0 4px; border: none; background: none; color: var(--accent); font: 13px var(--mono); text-align: right; cursor: pointer; }
-.note-details { margin: -4px 64px 8px 14px; font-size: 14px; color: #3B4657; }
 .notes-body .note-quote { margin: 0; padding: 0; border: none; font: 15px/1.5 var(--serif); }
 .notes-body .cites { flex-direction: column; align-items: flex-start; gap: 0; margin: 0; }
 .notes-body .cite { min-height: 44px; padding: 0; border: none; background: none; color: var(--accent); font: 14px var(--sans); text-align: left; text-decoration: underline; text-underline-offset: 3px; }
@@ -190,7 +186,6 @@ body.layout-compact .para p { font-size: 16px; }
 .notes-fold[open] > summary::before, .plans-toggle[aria-expanded="true"]::before, .plans-aside-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
 .notes-fold .notes-fold { padding: 0 0 0 14px; }
 .notes-fold .note-text { color: var(--ink); }
-.notes-body .offtopic-row { margin: 0; font-size: 14px; }
 .notes-body .look-into .button { min-height: 44px; }
 .notes-body .look-into .button:not(.primary) { padding: 0; border: none; background: none; color: var(--accent); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
 .notes-body .look-into textarea { min-height: 44px; }
@@ -199,12 +194,46 @@ body.layout-compact .notes-bar { padding: 0 12px 14px; }
 body.layout-compact .notes-body { margin: 0 12px; }
 body.layout-compact .notes-menu { width: min(280px, calc(100vw - 24px)); }
 .notes-title { margin: 8px 0 2px; font-size: 17px; }
+.notes-summary { margin: 0; font-size: 15px; line-height: 1.55; }
+.notes-group:has(.notes-summary) { padding-bottom: 6px; }
+.notes-group:has(.notes-summary) .notes-section { margin-bottom: 4px; }
+.notes-list { margin: 0; padding: 0 0 0 20px; list-style: disc; color: var(--ink); }
+.notes-body .notes-list > .note { padding: 4px 0; font-size: 15px; line-height: 1.45; }
+.note-owner-tail { white-space: nowrap; }
+.note-sentence { padding: 1px 2px; margin: 0 -2px; border-radius: 4px; color: inherit; text-decoration: none; cursor: pointer; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.note-sentence:hover { background: var(--accent-tint); color: var(--accent-ink); }
+.note-sentence.lit { background: var(--mark); }
+.note-sentence:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.notes-body .note-look { display: inline; opacity: 0; }
+.notes-body .note:hover .note-look, .notes-body .note:focus-within .note-look, .notes-body .note-look:has(form:not([hidden])), body.layout-compact .notes-body .note-look { opacity: 1; }
+.notes-body .note-look > .text-action { min-height: 32px; padding: 0 0 0 6px; font-weight: 400; }
+.notes-body .offtopic-row { display: list-item; }
+#notes-progress { margin: 0 20px 12px; }
+body.layout-compact #notes-progress { margin: 0 12px 12px; }
+.job-progress, .job-progress.plans-status { display: block; padding: 0 16px 10px; border-radius: 12px; background: var(--panel); font-size: 15px; color: var(--ink); }
+.progress-header { display: flex; align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid var(--line); font-size: 14px; color: #3B4657; }
+.progress-heading { flex: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.progress-cancel.text-action { min-height: 44px; padding: 0; color: var(--accent); font-size: 14px; font-weight: 400; text-decoration: underline; text-underline-offset: 3px; }
+.progress-step { display: grid; grid-template-columns: 20px minmax(0, 1fr); column-gap: 12px; padding: 10px 0; }
+.progress-icon { height: 22px; display: flex; align-items: center; }
+.progress-step-body { min-width: 0; }
+.progress-label { line-height: 22px; }
+.progress-detail { font-size: 13px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+.progress-detail-reserved { min-height: 1.45em; }
+.progress-parts { display: flex; flex-direction: column; margin-top: 4px; }
+.progress-part { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 14px; color: #3B4657; }
+.progress-part-label { flex: 1; }
+.progress-count { font-variant-numeric: tabular-nums; }
+.progress-part-done { width: 16px; color: #23693F; }
+.progress-latest { margin-top: 6px; font: 14px/1.45 var(--serif); color: #3B4657; overflow-wrap: anywhere; }
+.progress-spin { transform-origin: 8px 8px; animation: progress-spin .9s linear infinite; }
+@keyframes progress-spin { to { transform: rotate(360deg); } }
 .notes-section { margin: 18px 0 8px; font-size: 13px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
 .notes-section.review { color: #8A5A00; }
 .note { background: var(--panel); border: 1px solid #C5CEDA; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(24,33,47,.10), 0 1px 2px rgba(24,33,47,.05); }
 .note-text { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; line-height: 1.45; }
 .owner { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #EEF1F5; color: #3B4657; }
-.note-review { margin-top: 6px; font-size: 13px; color: #8A5A00; }
+.note-review { margin-top: 4px; font-size: 13px; color: var(--muted); }
 .note-quote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line-strong); font: 14px/1.45 var(--serif); color: #3B4657; }
 .cites { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .cite { min-height: 30px; padding: 0 10px; border-radius: 6px; border: 1px solid #C9D8FB; background: var(--accent-tint); font: 12px var(--mono); color: var(--accent-ink); cursor: pointer; }
@@ -216,8 +245,8 @@ body.layout-compact .notes-menu { width: min(280px, calc(100vw - 24px)); }
 .offtopic-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 @keyframes flash { from { background: var(--mark); } to { background: transparent; } }
 .flash { animation: flash 2.4s ease-out; border-radius: 3px; }
-/* The last cited line stays marked after the flash fades. */
-.cited { box-shadow: inset 0 -2px 0 var(--accent); }
+/* Every cited line stays marked after the first line's flash fades. */
+.cited { background: var(--mark); }
 .notes-empty { margin: 14px 0 0; font-size: 13px; color: var(--muted); }
 .ranges { padding: 8px 12px; }
 .board-empty { margin: 8px 20px; padding: 18px; border-radius: 12px; background: var(--panel); border: 1px dashed var(--line-strong); line-height: 1.5; }
