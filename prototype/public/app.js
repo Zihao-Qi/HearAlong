@@ -27,6 +27,8 @@ const mini = { win: null, revealed: 0, byItself: false, saves: 0 }; // byItself:
 const miniSupported = () => 'documentPictureInPicture' in window;
 /** The helper's native window is there (the installed app): the mini view is its window, not Chrome's. */
 const nativeMini = () => Boolean(lastSnapshot?.mini?.native);
+// Dismissal belongs to this page load, not localStorage. Restart owns the strip until navigation or its failure line.
+const updateView = { dismissed: false, phase: 'ready', accepted: false };
 const quitView = { seen: false }; // a quit has begun (see quitting)
 const boardView = { owner: null, data: null, sort: store.get('board-sort') === 'type' ? 'type' : 'time', stage: 'all', showDismissed: false, nodes: new Map(), groups: new Map(), seen: new Set(), unread: new Set(), away: new Set(), undo: new Map(), sequence: 0, initialised: false };
 const actionsView = { owner: null, jobs: [], materials: false, web: null, enabled: false, sequence: 0, cards: new Map(), forms: new Map(), expanded: new Map(), seenDone: new Set(), unseen: false, initialised: false };
@@ -243,7 +245,8 @@ function renderLive(snapshot) {
 
 /** The launcher's Quit (or SIGTERM): a recording stops as if Stop were clicked, then the page says the app has quit. */
 function quitting() {
-  if (quitView.seen) return;
+  // Every shutdown signal (status, transcript, upload reply) passes here. A deliberate restart owns its strip even on failure.
+  if (quitView.seen || updateView.phase === 'restarting' || updateView.accepted) return;
   quitView.seen = true;
   captureGeneration++; // a recording still starting (a permission prompt, the tab picker) is cancelled when it resumes
   closeMini();
@@ -288,6 +291,47 @@ async function refreshSegments() {
   } finally { segmentsBusy = false; }
 }
 
+function renderUpdate(force = false) {
+  const restarting = updateView.phase === 'restarting', failed = updateView.phase === 'failed';
+  const canRestart = Boolean(status?.update?.canRestart);
+  $('update-bar').hidden = !restarting && !failed && (updateView.dismissed || !status?.update?.ready || (!force && status?.working));
+  $('update-text').textContent = failed ? "Couldn’t restart. Close HearAlong and open it again."
+    : restarting ? 'Restarting HearAlong…'
+    : canRestart ? 'HearAlong was updated.' : 'HearAlong was updated. Run npm start again to use it.';
+  $('update-later').hidden = restarting || failed;
+  $('update-restart').hidden = failed || !canRestart;
+  $('update-restart').disabled = restarting;
+  $('update-restart').setAttribute('aria-label', restarting ? 'Restarting' : 'Restart');
+  $('update-spinner').toggleAttribute('hidden', !restarting);
+}
+$('update-later').onclick = () => { updateView.dismissed = true; renderUpdate(); };
+$('update-restart').onclick = async () => {
+  if (updateView.phase !== 'ready') return;
+  updateView.phase = 'restarting'; renderUpdate();
+  try {
+    await apiWithin(10_000, '/api/restart', { method: 'POST' });
+    updateView.accepted = true;
+    // Fetch (not navigation) bypasses the service worker's Starting fallback. Only navigate once the old server is gone;
+    // the offline navigation then shows Starting, which launches the helper and returns to the newly started dashboard.
+    const until = Date.now() + 10_000;
+    while (Date.now() < until) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(1000, until - Date.now()));
+      try { await fetch('/', { cache: 'no-store', signal: controller.signal }); }
+      catch { if (!controller.signal.aborted) { location.replace('/'); return; } }
+      finally { clearTimeout(timer); }
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    updateView.phase = 'failed'; renderUpdate();
+  } catch (error) {
+    if (error.message === 'Busy') {
+      updateView.phase = 'ready'; renderUpdate(true); // the next status uses the server's shared working predicate
+    } else if (error.message === 'Restart from Terminal') {
+      status.update.canRestart = false; updateView.phase = 'ready'; renderUpdate();
+    } else { updateView.phase = 'failed'; renderUpdate(); }
+  }
+};
+
 async function refreshStatus() {
   const sequence = ++statusSequence;
   const generation = selectionGeneration;
@@ -295,6 +339,7 @@ async function refreshStatus() {
     const fresh = await api('/api/status');
     if (sequence !== statusSequence) return; // a newer status request is already in flight or done
     status = fresh;
+    renderUpdate();
     renderOlderAudio(fresh.audioRetentionNotice);
     renderAudioRemoved(fresh.meetings.find(m => m.id === meetingId));
     if (fresh.shuttingDown) quitting(); // also with no meeting selected (no transcript polling)
@@ -3620,6 +3665,8 @@ $('plan-after-notes').onchange = async () => {
 
 $('export').href = meetingId ? `/api/meetings/${meetingId}/transcript.md` : '#';
 $('export-raw').href = meetingId ? `/api/meetings/${meetingId}/transcript.md?mode=raw` : '#';
+// Initialize project-dependent visibility/count even when no meeting detail will ever call setProject().
+setProject(null);
 await refreshStatus();
 await refreshSegments();
 await refreshDetail();

@@ -1,5 +1,12 @@
 [hidden] { display: none !important; }
 :root {
+  /* Shared top-bar/update-strip geometry; the meeting button's border is part of its text inset. */
+  --topbar-pad-y: 10px;
+  --topbar-pad-x: 20px;
+  --topbar-controls-gap: 10px;
+  --topbar-button-height: 40px;
+  --meeting-button-pad-x: 10px;
+  --meeting-button-border: 1px;
   --ground: #F4F6F9;
   --panel: #FFFFFF;
   --board: #E3E8EF;
@@ -27,8 +34,8 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 
-.topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.topbar-left, .topbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: var(--topbar-pad-y) var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
+.topbar-left, .topbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--topbar-controls-gap); }
 .meeting-select { font: 600 16px var(--sans); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; max-width: 360px; }
 .meeting-select:hover, .meeting-select:focus { border-color: var(--line-strong); }
 .chip[hidden] { display: none; }
@@ -43,6 +50,19 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .button.primary { background: var(--accent); border-color: var(--accent); color: #FFF; }
 .button.primary:hover { background: var(--accent-ink); }
 .button:disabled { opacity: .5; cursor: not-allowed; }
+
+.update-bar { flex: none; display: flex; align-items: center; gap: var(--topbar-controls-gap); padding: var(--topbar-pad-y) var(--topbar-pad-x) var(--topbar-pad-y) calc(var(--topbar-pad-x) + var(--meeting-button-pad-x) + var(--meeting-button-border)); background: var(--accent-tint); border-bottom: 1px solid var(--line); }
+.update-bar > span { flex: 1; min-width: 0; font-size: 14px; line-height: 1.4; }
+.update-bar .button { flex: none; }
+.update-later { padding: 0 12px; color: var(--accent); background: transparent; border-color: transparent; }
+.update-later:hover { border-color: transparent; color: var(--accent-ink); }
+.update-restart { position: relative; }
+.update-restart:disabled { opacity: 1; cursor: default; }
+.update-restart:disabled > span { visibility: hidden; }
+.update-spinner { position: absolute; left: 50%; top: 50%; margin: -9px 0 0 -9px; }
+.update-spinner circle { stroke: var(--line-strong); }
+.update-spinner path { stroke: var(--accent); transform-origin: 9px 9px; animation: update-spin .9s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
 
 /* Each pane scrolls inside itself; the page never scrolls, so the header and tabs stay put. */
 .layout { flex: 1; min-height: 0; display: flex; flex-wrap: nowrap; overflow: hidden; }
@@ -65,17 +85,18 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 body.layout-compact .divider { display: none; }
 body.layout-compact .wide-only, body.layout-compact #connection { display: none; }
 body.layout-compact .compact-only { display: inline; }
-body.layout-compact .topbar { padding: 8px 12px; gap: 8px; }
+body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: 12px; --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
+body.layout-compact .topbar { gap: 8px; }
 body.layout-compact .topbar-left { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; }
 body.layout-compact .meeting-select { flex: 1 1 auto; min-width: 0; max-width: 480px; }
-body.layout-compact .topbar-right { flex: 0 1 auto; justify-content: flex-end; gap: 8px; margin-left: auto; }
+body.layout-compact .topbar-right { flex: 0 1 auto; justify-content: flex-end; margin-left: auto; }
 /* Two rows only when one does not fit (a column beside a call window, a phone). */
 @media (max-width: 600px) {
   body.layout-compact .topbar-left { flex-basis: 100%; }
   body.layout-compact .topbar-right { flex-basis: 100%; }
 }
 body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding: 0; }
-body.layout-compact .topbar .button { min-height: 44px; }
+.topbar .button, .update-bar .button { min-height: var(--topbar-button-height); }
 body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 0; padding: 6px max(8px, calc((100% - 640px) / 2)) 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .compact-tabs button { position: relative; min-height: 44px; min-width: 0; padding: 0 2px; border: none; border-radius: 8px; background: #E9EDF3; font: 13px var(--sans); color: #3B4657; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .compact-tabs { --tab-ground: #E9EDF3; }
@@ -357,7 +378,7 @@ body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 
 /* Meetings & settings (direction A): meeting menu, two side panels, status dot, replay dialog. */
 .meeting-wrap { position: relative; display: flex; align-items: center; min-width: 0; }
-.meeting-button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; max-width: 420px; min-width: 0; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; font: 600 16px var(--sans); color: var(--ink); cursor: pointer; }
+.meeting-button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; max-width: 420px; min-width: 0; padding: 0 var(--meeting-button-pad-x); border: var(--meeting-button-border) solid transparent; border-radius: 8px; background: transparent; font: 600 16px var(--sans); color: var(--ink); cursor: pointer; }
 .meeting-button:hover, .meeting-button:focus-visible, .meeting-button[aria-expanded="true"] { border-color: var(--line-strong); background: var(--panel); }
 .meeting-button:disabled { cursor: default; }
 #meeting-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
