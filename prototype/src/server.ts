@@ -132,6 +132,7 @@ export async function startServer(options: {
       '/preview-composition.js': ['preview-composition.js', 'text/javascript'],
       '/transcript-view.js': ['transcript-view.js', 'text/javascript'],
       '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
+      '/upload-retry.js': ['upload-retry.js', 'text/javascript'],
       '/capture-gaps.js': ['capture-gaps.js', 'text/javascript'],
       // The Plans section (M7b); its fixtures load only with ?plans-fixture= in the page URL (a dev switch).
       '/plans.js': ['plans.js', 'text/javascript'], '/plans-fixtures.js': ['plans-fixtures.js', 'text/javascript'],

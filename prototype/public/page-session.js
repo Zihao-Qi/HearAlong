@@ -3,9 +3,11 @@
 export const pageId = crypto.randomUUID();
 export async function pageRequest(path, options = {}) {
   const response = await fetch(path, { ...options, headers: { ...options.headers, 'X-Page': pageId } });
-  const data = response.headers.get('content-type')?.includes('json') ? await response.json() : {};
-  if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
-  return data;
+  const json = response.headers.get('content-type')?.includes('json');
+  if (response.ok) return json ? response.json() : {};
+  let data;
+  try { data = json ? await response.json() : {}; } catch { /* A refusal keeps its status even if its body is unreadable. */ }
+  throw Object.assign(new Error(data?.error ?? `HTTP ${response.status}`), { status: response.status });
 }
 let heartbeat, timer;
 export function startPageSession(pulse = () => pageRequest('/api/status')) {
