@@ -36,6 +36,7 @@ let notesRead = hold(), notesFinish = [hold(), hold(), hold()], notesSave = hold
 let notesAfterCommit: ReturnType<typeof gate> | null = null;
 let planRead = hold(), planWrite = hold(), planFinish = hold(), planSave = hold();
 let noteAborts = 0, planAborts = 0;
+let split = false;
 const notes: NotesRunner = async input => {
   if (mode === 'instant') return { text: JSON.stringify(rawNotes), model: 'stand-in' };
   const index = input.instructions.includes('notes: title,') ? 0 : input.instructions.includes('notes: decisions,') ? 1 : 2;
@@ -49,22 +50,33 @@ const notes: NotesRunner = async input => {
   } catch (error) { if (input.signal.aborted) noteAborts++; throw error; }
 };
 const plans = async (_prompt: string, options: PiTaskOptions): Promise<PiTaskResult> => {
+  const writing = Boolean(options.session);
   if (mode === 'stream') {
     try {
-      await wait(planRead.promise, options.signal);
-      for (const file of ['guide.md', 'table.csv', 'draft.md', 'labels.md', 'guide.md']) {
-        options.onEvent?.({ type: 'tool_execution_start', toolCallId: file, toolName: 'read', args: { path: join(directory, file) } });
-        options.onEvent?.({ type: 'tool_execution_end', toolCallId: file, toolName: 'read', result: { content: [{ type: 'text', text: 'fictional material' }] } });
+      if (!writing) {
+        await wait(planRead.promise, options.signal);
+        for (const file of ['guide.md', 'table.csv', 'draft.md', 'labels.md', 'guide.md']) {
+          options.onEvent?.({ type: 'tool_execution_start', toolCallId: file, toolName: 'read', args: { path: join(directory, file) } });
+          options.onEvent?.({ type: 'tool_execution_end', toolCallId: file, toolName: 'read', result: { content: [{ type: 'text', text: 'fictional material' }] } });
+        }
+        options.onEvent?.({ type: 'tool_execution_end', toolName: 'fetch_content', result: {} });
+        options.onEvent?.({ type: 'tool_execution_end', toolName: 'run_python', result: {} });
+        await wait(planWrite.promise, options.signal);
+      } else {
+        if (split && !/plan P[123] /.test(_prompt)) await wait(planFinish.promise, options.signal);
+        const text = JSON.stringify(rawPlan);
+        for (const delta of [text.slice(0, 25), text.slice(25)]) options.onEvent?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } });
+        if (!split) await wait(planFinish.promise, options.signal);
       }
-      options.onEvent?.({ type: 'tool_execution_end', toolName: 'fetch_content', result: {} });
-      options.onEvent?.({ type: 'tool_execution_end', toolName: 'run_python', result: {} });
-      await wait(planWrite.promise, options.signal);
-      const text = JSON.stringify(rawPlan);
-      for (const delta of [text.slice(0, 25), text.slice(25)]) options.onEvent?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } });
-      await wait(planFinish.promise, options.signal);
     } catch (error) { if (options.signal?.aborted) planAborts++; throw error; }
   }
-  return { text: JSON.stringify(rawPlan), ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 0, toolResults: [] };
+  if (!writing) {
+    await mkdir(options.sessionDir!, { recursive: true });
+    await writeFile(join(options.sessionDir!, 'fake.jsonl'), 'fictional session');
+  }
+  // Exercise scanner progress only for a genuinely unparseable outline, not valid stage-1 plans JSON.
+  const text = writing ? JSON.stringify(rawPlan) : split ? Array.from({ length: 8 }, (_, i) => `P${i + 1} | Lantern battery check | N1`).join('\n') : 'The outline could not be formatted.';
+  return { text, ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 0, toolResults: [] };
 };
 const originalSave = NotesFile.prototype.save;
 NotesFile.prototype.save = async function(record, signal, commit) {
@@ -229,6 +241,17 @@ try {
       await until(async () => (await call(base + '/plans')).run?.state === 'cancelled');
       assert.equal((await call(base + '/plans')).current.version, 2); assert.equal(planAborts, width === 1280 ? 1 : 2);
       await shot('plans-cancelled');
+      split = true; planRead = hold(); planWrite = hold(); planFinish = hold(); planSave = hold();
+      planRead.release(); planWrite.release();
+      await startPlan();
+      await page.waitForFunction(() => document.querySelector('#plans [data-phase="write"] .progress-detail')?.textContent === '3 of 8');
+      assert.match(await page.locator('#plans .progress-latest').innerText(), /Lantern battery check/);
+      assert.match(await page.locator('#plans [data-phase="write"]').innerText(), /Write the plans.*3 of 8/s);
+      await shot('plans-exact-three-of-eight');
+      planFinish.release(); planSave.release();
+      await until(async () => (await call(base + '/plans')).current.version === 3);
+      await until(async () => !(await call(base + '/plans')).run);
+      split = false;
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     } finally { await context.close(); }
   }

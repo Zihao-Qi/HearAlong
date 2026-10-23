@@ -12,6 +12,7 @@ import type { PiTaskOptions, PiTaskResult } from '../src/pi-task.ts';
 import { EXPLORE_PROMPT, PLAN_PROMPT, PlanVersions, loadRunPlans, type PlansPage } from '../src/plans/index.ts';
 import type { Recognition } from '../src/recognizer.ts';
 import { fakePi } from './helpers/setup-pi.ts';
+import { PLAN_STAGE1 } from '../src/plans/prompt.ts';
 
 // The Plans routes (M7b §2b, §4) against the real server, with a fake Pi: it streams one read of the materials and answers with
 // plans as the model writes them. No model is called. Invented content only.
@@ -69,7 +70,12 @@ async function setup(meetings = 1, aiEnv: NodeJS.ProcessEnv = { ...process.env, 
   const scripts: Script[] = [];
   const calls: { prompt: string; options: PiTaskOptions; input: string }[] = [];
   let notesGate: Promise<unknown> | null = null;
+  const processCalls: { prompt: string; options: PiTaskOptions }[] = [];
   const plans = async (prompt: string, options: PiTaskOptions): Promise<PiTaskResult> => {
+    processCalls.push({ prompt, options });
+    // Route scenarios may return plans directly in stage 1. A fallback continuation reads
+    // the copied session rather than consuming another scenario from the logical-run queue.
+    if (options.session) return JSON.parse(await readFile(options.session, 'utf8'));
     const input = await readFile(options.files![0], 'utf8');
     calls.push({ prompt, options, input });
     const script = scripts.shift() ?? {};
@@ -82,7 +88,10 @@ async function setup(meetings = 1, aiEnv: NodeJS.ProcessEnv = { ...process.env, 
         if (options.signal?.aborted) stop(); else options.signal?.addEventListener('abort', stop, { once: true });
       })]);
     }
-    return { text: script.text ?? JSON.stringify(script.answer ?? answer()), ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 2, toolResults: [] };
+    const result: PiTaskResult = { text: script.text ?? JSON.stringify(script.answer ?? answer()), ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 2, toolResults: [] };
+    await mkdir(options.sessionDir!, { recursive: true });
+    await writeFile(join(options.sessionDir!, 'fake.jsonl'), JSON.stringify(result));
+    return result;
   };
   const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, actions: null, board: null,
     ai: { env: aiEnv },
@@ -117,7 +126,7 @@ async function setup(meetings = 1, aiEnv: NodeJS.ProcessEnv = { ...process.env, 
     await until(async () => ((await page(id)).current?.version ?? 0) > before && app.explorations.get(started.body.run.id)?.state === 'done', 'the plans and their durable job completion');
     return started.body.run as PlansPage['run'] & {};
   };
-  return { directory, materials, ids, app, call, until, page, plan, writeNotes, intoProject, scripts, calls, holdNotes: (gate: Promise<unknown>) => { notesGate = gate; },
+  return { directory, materials, ids, app, call, until, page, plan, writeNotes, intoProject, scripts, calls, processCalls, holdNotes: (gate: Promise<unknown>) => { notesGate = gate; },
     async close() { await app.close(); await rm(directory, { recursive: true, force: true }); await rm(materials, { recursive: true, force: true }); } };
 }
 test('changing saved AI choices applies to the next plan, not a running plan', async t => {
@@ -167,7 +176,8 @@ test('Plan runs the plan pass as an exploration: pinned input, the frozen prompt
     // Publishing the version precedes persisting the exploration's terminal state.
     await s.until(() => s.app.explorations.get(first.body.run.id)?.state === 'done', 'the published run to finish');
     const call = s.calls[0];
-    assert.equal(call.prompt, PLAN_PROMPT);
+    assert.equal(call.prompt, `${PLAN_PROMPT}\n\n${PLAN_STAGE1}`);
+    assert.equal(s.processCalls.length, 1, 'stage-1 plans JSON is published without another writer');
     assert.equal(call.options.model, 'example/main');
     assert.equal(call.options.thinking, 'low');
     assert.deepEqual([call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['3', '60000']);

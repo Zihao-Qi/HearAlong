@@ -4,6 +4,13 @@
 import type { ToolResult } from './pi-task.ts';
 
 export const RATE_LIMIT = /rate.?limit|\b429\b|usage limit|quota exceeded|too many requests/i;
+/** Provider errors, not web-tool results; Pi may keep retrying after either event. */
+export function modelRateLimit(event: any): string | null {
+  const message = event?.type === 'message_end' && event.message?.role === 'assistant' ? event.message.errorMessage
+    : event?.type === 'auto_retry_start' ? event.errorMessage : event?.type === 'auto_retry_end' ? event.finalError : null;
+  return typeof message === 'string' && RATE_LIMIT.test(message) ? message : null;
+}
+export const modelQuotaMessage = (until: number | null) => `The model's quota is used up${until ? `; plans can be made again from ${clockTime(until)}` : ''}`;
 export const COOLDOWN_MS = 5 * 60_000;
 /** How often a job waiting for a cooldown looks again (it may be extended, or the clock may be a test's). */
 export const QUOTA = { pollMs: 1000 };

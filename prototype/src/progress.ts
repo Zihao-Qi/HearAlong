@@ -127,7 +127,7 @@ export type NotesProgress = {
 export type PlanProgress = {
   phase: 'notes' | 'materials' | 'write' | 'check'; startedAt: number;
   materials: string[]; files: number; pages: number; checks: number; written: number; latest: string | null;
-  expected: number | null; questions: number; estimate: number | null;
+  expected: number | null; exact?: boolean; questions: number; estimate: number | null;
 };
 export function planProgress(startedAt: number, questions: number): PlanProgress {
   return { phase: 'notes', startedAt, materials: [], files: 0, pages: 0, checks: 0, written: 0, latest: null,

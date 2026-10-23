@@ -30,6 +30,10 @@ const plans = async (prompt: string, options: PiTaskOptions): Promise<PiTaskResu
     options.onEvent?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '{"plans":[{"label":"Lantern batteries"}]}' } });
     await wait(new Promise<void>(() => {}));
   }
+  if (!options.session) {
+    await mkdir(options.sessionDir!, { recursive: true });
+    await writeFile(join(options.sessionDir!, 'fake.jsonl'), 'fictional session');
+  }
   return { text: JSON.stringify(planAnswer), ms: 1, tools: [], toolEvents: 0, toolResults: [], aborted: false, stopReason: 'stop', settled: true, exitCode: 0, exitSignal: null };
 };
 await dashboardSetup(directory);

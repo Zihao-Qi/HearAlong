@@ -19,8 +19,13 @@ test('the prompt is v1.7 byte for byte, and public plan jobs use the shared prom
   assert.equal(createHash('sha256').update(PLAN_PROMPT).digest('hex'), 'b4baf906a8235dcc1cd64ff4b9809dc247d775701b2758aac350e34dae3e4931');
   assert.equal(Buffer.byteLength(PLAN_PROMPT), 7441);
   const jobs = await readFile(new URL('../src/plans/jobs.ts', import.meta.url), 'utf8');
-  assert.match(jobs, /import \{ EXPLORE_PROMPT, PLAN_PROMPT \} from '\.\/prompt\.ts';/);
-  assert.match(jobs, /ctx\.pi\(kind === 'plan' \? PLAN_PROMPT : EXPLORE_PROMPT,/);
+  assert.match(jobs, /import \{ EXPLORE_PROMPT \} from '\.\/prompt\.ts';/);
+  assert.match(jobs, /runPlanPass\(ctx, options,/);
+  assert.match(jobs, /ctx\.pi\(EXPLORE_PROMPT,/);
+  const pass = await readFile(new URL('../src/plans/pass.ts', import.meta.url), 'utf8');
+  assert.match(pass, /import \{ PLAN_PASS_VERSION, PLAN_PROMPT, PLAN_STAGE1, PLAN_STAGE2_FALLBACK, planStage2 \} from '\.\/prompt\.ts';/);
+  assert.ok(pass.includes('`${PLAN_PROMPT}\\n\\n${PLAN_STAGE1}`'));
+  assert.doesNotMatch(pass, /'You help a researcher/, 'the pass imports rather than copies the frozen prompt');
   assert.match(jobs, /buildPlanInput\(\{ notes, title: o\.store\.meeting\(meetingId\)\.title, roots, pdfs,/);
   assert.doesNotMatch(jobs, /'You help a researcher/, 'jobs must import rather than copy the frozen prompt');
 });
