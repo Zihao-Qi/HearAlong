@@ -2,6 +2,7 @@ import { stamp, TYPE_LABELS, NOTICES, SAVING_BEHIND_FRAMES } from '/live-shared.
 import { choosePlansApi, createPlansView, progressCard } from '/plans.js';
 import { createTranscriptView } from '/transcript-view.js';
 import { CaptureSuspension } from '/capture-clock.js';
+import { uploadWithRetry } from '/upload-retry.js';
 import { SetupUI, setupRequest, copyCommand } from '/setup-ui.js';
 import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
 
@@ -288,7 +289,7 @@ async function refreshSegments() {
     if (quitView.seen) { $('quit-text').textContent = 'HearAlong has quit. You can close this window.'; return; }
     $('connection').textContent = 'Server unavailable';
     if (/local session/.test(error.message)) $('connection').textContent = 'Server restarted — reload this page';
-    if (capture) { log('Connection lost; stopping microphone. Unsaved audio cannot be recovered.', true); await stopCapture(); }
+    renderLive(lastSnapshot);
   } finally { segmentsBusy = false; }
 }
 
@@ -2068,13 +2069,14 @@ $('mic-test').onclick = guarded(async () => {
 // ---------- Capture: a session (one 16 kHz clock) with one or two sources, microphone (Me) and meeting tab (Them) ----------
 
 /** The current recording session, or undefined. Each source has its own queue and end; the session ends when all have. */
-// capture = { owner, path, context, offsetMs, generation, sources: Map<'mic'|'tab', Source>, stopping, startedAt, lastDraftAt }
+// capture = { owner, path, context, offsetMs, generation, sources: Map<'mic'|'tab', Source>, stopping, drainUntil, startedAt, lastDraftAt }
 let captureGeneration = 0;
 const SOURCE_NAMES = { mic: 'Microphone', tab: 'Meeting tab' };
 
 function sourceIds() { return capture ? [...capture.sources.values()].map(s => s.sourceId) : []; }
 /** A source's end: stop its input, collect its last frame, save what is queued, and tell the server. Never touches the other source. */
 function endSource(session, source, why) {
+  if (session.stopping) session.drainUntil ??= Date.now() + 30_000;
   if (source.ending) return source.ending;
   freezeSource(source);
   source.ending = (async () => {
@@ -2085,7 +2087,7 @@ function endSource(session, source, why) {
       ]);
       if (!flushed) log(`${SOURCE_NAMES[source.kind]}: the last moment of audio (under 1 s) could not be collected and is lost.`, true);
     } finally { source.node.disconnect(); }
-    // Bounded: each pending frame saves or fails within its limits (30 frames × 2 attempts × 10 s at worst).
+    // Stop bounds the whole queue to the shared drain deadline, not a fresh retry budget per queued frame.
     let saved = true;
     try { await source.uploads; } catch { saved = false; /* already reported */ }
     // Always end the source on the server: after a failed upload with an unknown last frame (null), so whatever was saved is
@@ -2125,6 +2127,7 @@ async function finishSession(session) {
 async function stopCapture() {
   const session = capture;
   if (!session) return;
+  session.drainUntil ??= Date.now() + 30_000;
   if (session.stopping) return session.stopping;
   // The mini view says "Stopping…" at once too (it is drawn from the server).
   void post('/api/live/stop', { sources: sourceIds() }).catch(() => {});
@@ -2171,7 +2174,7 @@ async function addSource(session, kind, stream) {
     const startMs = source.firstMs + source.samples * 1000 / rate;
     source.samples += buffer.byteLength / 4;
     source.pending++;
-    const upload = () => apiWithin(10_000, `${session.path}/pcm`, { method: 'POST', body: buffer, headers: {
+    const upload = timeout => apiWithin(timeout, `${session.path}/pcm`, { method: 'POST', body: buffer, headers: {
       'Content-Type': 'application/octet-stream', 'X-Audio-Source': source.sourceId, 'X-Sequence': String(sequence),
       'X-Sample-Rate': String(rate), 'X-Start-Ms': String(startMs), 'X-Pending': String(source.pending), 'X-Clock-Start': String(session.startedAt - session.offsetMs), 'X-Recording': session.recordingId,
       'X-Capture-Settings': JSON.stringify(captureSettings(kind, stream, session.sources.has('tab'))),
@@ -2179,8 +2182,9 @@ async function addSource(session, kind, stream) {
       ...(discontinuities?.length ? { 'X-Capture-Discontinuities': JSON.stringify(discontinuities) } : {}),
       ...(suspension ? { 'X-Suspension-From': String(suspension.fromWallMs), 'X-Suspension-To': String(suspension.toWallMs) } : {}),
     } });
-    // One retry with the same bytes: the server treats a repeat as the same frame, so a lost reply cannot duplicate audio.
-    source.uploads = source.uploads.then(() => upload().catch(() => new Promise(resolve => setTimeout(resolve, 500)).then(upload)))
+    source.uploads = source.uploads.then(() => uploadWithRetry({
+      attempt: upload, get until() { return session.drainUntil; },
+    }))
       .then(reply => {
         source.pending--;
         // A Stop asked from the mini view, or a quit, arrives with the frames (they keep coming while this page's timers are slowed).
