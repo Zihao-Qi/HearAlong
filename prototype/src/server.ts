@@ -6,6 +6,7 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { numberInRange } from './config.ts';
+import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
 import { resolvePi } from './pi-command.ts';
@@ -102,6 +103,8 @@ export async function startServer(options: {
    * nothing is recording, transcribing or running. Off by default (npm start keeps running).
    */
   idleMs?: number; onIdle?: () => void;
+  /** Disposable roots and process boundary for update-guard checks; production always uses this checkout. */
+  codeRoot?: string; publicRoot?: string; exit?: (code: number) => void; fingerprint?: FingerprintOptions;
 } = {}) {
   const directory = resolve(options.directory ?? process.env.MEETING_DATA_DIR ?? join(ROOT, 'data'));
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -116,6 +119,41 @@ export async function startServer(options: {
   let setup: SpeechSetup | undefined;
   let aiSetup: AiSetup | undefined;
   try {
+    const publicRoot = options.publicRoot ?? join(options.codeRoot ?? ROOT, 'public');
+    const staticFiles: Record<string, [string, string]> = {
+      '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'],
+      '/setup': ['setup.html', 'text/html'], '/setup.html': ['setup.html', 'text/html'],
+      '/setup.js': ['setup.js', 'text/javascript'], '/setup.css': ['setup.css', 'text/css'], '/setup-ui.js': ['setup-ui.js', 'text/javascript'],
+      '/page-session.js': ['page-session.js', 'text/javascript'],
+      '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
+      // The mini view (M7): one page, shown by the helper's native window or in Chrome's Picture-in-Picture window.
+      '/mini.html': ['mini.html', 'text/html'], '/mini.js': ['mini.js', 'text/javascript'], '/mini.css': ['mini.css', 'text/css'],
+      '/live-shared.js': ['live-shared.js', 'text/javascript'],
+      '/preview-composition.js': ['preview-composition.js', 'text/javascript'],
+      '/transcript-view.js': ['transcript-view.js', 'text/javascript'],
+      '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
+      '/capture-gaps.js': ['capture-gaps.js', 'text/javascript'],
+      // The Plans section (M7b); its fixtures load only with ?plans-fixture= in the page URL (a dev switch).
+      '/plans.js': ['plans.js', 'text/javascript'], '/plans-fixtures.js': ['plans-fixtures.js', 'text/javascript'],
+      '/plans-fixtures-data.js': ['plans-fixtures-data.js', 'text/javascript'],
+      // The installed app (M7): its manifest and icons, and a service worker whose only job is the "Starting…" page when the
+      // server is not running yet.
+      '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
+      '/sw.js': ['sw.js', 'text/javascript'], '/starting.html': ['starting.html', 'text/html'],
+      '/starting.css': ['starting.css', 'text/css'], '/starting.js': ['starting.js', 'text/javascript'],
+      '/icons/icon-192.png': ['icons/icon-192.png', 'image/png'], '/icons/icon-512.png': ['icons/icon-512.png', 'image/png'],
+      // Markdown rendering for answer cards; vendored so the app needs no network (public/vendor/README.md).
+      '/vendor/marked-15.0.12.umd.js': ['vendor/marked-15.0.12.umd.js', 'text/javascript'],
+      '/vendor/purify-3.2.6.min.js': ['vendor/purify-3.2.6.min.js', 'text/javascript'],
+      '/vendor/katex-0.16.22.min.js': ['vendor/katex-0.16.22.min.js', 'text/javascript'],
+    };
+    const staticSnapshot = new Map<string, { bytes: Buffer } | { error: unknown }>();
+    await Promise.all([...new Set(Object.values(staticFiles).map(([path]) => path))].map(async path => {
+      try { staticSnapshot.set(path, { bytes: await readFile(join(publicRoot, path)) }); }
+      catch (error) { staticSnapshot.set(path, { error }); } // Missing assets fail on request, not on startup.
+    }));
+    const fingerprint = await CodeFingerprint.start(options.codeRoot ?? ROOT, publicRoot, options.clock ?? Date.now, options.fingerprint);
+    const canRestart = (options.idleMs ?? Number(process.env.MEETING_IDLE_EXIT_S ?? 0) * 1000) > 0;
     // Before anything else (M7b §4): what a crash left running ends. The Pi group of a run recorded as running and the groups
     // recorded in its process folder first (the run is marked interrupted), then any other task's recorded groups (actions).
     try {
@@ -464,18 +502,20 @@ export async function startServer(options: {
     let origin = '';
     let uploading = false;
     let closing = false;
+    let restarting = false;
+    let admissions = 0; // Mutations count before their first await, including bodies/uploads not yet represented by jobs.
     const pages = new Map<string, number>(); // page id → last request
     // The installed app's server stops by itself once its window is gone and nothing is in progress. A page silent for 3 min
     // (hidden and throttled, or closed without its goodbye) no longer counts. Until a first page has come, a minute's grace.
     let seenPage = false;
     const startedAt = Date.now();
     let idleSince: number | null = null;
+    const working = () => admissions > 0 || uploading || importing.size > 0 || ['downloading', 'checking'].includes(speechSetup.download.state.state) || capture.recording() || appStoreRef.queuedCount() > 0 || appStoreRef.meetings().some(m => stillComing(m.id) || busy(m.id).length > 0);
     const idleLoop = options.idleMs ? setInterval(() => {
       pruneDeletedMeetingState();
       const now = Date.now();
       for (const [id, at] of pages) if (now - at > 180_000) pages.delete(id);
-      const working = ['downloading', 'checking'].includes(speechSetup.download.state.state) || capture.recording() || appStoreRef.queuedCount() > 0 || appStoreRef.meetings().some(m => stillComing(m.id) || busy(m.id).length > 0);
-      if (pages.size || working || closing || shuttingDown || (!seenPage && now - startedAt < 60_000)) { idleSince = null; return; }
+      if (pages.size || working() || closing || restarting || shuttingDown || (!seenPage && now - startedAt < 60_000)) { idleSince = null; return; }
       idleSince ??= now;
       if (now - idleSince >= options.idleMs!) { clearInterval(idleLoop); options.onIdle?.(); }
     }, 1000) : undefined;
@@ -558,6 +598,7 @@ export async function startServer(options: {
     const appStore = store;
     const appJobs = jobs;
     const server = createServer(async (req, res) => {
+      let admitted = false;
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
@@ -565,33 +606,6 @@ export async function startServer(options: {
         if (`http://${req.headers.host}` !== origin) throw new HttpError(403, 'Unexpected host. Open the exact local URL printed by the server.');
         if (req.headers['sec-fetch-site'] === 'cross-site') throw new HttpError(403, 'Cross-site requests are not allowed.');
         const url = new URL(req.url ?? '/', origin);
-        const staticFiles: Record<string, [string, string]> = {
-          '/': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'],
-          '/setup': ['setup.html', 'text/html'], '/setup.html': ['setup.html', 'text/html'],
-          '/setup.js': ['setup.js', 'text/javascript'], '/setup.css': ['setup.css', 'text/css'], '/setup-ui.js': ['setup-ui.js', 'text/javascript'],
-          '/page-session.js': ['page-session.js', 'text/javascript'],
-          '/pcm-worklet.js': ['pcm-worklet.js', 'text/javascript'],
-          // The mini view (M7): one page, shown by the helper's native window or in Chrome's Picture-in-Picture window.
-          '/mini.html': ['mini.html', 'text/html'], '/mini.js': ['mini.js', 'text/javascript'], '/mini.css': ['mini.css', 'text/css'],
-          '/live-shared.js': ['live-shared.js', 'text/javascript'],
-          '/preview-composition.js': ['preview-composition.js', 'text/javascript'],
-          '/transcript-view.js': ['transcript-view.js', 'text/javascript'],
-          '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
-          '/capture-gaps.js': ['capture-gaps.js', 'text/javascript'],
-          // The Plans section (M7b); its fixtures load only with ?plans-fixture= in the page URL (a dev switch).
-          '/plans.js': ['plans.js', 'text/javascript'], '/plans-fixtures.js': ['plans-fixtures.js', 'text/javascript'],
-          '/plans-fixtures-data.js': ['plans-fixtures-data.js', 'text/javascript'],
-          // The installed app (M7): its manifest and icons, and a service worker whose only job is the "Starting…" page when the
-          // server is not running yet.
-          '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
-          '/sw.js': ['sw.js', 'text/javascript'], '/starting.html': ['starting.html', 'text/html'],
-          '/starting.css': ['starting.css', 'text/css'], '/starting.js': ['starting.js', 'text/javascript'],
-          '/icons/icon-192.png': ['icons/icon-192.png', 'image/png'], '/icons/icon-512.png': ['icons/icon-512.png', 'image/png'],
-          // Markdown rendering for answer cards; vendored so the app needs no network (public/vendor/README.md).
-          '/vendor/marked-15.0.12.umd.js': ['vendor/marked-15.0.12.umd.js', 'text/javascript'],
-          '/vendor/purify-3.2.6.min.js': ['vendor/purify-3.2.6.min.js', 'text/javascript'],
-          '/vendor/katex-0.16.22.min.js': ['vendor/katex-0.16.22.min.js', 'text/javascript'],
-        };
         if (req.method === 'GET' && staticFiles[url.pathname]) {
           const [path, type] = staticFiles[url.pathname];
           // The mini page also starts a session: the helper's web view opens it directly.
@@ -606,13 +620,22 @@ export async function startServer(options: {
           // Chrome's Picture-in-Picture window holds the mini page in a frame of the app's own origin.
           if (url.pathname === '/mini.html') res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'");
           res.writeHead(200, { 'Content-Type': type.startsWith('image/') ? type : `${type}; charset=utf-8`, 'Cache-Control': 'no-store' });
-          res.end(await readFile(join(ROOT, 'public', path)));
+          const snapshot = staticSnapshot.get(path)!;
+          if ('error' in snapshot) throw snapshot.error;
+          res.end(snapshot.bytes);
           return;
         }
         const cookies = (req.headers.cookie ?? '').split(';').map(value => value.trim());
         if (!cookies.includes(`meeting_session=${token}`)) throw new HttpError(403, 'Open the dashboard first to establish a local session.');
         if (req.method !== 'GET' && req.headers.origin !== origin) throw new HttpError(403, 'Mutations require the dashboard origin.');
+        const restartRequest = req.method === 'POST' && url.pathname === '/api/restart';
+        const mutation = req.method !== 'GET' && !restartRequest && url.pathname !== '/api/bye';
+        // Reserve admission synchronously with restart: a body/preparation already in flight blocks acceptance, and no
+        // mutation can slip in after acceptance. Reads and goodbye remain available during the graceful shutdown delay.
+        if (restarting && mutation) { send(res, 503, { error: 'Restarting' }); return; }
+        if (restarting && restartRequest) { send(res, 202, { restarting: true }); return; }
         if (closing) throw new HttpError(503, 'Server is shutting down.');
+        if (mutation) { admissions++; admitted = true; }
         pruneDeletedMeetingState();
         // Open pages (the installed app's window, tabs): each says who it is with every request, and goodbye when it closes.
         const pageId = req.headers['x-page'];
@@ -717,8 +740,16 @@ export async function startServer(options: {
           }
           throw new HttpError(404, 'Not found.');
         }
+        if (req.method === 'POST' && url.pathname === '/api/restart') {
+          if (!canRestart) { send(res, 409, { error: 'Restart from Terminal' }); return; }
+          if (working()) { send(res, 409, { error: 'Busy' }); return; }
+          restarting = true; // Before 202 and before the response is flushed: another page cannot start new work.
+          res.once('finish', () => { void app.shutdown().then(() => (options.exit ?? process.exit)(0)); });
+          send(res, 202, { restarting: true }); return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/status') {
-          send(res, 200, { config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), shuttingDown, audioRetentionNotice: audioRetention.notice,
+          const ready = fingerprint.ready();
+          send(res, 200, { update: { ready, canRestart }, working: working(), config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), shuttingDown, audioRetentionNotice: audioRetention.notice,
             queued: appStore.queuedCount(), sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
             capabilities: { microphone: true, systemAudio: false, cloudModels: Boolean(quick), mainModel: ai.current('main'), correctionModel: quick ? ai.currentCorrection() : null, notesModel: notesRunner ? ai.current('main') : null, actionModel: actionRunner ? ai.current('main') : null, quickModel: quick ? ai.current('quick') : null, heavyModel: heavy ? ai.current('main') : null, participationScheduler: false, pdfExtraction: false },
           }); return;
@@ -1191,7 +1222,7 @@ export async function startServer(options: {
         if (!res.headersSent && !res.destroyed) send(res, status, { error: message, ...detail,
           ...(plansError ? { status, code: typeof detail.code === 'string' ? detail.code : status === 404 ? 'not found' : status === 409 ? 'conflict' : 'bad request' } : {}) });
         else if (!res.destroyed) res.end();
-      }
+      } finally { if (admitted) admissions--; }
     });
     server.requestTimeout = 120_000;
     server.headersTimeout = 10_000;
