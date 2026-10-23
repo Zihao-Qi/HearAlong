@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MeetingStore } from '../src/store.ts';
-import { NotesJobs, assignsTo, mergeGaps, checkNotesRun, notesInput, notesMarkdown, takeSnapshot, validateNotes, type NotesRunner, type Snapshot } from '../src/notes.ts';
+import { NotesJobs, NotesFile, notesInstructions, assignsTo, mergeGaps, checkNotesRun, notesInput, notesMarkdown, takeSnapshot, validateNotes, type NotesRunner, type Snapshot } from '../src/notes.ts';
 import { piTaskArgs, runPiTask, type PiTaskResult } from '../src/pi-task.ts';
 import { Cooldowns } from '../src/quota.ts';
 import type { Recognition } from '../src/recognizer.ts';
@@ -87,6 +87,109 @@ test('quotes may match the originally heard text; a missing quote or an overlong
   } finally { await f.close(); }
 });
 
+test('notes use three parallel medium calls, report progress, merge once, and cancel without replacing old notes', async () => {
+  const f = await fixture();
+  const calls: Parameters<NotesRunner>[0][] = [];
+  const releases: (() => void)[] = [];
+  let aborts = 0;
+  const runner: NotesRunner = async input => {
+    calls.push(input);
+    await new Promise<void>((resolve, reject) => {
+      releases.push(resolve);
+      input.signal.addEventListener('abort', () => { aborts++; reject(new Error('aborted')); }, { once: true });
+    });
+    const part = input.instructions.match(/only these parts of the notes: ([^.]+)/)?.[1];
+    const raw = part?.startsWith('title') ? { summary: [{ text: 'Rail B remains in use.', cites: ['S1'], quote: 'Keep the striped waistcoats on rail B' }], openQuestions: [] }
+      : part?.startsWith('decisions') ? { decisions: [{ text: 'A plant decision is mis-sorted.', cites: ['S4'], quote: 'Has the lobby fern been watered today' }], actions: [] }
+      : { otherMatters: [], otherTalk: [{ from: 'S4', to: 'S5', label: 'plants' }] };
+    return { text: JSON.stringify(raw), model: 'stand-in' };
+  };
+  const jobs = new NotesJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null });
+  try {
+    assert.match(notesInstructions(), /summary: 3–6 sentences.*one short paragraph.*no 'Discussed …' openers/);
+    await jobs.start(f.meeting.id);
+    await until(() => calls.length === 3);
+    assert.ok(calls.every(c => c.thinking === 'medium'));
+    assert.deepEqual(calls.map(c => c.instructions.match(/only these parts of the notes: ([^.]+)/)?.[1]), ['title, summary, openQuestions', 'decisions, actions', 'otherMatters, otherTalk']);
+    assert.ok(calls.every(c => c.instructions.startsWith(notesInstructions().split('Answer with JSON only:')[0])));
+    assert.equal(new Set(calls.map(c => c.inputPath)).size, 1);
+    assert.equal((await jobs.status(f.meeting.id)).job?.progress?.phase, 'read');
+    calls[0].onEvent?.({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '{"summary":[{"text":"Latest point"}]}' } });
+    const progress = (await jobs.status(f.meeting.id)).job?.progress;
+    assert.equal(progress?.phase, 'write'); assert.equal(progress?.parts.project.count, 1); assert.equal(progress?.latest, 'Latest point');
+    releases.splice(0).forEach(r => r());
+    await until(() => !jobs.busy(f.meeting.id));
+    const old = (await jobs.status(f.meeting.id)).notes;
+    assert.equal(old?.notes.summary.length, 1); assert.equal(old?.notes.needsReview.length, 1, 'other part ranges guard project items');
+    await jobs.start(f.meeting.id); await until(() => calls.length === 6);
+    await jobs.cancel(f.meeting.id, (await jobs.status(f.meeting.id)).job!.id);
+    assert.equal(aborts, 3); assert.equal((await jobs.status(f.meeting.id)).job, null);
+    assert.deepEqual((await jobs.status(f.meeting.id)).notes, old);
+    await jobs.start(f.meeting.id); await until(() => calls.length === 9);
+    await jobs.close();
+    assert.equal(aborts, 6, 'closing aborts every part too');
+    assert.equal((await jobs.status(f.meeting.id)).job?.state, 'interrupted');
+    assert.deepEqual((await jobs.status(f.meeting.id)).notes, old);
+  } finally { await jobs.close(); await f.close(); }
+});
+
+test('the first notes status has snapshot dimensions before job/input files finish writing', async () => {
+  const f = await fixture();
+  const jobs = new NotesJobs({ store: f.store, directory: f.directory, runner: async () => ({ text: '{}' }), clock: Date.now, glossaryFor: async () => null });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  // Hold the first filesystem write to deterministically exercise the preparation window.
+  const original = (jobs as any).writeJob.bind(jobs);
+  (jobs as any).writeJob = async (...args: unknown[]) => { await gate; return original(...args); };
+  try {
+    await jobs.start(f.meeting.id);
+    const state = await jobs.status(f.meeting.id);
+    assert.equal(state.job?.progress?.phase, 'read');
+    assert.equal(state.job?.progress?.lines, LINES.length);
+    assert.equal(state.job?.progress?.minutes, Math.round(state.coverage.untilMs / 60000));
+  } finally { release(); await jobs.close(); await f.close(); }
+});
+
+test('an abort before notes publication leaves the previous atomic record intact', async () => {
+  const f = await fixture();
+  try {
+    const jobs = new NotesJobs({ store: f.store, directory: f.directory, runner: async () => ({ text: JSON.stringify({ summary: [{ text: 'Keep the waistcoats.', cites: ['S1'], quote: 'Keep the striped waistcoats on rail B' }] }) }), clock: Date.now, glossaryFor: async () => null });
+    await jobs.start(f.meeting.id); await until(() => !jobs.busy(f.meeting.id));
+    const file = new NotesFile(jobs.file(f.meeting.id).path);
+    const old = (await file.load())!;
+    const controller = new AbortController(); controller.abort();
+    await assert.rejects(file.save(old, controller.signal), /abort/i);
+    assert.deepEqual(await file.load(), old);
+  } finally { await f.close(); }
+});
+
+test('one rate-limited part aborts its siblings, fails the job, retains old notes and starts cooldown', async () => {
+  const f = await fixture();
+  let fail = false, calls = 0, aborted = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  const cooldowns = new Cooldowns(Date.now);
+  const runner: NotesRunner = async input => {
+    if (!fail) return { text: JSON.stringify({ summary: [{ text: 'Keep the waistcoats.', cites: ['S1'], quote: 'Keep the striped waistcoats on rail B' }] }) };
+    calls++;
+    if (input.instructions.includes('notes: decisions,')) { await gate; throw new Error('Model rate limit (429)'); }
+    await new Promise<void>((_, reject) => input.signal.addEventListener('abort', () => { aborted++; reject(new Error('aborted')); }, { once: true }));
+    throw new Error('unreachable');
+  };
+  const jobs = new NotesJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, cooldowns });
+  try {
+    await jobs.start(f.meeting.id); await until(() => !jobs.busy(f.meeting.id));
+    const old = (await jobs.status(f.meeting.id)).notes;
+    fail = true; await jobs.start(f.meeting.id); await until(() => calls === 3); release();
+    await until(() => !jobs.busy(f.meeting.id));
+    const status = await jobs.status(f.meeting.id);
+    assert.equal(status.job?.state, 'failed'); assert.match(status.job?.error ?? '', /rate limit/);
+    assert.equal(aborted, 2); assert.deepEqual(status.notes, old); assert.ok(cooldowns.pausedUntil('model'));
+  } finally { release(); await jobs.close(); await f.close(); }
+});
+
+async function until(test: () => boolean) { for (let i = 0; i < 500; i++) { if (test()) return; await new Promise(r => setTimeout(r, 5)); } throw new Error('timed out'); }
+
 test('the snapshot reports pending audio, lost speech and unchecked lines', async () => {
   const f = await fixture(['First line here.']);
   try {
@@ -113,6 +216,7 @@ test('notes jobs: one at a time, success-only publication, staleness, interrupte
     const jobs = new NotesJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null });
     let release!: () => void;
     replies.push(() => new Promise(resolve => { release = () => resolve(JSON.stringify({ summary: [{ text: 'Rail B holds the matinee waistcoats.', cites: ['S1'], quote: 'Keep the striped waistcoats on rail B' }] })); }));
+    replies.push(async () => '{}', async () => '{}');
     await jobs.start(f.meeting.id);
     await assert.rejects(jobs.start(f.meeting.id), /already being written/);
     assert.equal((await jobs.status(f.meeting.id)).job?.state, 'running');
@@ -126,7 +230,7 @@ test('notes jobs: one at a time, success-only publication, staleness, interrupte
     assert.match(calls[0].inputPath, /input-[\w-]+\.md$/);
 
     // A malformed answer fails the job and keeps the previous notes.
-    replies.push(async () => 'not json');
+    replies.push(async () => '{}', async () => 'not json', async () => '{}');
     await jobs.start(f.meeting.id);
     while ((await jobs.status(f.meeting.id)).job?.state === 'running') await new Promise(r => setTimeout(r, 5));
     const failed = await jobs.status(f.meeting.id);
@@ -164,8 +268,8 @@ test('simultaneous starts: exactly one job runs; close() waits for a job still p
   const f = await fixture();
   try {
     let calls = 0;
-    let release!: () => void;
-    const runner: NotesRunner = async () => { calls++; await new Promise<void>(r => { release = r; });
+    const releases: (() => void)[] = [];
+    const runner: NotesRunner = async () => { calls++; await new Promise<void>(r => { releases.push(r); });
       return { text: JSON.stringify({ summary: [{ text: 'Rail B holds the matinee waistcoats.', cites: ['S1'], quote: 'Keep the striped waistcoats on rail B' }] }) }; };
     // A gate on glossary loading holds jobs in preparation until opened.
     let glossaryWait!: () => void;
@@ -176,10 +280,10 @@ test('simultaneous starts: exactly one job runs; close() waits for a job still p
     const results = await Promise.allSettled([first, second]);
     assert.deepEqual(results.map(r => r.status), ['fulfilled', 'rejected']);
     assert.equal((results[1] as PromiseRejectedResult).reason.status, 409);
-    while (!release) await new Promise(r => setTimeout(r, 5));
-    release();
+    while (releases.length < 3) await new Promise(r => setTimeout(r, 5));
+    releases.forEach(r => r());
     while ((await jobs.status(f.meeting.id)).job) await new Promise(r => setTimeout(r, 5));
-    assert.equal(calls, 1);
+    assert.equal(calls, 3);
     assert.equal((await jobs.status(f.meeting.id)).notes?.version, 1);
 
     // Closing while the snapshot is still being prepared: the start is refused and close() waits for it.
@@ -189,7 +293,7 @@ test('simultaneous starts: exactly one job runs; close() waits for a job still p
     glossaryWait();
     await assert.rejects(preparing, /closing/);
     await closing;
-    assert.equal(calls, 1);
+    assert.equal(calls, 3);
   } finally { await f.close(); }
 });
 

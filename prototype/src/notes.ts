@@ -1,7 +1,8 @@
-// Post-meeting notes: a snapshot of the transcript, one no-tools model call, and code checks on the answer.
+// Post-meeting notes: a snapshot of the transcript, three parallel no-tools calls, and code checks on the merged answer.
 // The checks are mechanical (citations exist, quotes occur in the cited lines, off-topic ranges are respected);
 // they do not prove that a note means what the speakers meant, so notes are always presented as drafts.
 import { createHash, randomUUID } from 'node:crypto';
+import { renameSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { checkCompleted, extractJson, runPiTask, taskModel, type TaskModel, type PiTaskResult } from './pi-task.ts';
@@ -9,6 +10,7 @@ import type { MeetingStore } from './store.ts';
 import type { Glossary } from './correction.ts';
 import { ROLE_LABEL, compareSegments, speakerPrefix } from './speakers.ts';
 import { RATE_LIMIT, clockTime, type Cooldowns } from './quota.ts';
+import { DurationHistory, ItemScanner, textDelta, type NotesProgress } from './progress.ts';
 
 /** `source` and `speaker` are set only in a labelled (online) meeting; `speaker` is "Me"/"Them", frozen when the snapshot is taken. */
 export type SnapshotSegment = { ref: string; id: string; startMs: number; endMs: number; revision: number; text: string; originalText: string; source?: string; speaker?: string };
@@ -159,7 +161,8 @@ export function notesInstructions(labelled = false): string {
     '  that one item, exactly as said. Skip fragments too garbled to state clearly; the otherTalk range still marks them.',
     '- List every stretch of non-project talk in "otherTalk" as a line range with a short label; mark "smallTalk": true only for',
     '  greetings and chat with no content worth recording.',
-    '- summary: 3-8 points on what was discussed about the project. decisions: directions agreed or settled. actions: tasks to do.',
+    "- summary: 3–6 sentences on what was discussed about the project, in the order it was discussed, written to read as one short paragraph (no 'Discussed …' openers); each sentence is one item with its own cites and quote.",
+    '  decisions: directions agreed or settled. actions: tasks to do.',
     '  openQuestions: questions left open. Leave a section empty rather than padding it.',
     '',
     'Answer with JSON only:',
@@ -386,32 +389,55 @@ export class NotesFile {
     try { return upgrade(JSON.parse(await readFile(this.path, 'utf8'))); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
   }
-  async save(record: Omit<NotesRecord, 'version'>): Promise<NotesRecord> {
+  async save(record: Omit<NotesRecord, 'version'>, signal?: AbortSignal, commit: <T>(write: () => T) => T = write => write()): Promise<NotesRecord> {
     const saved = { ...record, version: ((await this.load())?.version ?? 0) + 1 };
     await mkdir(dirname(this.path), { recursive: true });
     const tmp = `${this.path}.${randomUUID()}.tmp`;
-    await writeFile(tmp, JSON.stringify(saved, null, 2), { mode: 0o600 });
-    await rename(tmp, this.path);
+    try {
+      await writeFile(tmp, JSON.stringify(saved, null, 2), { mode: 0o600 });
+      signal?.throwIfAborted();
+      // No asynchronous gap between cancellation arbitration and the atomic filesystem commit.
+      commit(() => renameSync(tmp, this.path));
+    } finally { await rm(tmp, { force: true }).catch(() => {}); }
     return saved;
   }
 }
 
-export type NotesRunner = (input: { instructions: string; inputPath: string; cwd: string; sessionDir: string; signal: AbortSignal }) =>
+export const NOTES_PARTS = { project: ['title', 'summary', 'openQuestions'], tasks: ['decisions', 'actions'], other: ['otherMatters', 'otherTalk'] } as const;
+export function partInstructions(full: string, keys: readonly string[]): string {
+  const at = full.indexOf('Answer with JSON only:');
+  const schema = JSON.parse(full.slice(at + 'Answer with JSON only:'.length));
+  return full.slice(0, at) + `This call writes only these parts of the notes: ${keys.join(', ')}. Separate calls write the other parts at the same time, so leave them out. Every rule above still applies (non-project talk never goes into the project sections).\n\nAnswer with JSON only:\n` + JSON.stringify(Object.fromEntries(keys.map(k => [k, schema[k]])));
+}
+export type NotesRunner = (input: { instructions: string; inputPath: string; cwd: string; sessionDir: string; signal: AbortSignal; thinking?: 'medium'; onEvent?: (event: any) => void }) =>
   Promise<{ text: string; model?: string; provider?: string }>;
 /**
- * The production runner: one no-tools Pi call. Only a complete run counts: clean exit, Pi settled and not aborted, a normal
+ * The production runner for each part: one no-tools Pi call. Only a complete run counts: clean exit, Pi settled and not aborted, a normal
  * stop and a non-empty answer. Any tool event is a failure.
  */
 export function piNotesRunner(model: TaskModel): NotesRunner {
-  return async ({ instructions, inputPath, cwd, sessionDir, signal }) =>
-    checkNotesRun(await runPiTask(instructions, { model: await taskModel(model), cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal }));
+  return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent }) =>
+    checkNotesRun(await runPiTask(instructions, { model: await taskModel(model), cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, onEvent }));
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {
   if (result.toolEvents) throw new Error(`The notes task tried to use tools (${result.tools.map(t => t.name).join(', ') || 'unnamed'}).`);
   return checkCompleted(result, 'The notes task');
 }
-export type JobState = { state: 'running' | 'failed' | 'interrupted'; startedAt: number; error?: string };
-type Job = { startedAt: number; controller: AbortController; done: Promise<void> };
+export type JobState = { id?: string; state: 'running' | 'failed' | 'interrupted'; startedAt: number; error?: string; progress?: NotesProgress };
+export type NotesCancelResult = { jobId: string; outcome: 'cancelled' | 'already-saved' | 'not-running' };
+type Job = { id: string; startedAt: number; controller: AbortController; done: Promise<void>; progress?: NotesProgress; stopped?: 'cancel' | 'close'; committed: boolean; ended: boolean };
+
+/** Give aborted parts time to stop, but never make job completion depend on a runner cooperating. */
+async function settleParts<T>(tasks: Promise<T>[], signal: AbortSignal, graceMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stop!: () => void;
+  const abandoned = new Promise<null>(resolve => {
+    stop = () => { timer = setTimeout(() => resolve(null), graceMs); };
+    if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true });
+  });
+  try { return await Promise.race([Promise.allSettled(tasks), abandoned]); }
+  finally { clearTimeout(timer); signal.removeEventListener('abort', stop); }
+}
 
 /**
  * One notes job per meeting. New notes replace old ones only after a successful run, validation and atomic write.
@@ -420,6 +446,7 @@ type Job = { startedAt: number; controller: AbortController; done: Promise<void>
  */
 export class NotesJobs {
   private running = new Map<string, Job>();
+  private last = new Map<string, NotesCancelResult>();
   private options: {
     store: MeetingStore; directory: string; runner: NotesRunner | null; clock: () => number;
     glossaryFor: (meetingId: string) => Promise<Glossary | null>;
@@ -427,6 +454,8 @@ export class NotesJobs {
     onSaved?: (meetingId: string) => void;
     /** The server's shared quota cooldown (M7b §4): notes are not started during it, and their own rate-limit error starts it. */
     cooldowns?: Cooldowns;
+    /** Bound sibling teardown after failure/cancellation. Tests shorten the production 10 s grace. */
+    abortGraceMs?: number;
   };
   constructor(options: NotesJobs['options']) {
     this.options = options;
@@ -459,9 +488,9 @@ export class NotesJobs {
     if (cooldown) throw Object.assign(new Error(`The model hit its rate limit; notes can be written again from ${clockTime(cooldown)}.`), { status: 429 });
     const controller = new AbortController();
     const startedAt = this.options.clock();
-    const job: Job = { startedAt, controller, done: Promise.resolve() };
+    const job: Job = { id: randomUUID(), startedAt, controller, done: Promise.resolve(), committed: false, ended: false };
     this.running.set(meetingId, job);
-    const release = () => { if (this.running.get(meetingId) === job) this.running.delete(meetingId); };
+    const release = () => { job.ended = true; if (this.running.get(meetingId) === job) this.running.delete(meetingId); };
     let prepared!: (error?: Error) => void;
     const ready = new Promise<void>((resolve, reject) => { prepared = error => error ? reject(error) : resolve(); });
     job.done = (async () => {
@@ -476,29 +505,71 @@ export class NotesJobs {
         }
         if (controller.signal.aborted) throw Object.assign(new Error('The server is closing.'), { status: 503 });
       } catch (error) { release(); prepared(error as Error); return; }
+      // Publish known snapshot dimensions before start() resolves or any job/input file I/O.
+      const progress: NotesProgress = job.progress = { phase: 'read', startedAt, lines: snapshot.segments.length, minutes: Math.round(snapshot.coverage.untilMs / 60_000),
+        parts: { project: { count: 0, done: false }, tasks: { count: 0, done: false }, other: { count: 0, done: false } }, latest: null, estimate: null };
       prepared();
       const cwd = join(this.options.directory, 'scratch', 'notes', meetingId);
       const inputPath = join(cwd, `input-${randomUUID()}.md`);
       try {
-        await this.writeJob(meetingId, { state: 'running', startedAt });
+        await this.writeJob(meetingId, { id: job.id, state: 'running', startedAt });
         await mkdir(cwd, { recursive: true, mode: 0o700 });
         await writeFile(inputPath, input, { mode: 0o600 });
-        const result = await runner({ instructions, inputPath, cwd, sessionDir: join(this.options.directory, 'sessions', meetingId), signal: controller.signal });
-        const { notes, dropped } = validateNotes(extractJson(result.text), snapshot);
+        controller.signal.throwIfAborted();
+        const history = new DurationHistory(this.options.directory);
+        progress.estimate = await history.estimate('notes', snapshot.segments.length).catch(() => null);
+        let failed = false, firstError: unknown;
+        const tasks = Object.entries(NOTES_PARTS).map(async ([name, keys]) => {
+          const part = name as keyof typeof NOTES_PARTS;
+          const scanner = new ItemScanner(keys.filter(k => k !== 'otherTalk'), (_section, item) => {
+            if (!controller.signal.aborted && !job.ended) { progress.parts[part].count++; if (typeof item.text === 'string') progress.latest = item.text; }
+          });
+          try {
+            const result = await runner({ instructions: partInstructions(instructions, keys), inputPath, cwd,
+              sessionDir: join(this.options.directory, 'sessions', meetingId, part), signal: controller.signal, thinking: 'medium',
+              onEvent: event => { if (controller.signal.aborted || job.ended) return; const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); } } });
+            controller.signal.throwIfAborted();
+            if (job.ended) throw new Error('The notes job has ended.');
+            const raw = extractJson(result.text) as Record<string, unknown>;
+            progress.parts[part].done = true;
+            return { result, raw: Object.fromEntries(keys.map(k => [k, raw[k]])) };
+          } catch (error) {
+            // Quota belongs to each part, not only the error selected for display.
+            if (RATE_LIMIT.test(error instanceof Error ? error.message : String(error))) this.options.cooldowns?.hit('model', 'notes');
+            if (!failed) { failed = true; firstError = error; }
+            controller.abort(); throw error;
+          }
+        });
+        const settled = await settleParts(tasks, controller.signal, this.options.abortGraceMs ?? 10_000);
+        if (failed) throw firstError;
+        controller.signal.throwIfAborted();
+        if (!settled) throw new Error('The notes parts did not stop.');
+        const results = settled.map(s => { if (s.status === 'rejected') throw s.reason; return s.value; });
+        const result = results[0].result;
+        progress.phase = 'check';
+        const { notes, dropped } = validateNotes(Object.assign({}, ...results.map(r => r.raw)), snapshot);
         if (!NOTE_SECTIONS.some(section => notes[section].length) && !notes.needsReview.length) throw new Error('The model returned no usable notes.');
         await this.file(meetingId).save({
           createdAt: this.options.clock(), model: result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null,
           meetingId, title: snapshot.title,
           input: { inputHash: snapshot.inputHash, coverage: snapshot.coverage, glossaryVersion: snapshot.glossaryVersion, segments: snapshot.segments.length, takenAt: snapshot.takenAt },
           notes, sources: sourcesFor(notes, snapshot), dropped,
+        }, controller.signal, write => {
+          if (job.ended || this.running.get(meetingId) !== job) throw new Error('The notes job has ended.');
+          controller.signal.throwIfAborted();
+          const value = write();
+          job.committed = true;
+          return value;
         });
         await rm(this.jobPath(meetingId), { force: true });
+        await history.record('notes', this.options.clock() - startedAt, snapshot.segments.length).catch(error => console.warn('Notes duration:', error));
         try { this.options.onSaved?.(meetingId); } catch (error) { console.warn(`After notes: ${(error as Error).message}`); }
       } catch (error) {
-        const message = controller.signal.aborted ? 'Stopped because the server was closing.' : (error as Error).message;
-        if (!controller.signal.aborted && RATE_LIMIT.test(message)) this.options.cooldowns?.hit('model', 'notes');
-        await this.writeJob(meetingId, { state: controller.signal.aborted ? 'interrupted' : 'failed', startedAt, error: message.slice(0, 500) }).catch(() => {});
+        const message = job.stopped ? 'Stopped because the server was closing.' : error instanceof Error ? error.message : String(error);
+        if (job.stopped === 'cancel' || job.committed) await rm(this.jobPath(meetingId), { force: true }).catch(() => {});
+        else await this.writeJob(meetingId, { id: job.id, state: job.stopped ? 'interrupted' : 'failed', startedAt, error: message.slice(0, 500) }).catch(() => {});
       } finally {
+        this.last.set(meetingId, { jobId: job.id, outcome: job.committed ? 'already-saved' : job.stopped === 'cancel' ? 'cancelled' : 'not-running' });
         await rm(inputPath, { force: true }).catch(() => {});
         release();
       }
@@ -509,7 +580,7 @@ export class NotesJobs {
     const notes = await this.file(meetingId).load();
     let job: JobState | null = null;
     const active = this.running.get(meetingId);
-    if (active) job = { state: 'running', startedAt: active.startedAt };
+    if (active) job = { id: active.id, state: 'running', startedAt: active.startedAt, progress: active.progress };
     else {
       try {
         const saved = JSON.parse(await readFile(this.jobPath(meetingId), 'utf8')) as JobState;
@@ -519,9 +590,19 @@ export class NotesJobs {
     const current = await this.snapshot(meetingId);
     return { notes, job, stale: Boolean(notes && notes.input.inputHash !== current.inputHash), currentUntilMs: current.coverage.untilMs, coverage: current.coverage };
   }
+  async cancel(meetingId: string, jobId: unknown): Promise<NotesCancelResult> {
+    if (typeof jobId !== 'string' || !jobId || jobId.length > 100) throw Object.assign(new Error('Give the displayed notes job id.'), { status: 400 });
+    const job = this.running.get(meetingId);
+    if (!job) return this.last.get(meetingId)?.jobId === jobId ? this.last.get(meetingId)! : { jobId, outcome: 'not-running' };
+    if (job.id !== jobId) throw Object.assign(new Error('These notes belong to an older job. The current job was not cancelled.'), { status: 409 });
+    if (job.committed) return { jobId, outcome: 'already-saved' };
+    job.stopped = 'cancel'; job.controller.abort(); await job.done;
+    // Cleanup is owned by this job before it releases the meeting, never by an old Cancel request afterwards.
+    return this.last.get(meetingId)?.jobId === jobId ? this.last.get(meetingId)! : { jobId, outcome: 'cancelled' };
+  }
   async close() {
     const jobs = [...this.running.values()];
-    for (const job of jobs) job.controller.abort();
+    for (const job of jobs) if (!job.committed) { job.stopped = 'close'; job.controller.abort(); }
     await Promise.all(jobs.map(job => job.done));
   }
 }

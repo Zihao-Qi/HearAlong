@@ -9,7 +9,9 @@ const render = app.slice(app.indexOf('function renderNotes('), app.indexOf('asyn
 const menu = app.slice(app.indexOf('// ---------- Notes options ----------'), app.indexOf("$('copy-notes').onclick"));
 
 import { Element, event, words, type UIEvent as Event } from './helpers/ui-dom.ts';
-const rows = app.slice(app.indexOf('function noteItem('), app.indexOf('/** Adjacent gaps'));
+const rows = app.slice(app.indexOf('function noteControl('), app.indexOf('/** Adjacent gaps'));
+const plansSource = await readFile(new URL('../public/plans.js', import.meta.url), 'utf8');
+const progress = plansSource.slice(plansSource.indexOf('// A progress card'), plansSource.indexOf('// ---------- End job progress')).replace(/export /g, '');
 function fixture() {
   const elements: Record<string, Element> = {};
   const $ = (id: string) => elements[id] ??= new Element('div');
@@ -32,8 +34,9 @@ function fixture() {
     stamp: (ms: number) => `${ms / 1000}s`, gapText: () => '10–20 (unrecognised)',
     guarded: (fn: unknown) => fn, base: () => '/api/meetings/meeting-1',
     post: async (url: string) => { posts.push(url); }, notesView: { signature: 'old' }, refreshNotes: async () => {},
-    jumpTo: (owner: string, id: string, version: number) => jumps.push([owner, id, version]),
-    lookIntoIt: () => new Element('button', 'Look into it'),
+    scrollToSegment: (owner: string, id: string, cites: string[]) => jumps.push([owner, id, cites]),
+    lookIntoIt: () => { const wrap = new Element('div'); wrap.append(new Element('button', 'Look into it')); return wrap; },
+    progressCard: runInNewContext(`(function(){${progress};return progressCard})()`, { document: { createElement: (tag: string) => new Element(tag) }, setInterval() {} }),
   };
   const jumps: unknown[][] = [];
   runInNewContext(rows + render + menu, context);
@@ -45,7 +48,7 @@ function fixture() {
   };
   const data = { notes: record as typeof record | null, enabled: true, stale: false, currentUntilMs: 30000,
     coverage: { gaps: [{ startMs: 25000, reason: 'failed' }] }, job: null as { state: string; startedAt: string } | null };
-  return { $, doc, listeners, posts, jumps, data, render: () => runInNewContext(rows + 'renderNotes(data, meetingId)', { ...context, data }) };
+  return { $, doc, listeners, posts, jumps, data, render: () => { Object.assign(context.notesView, { data }); runInNewContext(rows + 'renderNotes(data, meetingId)', { ...context, data }); } };
 }
 
 test('Notes warnings live only in the options menu; fresh notes have no stale line', () => {
@@ -149,13 +152,14 @@ test('Write again shares Write notes action and disabled/running states; no note
   assert.equal(f.$('notes-options').hidden, true);
   assert.equal(f.$('notes-menu').hidden, true);
   assert.equal(f.$('notes-stale').hidden, true);
-  assert.equal(f.$('write-notes').hidden, false);
+  assert.equal(f.$('write-notes').hidden, true, 'the progress card replaces the initial action while running');
   assert.equal(f.$('write-notes').textContent, 'Writing…');
+  assert.equal(f.$('notes-progress').hidden, false);
 });
 
 const note = (extra = {}) => ({ text: 'Label the clips.', startMs: 1000, cites: ['s1', 's2'], quote: 'original', quoteIn: 'original', section: 'actions', ...extra });
 
-test('Notes rows toggle details, keep owner tooltip and memory label, and Go to links track visited citations', () => {
+test('Notes list text is the citation control, highlights all cites, keeps owner tooltip, review reason and focus', () => {
   const f = fixture();
   f.data.notes!.notes.actions.push(note({ ownerProposed: 'Marta', label: 'lab', kind: 'todo', reviewReason: 'Check the assignment.' }));
   f.render();
@@ -164,28 +168,23 @@ test('Notes rows toggle details, keep owner tooltip and memory label, and Go to 
   const row = body.querySelector('.note')!;
   assert.equal(row.querySelector('.owner')!.textContent, 'Marta?');
   assert.match(row.querySelector('.owner')!.title, /no cited line clearly assigns/);
-  assert.equal(row.querySelector('.note-memory')!.textContent, 'lab · todo');
-  const toggle = row.querySelector('.note-time')!, details = row.querySelector('.note-details')!;
-  assert.equal(toggle.textContent, '1s');
-  assert.equal(toggle.getAttribute('aria-controls'), details.id);
-  assert.equal(details.hidden, true);
-  toggle.click();
-  assert.equal(details.hidden, false);
-  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
-  assert.match(words(details), /as originally heard/);
-  assert.match(words(details), /Check the assignment/);
-  const links = details.querySelectorAll('.cite');
-  assert.deepEqual(links.map(n => n.textContent), ['Go to 1s in the transcript', 'Go to 2s in the transcript']);
-  links[1].click();
-  assert.deepEqual(f.jumps, [['meeting-1', 's2', 2]]);
-  assert.equal(links[1].classList.contains('visited'), true);
-  toggle.click(); assert.equal(details.hidden, true);
-  toggle.click(); toggle.focus();
+  assert.equal(row.tagName, 'LI');
+  assert.equal(row.querySelector('.note-time'), null);
+  assert.equal(row.querySelector('.note-details'), null);
+  assert.equal(row.querySelector('.note-review')!.textContent, 'Check the assignment.');
+  const sentence = row.querySelector('.note-sentence')!;
+  assert.equal(words(sentence).replace(/\s+/g, ' ').trim(), 'Label the clips. Marta?');
+  assert.equal(words(row.querySelector('.note-owner-tail')!).replace(/\s+/g, ' ').trim(), 'clips. Marta?', 'last word and owner share one no-wrap group');
+  assert.equal(sentence.tagName, 'A');
+  assert.equal(sentence.href, '#transcript-s1');
+  assert.equal(sentence.getAttribute('aria-describedby'), 'note-transcript-hint');
+  sentence.onclick!(event());
+  assert.deepEqual(f.jumps, [['meeting-1', 's1', ['s1', 's2']]]);
+  assert.equal(sentence.classList.contains('lit'), true);
+  sentence.focus();
   f.data.stale = true; f.render();
-  const restored = f.$('notes-body').querySelector('.note-details')!;
-  assert.equal(restored.hidden, false, 'coverage polling keeps details open');
-  assert.equal(restored.querySelectorAll('.cite')[1].classList.contains('visited'), true);
-  assert.equal(f.doc.activeElement, f.$('notes-body').querySelector('.note-time'), 'focus survives a same-version redraw');
+  assert.equal(f.$('notes-body').querySelector('.note'), row, 'same-version updates retain the actual DOM');
+  assert.equal(f.doc.activeElement, sentence);
 });
 
 test('Notes folds count other items plus talk ranges, nest small talk, and omit empty review and sections', () => {
@@ -197,17 +196,23 @@ test('Notes folds count other items plus talk ranges, nest small talk, and omit 
   f.data.notes!.notes.needsReview.push(note({ reviewReason: 'Quote not found' }));
   f.render();
   const body = f.$('notes-body');
-  assert.deepEqual(body.children.map(n => n.children[0].textContent), ['Not about the project (3)', 'Needs review (1)']);
+  assert.deepEqual(body.children.filter(n => n.tagName === 'DETAILS').map(n => n.children[0].textContent), ['Not about the project (3)', 'Needs review (1)']);
   const other = body.children[0];
   assert.equal(other.tagName, 'DETAILS');
-  assert.equal(other.querySelector('.note-details')!.querySelector('button')!.textContent, 'Go to 1s in the transcript');
+  assert.equal(other.querySelector('.note-sentence')!.textContent, 'Label the clips.');
   assert.match(words(other), /Look into it/);
   assert.equal(other.querySelector('.notes-fold')!.children[0].textContent, 'Small talk (1)');
-  assert.ok(other.children.findIndex(n => n.className === 'note') < other.children.findIndex(n => n.className === 'offtopic-row'));
+  const list = other.querySelector('ul')!;
+  assert.equal(list.children.length, 2, 'other matter and non-project range share a list');
+  assert.equal(list.children[1].tagName, 'LI');
+  assert.equal(list.children[1].querySelector('a')!.textContent, 'Travel');
+  const smallList = other.querySelector('.notes-fold')!.querySelector('ul')!;
+  assert.equal(smallList.children[0].tagName, 'LI');
+  assert.equal(smallList.children[0].querySelector('a')!.textContent, 'Weather');
   other.open = true; other.querySelector('.notes-fold')!.open = true;
   f.data.notes!.notes.needsReview = [];
   f.render();
-  assert.equal(f.$('notes-body').children.length, 1);
+  assert.equal(f.$('notes-body').children.length, 3, 'same-version snapshots retain immutable content and hidden hint');
   assert.equal(f.$('notes-body').children[0].open, true);
   assert.equal(f.$('notes-body').querySelector('.notes-fold')!.querySelector('.notes-fold')!.open, true);
 });

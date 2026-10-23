@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import type { Board } from '../src/board.ts';
 import { CaptureSuspension } from '../public/capture-clock.js';
 import { checkGapFixesPage } from './transcript-notes-fix1-page-cases.ts';
@@ -14,9 +15,10 @@ const out = resolve(process.argv[2] ?? 'artifacts/transcript-notes');
 await mkdir(out, { recursive: true });
 // Retained as the isolated fixture for layout-check; never reads or writes the user's store.
 const directory = await mkdtemp(join(tmpdir(), 'transcript-notes-page-'));
+const setup = await dashboardSetup(directory, true);
 const recognizer = { async transcribe() { return { text: '', words: [], backend: 'scripted', computeMs: 1, decodeMs: 1,
   audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' }; }, close() {} };
-const serve = () => startServer({ directory, port: 0, quick: null, heavy: null, recognizer, drafts: null, notes: null, actions: null, board: null });
+const serve = () => startServer({ directory, port: 0, setup, quick: null, heavy: null, recognizer, drafts: null, notes: null, actions: null, board: null });
 let app = await serve();
 let cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
 const meeting = app.store.createMeeting('Pottery workshop — synthetic gap fixture');

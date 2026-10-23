@@ -217,7 +217,13 @@ async function stateChecks(page: Page, state: string, config: string, t: string)
       }
       break;
     }
-    case 'running': check(`${t}: “Planning · 3 pages read · 1 check run” and Cancel`, status === 'Planning · 3 pages read · 1 check run' && await page.locator('#plans .plans-status button', { hasText: 'Cancel' }).count() === 1, status); break;
+    case 'running': {
+      const labels = await page.locator('#plans .progress-label').allTextContents();
+      check(`${t}: four-step progress card with pages, checks and Cancel`, JSON.stringify(labels) === JSON.stringify(['Read the notes', 'Read your materials', 'Write the plans', 'Check every source'])
+        && (await page.locator('#plans .progress-detail').allTextContents()).join(' ').includes('3\u00a0web\u00a0pages · 1\u00a0check\u00a0run')
+        && await page.locator('#plans .progress-cancel', { hasText: 'Cancel' }).count() === 1);
+      break;
+    }
     case 'waiting-recording': {
       check(`${t}: an automatic run waiting for the recording`, status === 'Planning after the notes: waiting for the recording to end.', status);
       // The user's Plan replaces a waiting automatic run (§2b).
@@ -229,7 +235,8 @@ async function stateChecks(page: Page, state: string, config: string, t: string)
     }
     case 'waiting-notes': check(`${t}: waiting for the notes`, status === 'Waiting for the notes.', status); break;
     case 'waiting-quota': check(`${t}: waiting for the quota`, /^Waiting for the model’s quota, until about /.test(status), status); break;
-    case 'replanning': check(`${t}: planning again beside the plans`, /^Planning again · 6 files read · 1 check run\. The plans below stay/.test(status) && (await rowHeights(page)).length === 3, status); break;
+    case 'replanning': check(`${t}: progress above the three kept plans`, await page.locator('#plans .job-progress').count() === 1
+      && (await page.locator('#plans .progress-detail').allTextContents()).join(' ').includes('1\u00a0check\u00a0run') && (await rowHeights(page)).length === 3); break;
     case 'plans': {
       check(`${t}: three rows and “3 more”`, (await rowHeights(page)).length === 3 && await page.locator('#plans .plans-more button', { hasText: /^3 more$/ }).count() === 1);
       check(`${t}: complete answer and step: “Answer:” and “Next:”`, /^Answer: No: the forest site/.test((await text(page, '#plans .plan-answer'))[0]) && /^Next: Rewrite/.test((await text(page, '#plans .plan-step'))[0]));

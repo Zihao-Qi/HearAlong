@@ -60,7 +60,7 @@ async function fixture(state: string) {
   const api = { getPlans: async () => structuredClone(page) };
   const context = { document: doc, host, api, CSS: { escape: (s: string) => s }, crypto, URL, Blob,
     stamp: (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`,
-    requestAnimationFrame: (fn: () => void) => fn(), setTimeout: () => 0, clearTimeout() {},
+    requestAnimationFrame: (fn: () => void) => fn(), setTimeout: () => 0, clearTimeout() {}, setInterval() {},
     hooks: { meetingId: () => 'm', meetingTitle: () => 'Meeting', visible: () => false, log() {}, noteCounts: () => ({ questions: 3, actions: 2 }) },
   };
   runInNewContext(plans + '\nglobalThis.view = createPlansView({host, api, hooks});', context);
@@ -83,15 +83,45 @@ test('Plans no-notes is exactly one calm line; idle is a primary card with real 
   assert.equal(f.host.querySelector('button'), null);
 });
 
-test('Plans running and waiting use the progress bar, Cancel and a checked-plans waiting card', async () => {
+test('Plans running uses the four-step card and Cancel, waiting retains its explicit reason', async () => {
   const f = await fixture('running');
-  assert.match(words(f.host.querySelector('.plans-status')!), /Planning · 3 pages read · 1 check run Cancel/);
-  assert.match(words(f.host.querySelector('.plans-panel')!), /The plans appear here when they are checked/);
+  const card = f.host.querySelector('.job-progress')!;
+  assert.match(words(card), /Making plans · .*Cancel/);
+  assert.deepEqual(card.querySelectorAll('.progress-label').map(n => n.textContent), ['Read the notes', 'Read your materials', 'Write the plans', 'Check every source']);
+  assert.match(words(card), /3\u00a0web\u00a0pages · 1\u00a0check\u00a0run/);
+  assert.equal(card.querySelector('.progress-cancel')!.textContent, 'Cancel');
+  assert.equal(f.host.querySelector('.plans-reading'), null, 'no extra status row');
   assert.equal(f.host.querySelector('.plans-head'), null);
   const waiting = await fixture('waiting-recording');
   assert.match(words(waiting.host.querySelector('.plans-status')!), /waiting for the recording to end/);
   waiting.host.querySelector('[data-focus="options"]')!.click();
   assert.equal(waiting.host.querySelector('[data-focus="plan-again"]')!.getAttribute('aria-disabled'), 'false', 'waiting automatic run can still be replaced');
+});
+
+test('plans progress-only updates keep saved rows and focused controls, with unknown expected count', async () => {
+  const f = await fixture('replanning');
+  const row = f.host.querySelector('.plan-row')!;
+  const control = row.querySelector('button')!; control.focus();
+  f.page.run.progress = { ...f.page.run.progress, phase: 'write', written: 2, latest: 'A streamed label', expected: null };
+  await f.view.refresh();
+  assert.equal(f.host.querySelector('.plan-row'), row);
+  assert.equal(f.doc.activeElement, control);
+  assert.match(words(f.host.querySelector('.job-progress')!), /2 so far Latest: A streamed label/);
+});
+
+test('Explore further gets the same isolated progress card and retains focused saved plans', async () => {
+  const f = await fixture('explore-stopped');
+  f.page.run.state = 'running'; f.page.run.finishedAt = null;
+  f.page.run.progress = { phase: 'materials', startedAt: Date.now(), materials: ['guide.md'], files: 1, pages: 1, checks: 1, questions: 1, written: 0, expected: 1, latest: null, estimate: 630000 };
+  await f.view.refresh();
+  const card = f.host.querySelector('.job-progress'); assert.ok(card, 'Explore further has phase/clock/Cancel card');
+  const row = f.host.querySelector('.plan-row')!, control = row.querySelector('button')!; control.focus();
+  f.page.run.progress = { ...f.page.run.progress, phase: 'write', written: 1, latest: 'An explored label' };
+  await f.view.refresh();
+  assert.equal(f.host.querySelector('.plan-row'), row); assert.equal(f.doc.activeElement, control);
+  const text = words(f.host.querySelector('.job-progress')!).replaceAll('\u00a0', ' ');
+  assert.match(text, /1 open question/); assert.doesNotMatch(text, /open decisions|1 open questions|1 web pages|1 checks run/);
+  assert.match(text, /1 web page · 1 check run/); assert.match(text, /1 so far Latest: An explored label/);
 });
 
 test('Plans planned bar has only Options when fresh; menu owns actions, time and plan-only warnings, with keyboard focus return', async () => {

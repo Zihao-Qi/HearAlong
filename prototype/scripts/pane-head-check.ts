@@ -110,7 +110,7 @@ try {
       cards.push(card(2));
       await page.locator('[data-card="fixture-2"].unread').waitFor();
       await shot(page, `${width}-board-dotted`);
-      await tab('notes').click(); await page.locator('#notes-body .note').first().waitFor();
+      await tab('notes').click(); await page.locator('#notes-body .notes-summary > .note-sentence').first().waitFor();
       assert.equal(await page.locator(`#${badge}`).isVisible(), false, 'leaving dotted Board does not count old dots');
       await page.waitForTimeout(3200);
       assert.equal(await page.locator(`#${badge}`).isVisible(), false, 'poll does not turn old dots into arrivals');
