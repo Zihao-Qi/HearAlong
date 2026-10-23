@@ -8,7 +8,7 @@ import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'nod
 import { join } from 'node:path';
 import { runPiTask, toolResultOf, type PiTaskError, type PiTaskOptions, type PiTaskResult, type ToolResult } from './pi-task.ts';
 import { endGroup, endRecorded, type ProcessRecord } from '../pi-extensions/process-groups.ts';
-import { RATE_LIMIT, clockTime, webRateLimited, type Cooldowns } from './quota.ts';
+import { RATE_LIMIT, clockTime, modelQuotaMessage, modelRateLimit, webRateLimited, type Cooldowns } from './quota.ts';
 
 export type ExplorationKind = 'plan' | 'explore';
 /**
@@ -32,11 +32,13 @@ export type ExplorationJob = {
   limitMs: number; runLimitMs: number;
   /** Pi's process while it runs, saved before Pi starts: a server start ends its group after a crash. */
   worker: ProcessRecord | null;
+  /** Concurrent continuations; each also has its own on-disk process folder. Older jobs omit this. */
+  workers?: ProcessRecord[];
   /** The caller's own data, kept with the record (what it pinned at the start); and what its work returned. */
   data: unknown; result: unknown;
 };
 export type WaitingReason = { reason: string; until?: number };
-export type ExplorationPiOptions = Omit<PiTaskOptions, 'signal' | 'timeoutMs' | 'processDir' | 'onStart' | 'cwd'> & { cwd?: string };
+export type ExplorationPiOptions = Omit<PiTaskOptions, 'timeoutMs' | 'processDir' | 'onStart' | 'cwd'> & { cwd?: string };
 export type ExplorationContext = {
   job: Readonly<ExplorationJob>;
   /** Aborted on Cancel, a quit, or when the run gives way to a recording. */
@@ -239,16 +241,21 @@ export async function recoverExplorations(directory: string, clock: () => number
   const unfinished = (await savedJobs(directory)).filter(job => job.state === 'waiting' || job.state === 'running');
   let ended = 0;
   for (const job of unfinished) {
-    if (job.state !== 'running' || !job.worker) continue;
-    try { if (await endGroup(job.worker)) ended++; } catch (error) { console.warn(`Could not end a leftover plan run: ${(error as Error).message}`); }
+    if (job.state !== 'running') continue;
+    for (const worker of job.workers ?? (job.worker ? [job.worker] : [])) {
+      try { if (await endGroup(worker)) ended++; } catch (error) { console.warn(`Could not end a leftover plan run: ${(error as Error).message}`); }
+    }
   }
   for (const job of unfinished) {
-    try { ended += (await endRecorded(join(directory, 'processes', job.id))).ended; } catch (error) { console.warn(`Could not end a leftover calculation: ${(error as Error).message}`); }
+    const dirs = (await readdir(join(directory, 'processes')).catch(() => [] as string[])).filter(n => n === job.id || n.startsWith(`${job.id}-pi-`));
+    for (const dir of dirs) {
+      try { ended += (await endRecorded(join(directory, 'processes', dir))).ended; } catch (error) { console.warn(`Could not end a leftover calculation: ${(error as Error).message}`); }
+    }
   }
   for (const job of unfinished) {
     const folder = folderOf(directory, job.meetingId, job.id);
     const ran = job.state === 'running';
-    Object.assign(job, { state: 'interrupted', stopped: 'crash', worker: null, finishedAt: clock(),
+    Object.assign(job, { state: 'interrupted', stopped: 'crash', worker: null, workers: [], finishedAt: clock(),
       error: ran ? 'The app stopped before this run finished.' : 'The app stopped before this run started.' });
     await writeAtomic(join(folder, 'job.json'), JSON.stringify(job)).catch(() => {});
     const stream = (await StreamLog.read(folder)).state;
@@ -421,13 +428,16 @@ export class Explorations {
     const directory = this.options.directory;
     const cwd = join(directory, 'scratch', 'explore', job.meetingId, job.id);
     const sessionDir = join(directory, 'sessions', job.meetingId);
-    const processDir = join(directory, 'processes', job.id);
+    const processDirs = new Set<string>();
+    const workers = new Map<number, ProcessRecord>();
+    let processNumber = 0;
     const runPi = this.options.runPi ?? runPiTask;
     // Pi's time is counted from its first start, so preparing (e.g. the Python environment) is not; the run's own limit,
     // counted from now, holds whatever the work does.
     let deadline: number | null = null;
     let timedOut = false;
     let runExpired = false;
+    let modelQuota: string | null = null;
     // Set once the run has ended: from then on its abandoned work (if it ignored the stop) can start or save nothing.
     let finished = false;
     const runTimer = setTimeout(() => { runExpired = true; controller.abort('time limit'); }, job.runLimitMs);
@@ -443,19 +453,32 @@ export class Explorations {
       deadline ??= performance.now() + job.limitMs;
       const left = Math.round(deadline - performance.now());
       if (left <= 0) { timedOut = true; throw Object.assign(new Error('The run has used its time.'), { reason: 'timeout' }); }
+      const number = ++processNumber;
+      const processDir = join(directory, 'processes', `${job.id}-pi-${number}`);
+      processDirs.add(processDir);
+      const signal = options.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
       try {
         const result = await runPi(prompt, {
-          ...options, cwd: options.cwd ?? cwd, sessionDir: options.sessionDir ?? sessionDir, signal: controller.signal, timeoutMs: left, processDir,
+          ...options, cwd: options.cwd ?? cwd, sessionDir: options.sessionDir ?? sessionDir, signal, timeoutMs: left, processDir,
           // Ownership is on disk before Pi does anything: a crash from here on is cleaned up at the next start.
           onStart: async worker => {
             if (finished || controller.signal.aborted) throw new Error('The run has ended.');
-            job.worker = worker;
+            workers.set(number, worker);
+            job.workers = [...workers.values()];
+            job.worker = job.workers[0] ?? null;
             await this.persist(job);
           },
           onEvent: event => {
-            const tool = log.piEvent(event);
+            // Pi call IDs need only be unique inside one process, not across continued sessions.
+            const namespaced = event.toolCallId === undefined ? event : { ...event, toolCallId: `pi${number}:${event.toolCallId}` };
+            const limited = modelRateLimit(event);
+            if (limited) {
+              if (job.kind === 'plan') modelQuota ??= limited;
+              this.options.cooldowns.hit('model', job.id);
+            }
+            const tool = log.piEvent(namespaced);
             if (tool && webRateLimited(tool)) this.options.cooldowns.hit('web', job.id);
-            options.onEvent?.(event);
+            options.onEvent?.(namespaced);
           },
         });
         if (result.errorMessage && RATE_LIMIT.test(result.errorMessage)) this.options.cooldowns.hit('model', job.id);
@@ -465,7 +488,12 @@ export class Explorations {
         else if (!controller.signal.aborted && RATE_LIMIT.test((error as Error).message)) this.options.cooldowns.hit('model', job.id);
         throw error;
       } finally {
-        if (job.worker && !finished) { job.worker = null; void this.persist(job).catch(() => {}); }
+        workers.delete(number);
+        if (!finished) {
+          job.workers = [...workers.values()]; job.worker = job.workers[0] ?? null;
+          try { await this.persist(job); }
+          catch (error) { console.warn(`A plan run's worker release could not be saved: ${(error as Error).message}`); }
+        }
       }
     };
     let result: unknown = null;
@@ -494,19 +522,23 @@ export class Explorations {
     clearTimeout(runTimer);
     // Whatever the run still owns is ended, whether or not its work handled the stop: Pi's group and every recorded script group.
     try {
-      if (job.worker) await endGroup(job.worker);
-      await endRecorded(processDir, undefined, { keepUnverified: true });
+      await Promise.all([...workers.values()].map(worker => endGroup(worker)));
+      await Promise.all([...processDirs].map(dir => endRecorded(dir, undefined, { keepUnverified: true })));
     } catch (error) { console.warn(`A plan run's processes could not be ended now (a server start will): ${(error as Error).message}`); }
     await rm(cwd, { recursive: true, force: true }).catch(error => console.warn(`A plan run's scratch folder could not be removed: ${(error as Error).message}`));
     // Publication is irreversible: a stop before its synchronous commit prevents it; a stop after it cannot cancel it.
-    const why: StopReason | null = active.committed ? null : controller.signal.aborted ? controller.signal.reason as StopReason : timedOut ? 'time limit' : null;
+    // A task timer (or the whole-run timer during teardown) must not hide an already-observed plan quota failure.
+    const quotaTimedOut = modelQuota !== null && (timedOut || runExpired) && !active.committed
+      && (!controller.signal.aborted || controller.signal.reason === 'time limit');
+    if (quotaTimedOut) failure = new Error(modelQuotaMessage(this.options.cooldowns.pausedUntil('model')));
+    const why: StopReason | null = active.committed || quotaTimedOut ? null : controller.signal.aborted ? controller.signal.reason as StopReason : timedOut ? 'time limit' : null;
     const state: ExplorationState = why === 'cancelled' ? 'cancelled' : why === 'quit' ? 'interrupted' : why ? 'stopped' : failure ? 'failed' : 'done';
     if (why) await log.stop(why);
     else if (failure) await log.stop('failed');
     else await log.complete();
     const final: Partial<ExplorationJob> = {
-      state, stopped: why, worker: null, finishedAt: this.options.clock(), result: result ?? null,
-      error: runExpired && !active.committed ? `Stopped at the run's time limit (${duration(job.runLimitMs)}).` : why ? STOPPED_ERROR[why](job) : failure ? failure.message.slice(0, 500) : null,
+      state, stopped: why, worker: null, workers: [], finishedAt: this.options.clock(), result: result ?? null,
+      error: runExpired && !active.committed && !quotaTimedOut ? `Stopped at the run's time limit (${duration(job.runLimitMs)}).` : why ? STOPPED_ERROR[why](job) : failure ? failure.message.slice(0, 500) : null,
     };
     try { await this.persist({ ...job, ...final }); Object.assign(job, final); }
     catch (error) {

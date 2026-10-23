@@ -6,10 +6,10 @@
 import { rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { folderOf, type ExplorationContext, type ExplorationJob, type Explorations } from '../explorations.ts';
+import { folderOf, type ExplorationContext, type ExplorationJob, type ExplorationPiOptions, type Explorations } from '../explorations.ts';
 import { checkCompleted, extractJson } from '../pi-task.ts';
 import { DurationHistory, ItemScanner, planProgress, updatePlanProgress, type PlanProgress } from '../progress.ts';
-import { RATE_LIMIT, clockTime, type Cooldowns } from '../quota.ts';
+import { RATE_LIMIT, modelQuotaMessage, type Cooldowns } from '../quota.ts';
 import type { Memory } from '../memory.ts';
 import type { NotesJobs } from '../notes.ts';
 import type { PdfText } from '../pdf-text.ts';
@@ -18,7 +18,8 @@ import type { MeetingStore } from '../store.ts';
 import { onManualPlan, onNotes, onSettingOff, type AutoPlanning, type PlanRun } from './auto.ts';
 import { EvidenceRecorder, materialLocator, type MaterialEligibility } from './evidence.ts';
 import { INPUT_LIMIT, buildPlanInput, exploreInput, planRoots } from './input.ts';
-import { EXPLORE_PROMPT, PLAN_PROMPT } from './prompt.ts';
+import { EXPLORE_PROMPT } from './prompt.ts';
+import { runPlanPass } from './pass.ts';
 import type { PlanTodos } from './todos.ts';
 import { checkPlans } from './validate.ts';
 import {
@@ -346,17 +347,23 @@ export class PlanJobs {
         // Defaults use a separate flag: colons can be part of a real model id.
         const thinking = (kind === 'plan' ? process.env.PLAN_MODEL : process.env.EXPLORE_MODEL) ? undefined : kind === 'plan' ? 'low' : 'high';
         let answer: unknown;
+        let passWarnings: string[] = [], passReview: string[] = [];
         try {
-          const result = checkCompleted(await ctx.pi(kind === 'plan' ? PLAN_PROMPT : EXPLORE_PROMPT, {
-            model, thinking, files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env,
-            onEvent: event => { evidence.piEvent(event); updatePlanProgress(progress, event, scanner); },
-          }), kind === 'plan' ? 'The plan pass' : 'Explore further');
+          const options: ExplorationPiOptions = { model, thinking, files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env };
+          if (kind === 'plan') {
+            const pass = await runPlanPass(ctx, options, event => evidence.piEvent(event), progress);
+            answer = pass.answer; passWarnings = pass.warnings; passReview = pass.review;
+          } else {
+            const result = checkCompleted(await ctx.pi(EXPLORE_PROMPT, { ...options,
+              onEvent: event => { evidence.piEvent(event); updatePlanProgress(progress, event, scanner); },
+            }), 'Explore further');
+            try { answer = extractJson(result.text); } catch { throw new Error('The model\'s answer could not be read as plans.'); }
+          }
           progress.phase = 'check';
-          try { answer = extractJson(result.text); } catch { throw new Error('The model\'s answer could not be read as plans.'); }
         } catch (error) {
           const until = o.cooldowns.pausedUntil('model');
           if (!ctx.signal.aborted && RATE_LIMIT.test((error as Error).message)) {
-            throw new Error(`The model's quota is used up${until ? `; plans can be made again from ${clockTime(until)}` : ''}`);
+            throw new Error(modelQuotaMessage(until));
           }
           throw error;
         }
@@ -367,9 +374,10 @@ export class PlanJobs {
         const moved = [...changedFiles(pins.materials, after)];
         const { materials: _manifest, ...planPins } = pins;
         const checked = checkPlans(answer, { run: ctx.job.id, refs: built.refs, evidence: saved, pins: planPins, changed });
+        checked.review.push(...passReview);
         const doc = plansDocument(checked, { kind, base, plan: data.plan, createdAt: o.clock(), pins, finished: true, evidenceComplete: evidence.complete,
           warnings: [...(moved.length ? [`The materials changed during this run (${moved.slice(0, 3).join(', ')}${moved.length > 3 ? ` and ${moved.length - 3} more` : ''}).`] : []),
-            ...built.warnings, ...tools.warnings] });
+            ...built.warnings, ...tools.warnings, ...passWarnings] });
         ctx.signal.throwIfAborted();
         await saveRunPlans(ctx.folder, doc);
         ctx.signal.throwIfAborted();

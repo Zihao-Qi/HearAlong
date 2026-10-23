@@ -252,6 +252,38 @@ test('admission: one run at a time; it waits for a recording, the meeting\'s own
   } finally { await explorations.close(); await s.close(); }
 });
 
+test('worker-release persistence failure preserves the Pi error or success', async () => {
+  for (const fails of [true, false]) {
+    const s = await scratch();
+    const originalError = new Error('original provider failure');
+    let releaseWrite = false, injected = 0;
+    const explorations = new Explorations({ directory: s.directory, clock: Date.now, cooldowns: new Cooldowns(),
+      runPi: async () => {
+        releaseWrite = true;
+        if (fails) throw originalError;
+        return { text: 'finished', ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 0, toolResults: [] };
+      } });
+    const internal = explorations as unknown as { persist: (job: ExplorationJob) => Promise<void> };
+    const persist = internal.persist.bind(explorations);
+    internal.persist = async job => {
+      if (releaseWrite) { releaseWrite = false; injected++; throw new Error('worker release disk failure'); }
+      await persist(job);
+    };
+    try {
+      let caught: unknown;
+      const job = await explorations.submit('m1', { kind: 'plan', work: async ctx => {
+        try { return (await ctx.pi('plan', { model: 'fiction/model' })).text; }
+        catch (error) { caught = error; throw error; }
+      } });
+      await until(() => ['failed', 'done'].includes(explorations.get(job.id)!.state));
+      assert.equal(injected, 1, 'failure was injected into the release write, not admission or terminal persistence');
+      assert.equal(caught, fails ? originalError : undefined, 'finally must not replace the original outcome');
+      const saved = await readJson(join(s.directory, 'explorations', 'm1', job.id, 'job.json'));
+      assert.deepEqual([saved.state, saved.error, saved.result], fails ? ['failed', originalError.message, null] : ['done', null, 'finished']);
+    } finally { await explorations.close(); await s.close(); }
+  }
+});
+
 test('the cooldown is shared: a plan run\'s rate-limit error pauses the actions and the notes', async () => {
   const s = await scratch();
   const cooldowns = new Cooldowns();

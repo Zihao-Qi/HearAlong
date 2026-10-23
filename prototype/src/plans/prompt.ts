@@ -32,6 +32,16 @@ export const PLAN_PROMPT = [
 /** sha256 of PLAN_PROMPT as frozen; a test compares it, so an accidental edit is caught. */
 export const PLAN_PROMPT_SHA256 = 'b4baf906a8235dcc1cd64ff4b9809dc247d775701b2758aac350e34dae3e4931';
 
+export const PLAN_PASS_VERSION = '1.8';
+export const PLAN_STAGE1 = 'This run works in two stages. Stage 1, now: do all the reading, lookups and checks that every plan needs. Then, instead of the JSON, answer with only the outline: one line per plan, in the order you will write them, as "P1 | label | the N-numbers it comes from", then one line per note you defer (every note no plan covers that the JSON would list in "deferred") as "D | N7 | why". Nothing else: do not write the plans yet.';
+export const PLAN_STAGE2 = 'Stage 2: write the JSON now, in the format above, for plan P{i} of your outline only (other runs write the other plans at the same time). Do not call tools: use only what you read, fetched and ran above. Write the plan exactly as briefly as you would if you wrote every plan in one answer: the same few stateNow items, each source a single transcript line or file line. Refer to another plan by its label, never by its outline number. Prefix every stateNow id and check id with "p{i}" (p{i}k1, p{i}c1, …). Leave "deferred" empty.';
+export const planStage2 = (i: number) => PLAN_STAGE2.replaceAll('{i}', String(i));
+export const PLAN_STAGE2_FALLBACK = 'Stage 2: write the JSON now, in the format above, for every plan of your outline.';
+// Hashes cover the frozen texts above, with {i} unfilled.
+export const PLAN_STAGE1_SHA256 = '8bade569e8e1f299dbde928475e8683230d2e847c107961ce612e3769c750630';
+export const PLAN_STAGE2_SHA256 = '589c29cadfb2265600e8e47a4a0cbde461c6125c37b82501c78f6e508f1c459b';
+export const PLAN_STAGE2_FALLBACK_SHA256 = '08f1f06613a714d339699a3c0492466e2b9784ffb655058a2b21b59c9f8f6c6b';
+
 // Explore further (M7b §2, §4): one plan, on the user's click, with the larger limits. The frozen plan-pass prompt above is
 // used unchanged and this instruction follows it, so every rule of the plan pass holds except those it names. General rules
 // only, as above. The input ends with the plan to explore: its question, what it says now and what its run found.

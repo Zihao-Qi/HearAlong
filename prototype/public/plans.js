@@ -65,7 +65,7 @@ export function progressCard(kind, p, cancel, existing = null) {
     if (latest) body.append(node('div', 'progress-latest', `Latest: ${kind === 'notes' ? `“${latest}”` : latest}`));
     row.append(icon, body); return row;
   };
-  const writtenDetail = progressCountKnown(p.written) ? p.expected != null && p.written < p.expected ? `${p.written} of about ${p.expected}` : `${p.written} so far` : '';
+  const writtenDetail = progressCountKnown(p.written) ? p.exact && p.expected != null ? `${p.written} of ${p.expected}` : p.expected != null && p.written < p.expected ? `${p.written} of about ${p.expected}` : `${p.written} so far` : '';
   const steps = kind === 'notes' ? [
     step('read', 'Read the transcript', progressCountKnown(p.minutes) && progressCountKnown(p.lines) ? `${p.minutes} min · ${p.lines} lines` : '', null, true),
     step('write', 'Write the notes', p.phase === 'write' ? 'Three parts at once' : '', p.phase === 'write' ? p.latest : null),

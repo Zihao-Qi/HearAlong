@@ -11,7 +11,7 @@ import type { Memory } from '../memory.ts';
 import type { PdfText } from '../pdf-text.ts';
 import { isPdf } from '../pdf-text.ts';
 import { blockHash, type LineBlock, type MaterialEvidence, type SavedEvidence } from './evidence.ts';
-import { PLAN_PROMPT_VERSION } from './prompt.ts';
+import { PLAN_PASS_VERSION, PLAN_PROMPT_VERSION } from './prompt.ts';
 import { notesWarnings, type RootRef } from './input.ts';
 import type { NotesRecord } from '../notes.ts';
 import { entriesOf, type CheckedPlan, type CheckedRun, type PlanPins, type Registry, type RunStatus } from './validate.ts';
@@ -174,7 +174,7 @@ export function plansDocument(checked: CheckedRun, meta: {
   /** Pi finished normally (checkCompleted) and the evidence was saved in full (EvidenceRecorder.complete). */
   finished: boolean; evidenceComplete: boolean;
 }): PlansDocument {
-  return { ...checked, schema: PLANS_SCHEMA, prompt: PLAN_PROMPT_VERSION, kind: meta.kind, base: meta.base, plan: meta.plan ?? null, createdAt: meta.createdAt,
+  return { ...checked, schema: PLANS_SCHEMA, prompt: meta.kind === 'plan' ? PLAN_PASS_VERSION : PLAN_PROMPT_VERSION, kind: meta.kind, base: meta.base, plan: meta.plan ?? null, createdAt: meta.createdAt,
     complete: meta.finished && meta.evidenceComplete, pins: meta.pins,
     warnings: [...(meta.warnings ?? []), ...meta.pins.notesWarnings, ...(meta.evidenceComplete ? [] : ['Not all evidence could be saved.'])] };
 }

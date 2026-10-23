@@ -36,6 +36,8 @@ export type PiTaskOptions = {
   cwd: string;
   /** Where Pi writes its session log: the provenance record for this task. */
   sessionDir?: string;
+  /** Continue this session file in place (takes precedence over sessionDir). */
+  session?: string;
   /** Tool allowlist; `null` disables every tool, skill and extension tool. Omitted: Pi's defaults. */
   tools?: string | null;
   /** Files whose contents Pi puts into the first message (`@path`), so large inputs stay off the command line. */
@@ -76,7 +78,7 @@ export function piTaskArgs(prompt: string, options: PiTaskOptions): string[] {
     ...(options.extensions ?? []).flatMap(path => ['-e', path]),
     ...(options.tools === null ? ['--no-tools', '--no-skills'] : options.tools ? ['--tools', options.tools] : []),
     ...(options.skills === false && options.tools !== null ? ['--no-skills'] : []),
-    ...(options.sessionDir ? ['--session-dir', options.sessionDir] : ['--no-session']),
+    ...(options.session ? ['--session', options.session] : options.sessionDir ? ['--session-dir', options.sessionDir] : ['--no-session']),
     '--', ...(options.files ?? []).map(file => `@${file}`), prompt,
   ];
 }

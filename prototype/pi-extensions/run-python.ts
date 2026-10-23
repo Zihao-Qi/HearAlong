@@ -40,7 +40,9 @@ function capped() {
 
 export default function runPython(pi: ExtensionAPI) {
   const cwd = process.cwd();
-  let runs = 0;
+  // Continuations retain the original numbering and tool definition, but cannot start more checks.
+  let runs = Math.max(0, Number(process.env.RUN_PYTHON_USED ?? 0) || 0);
+  const readOnly = process.env.RUN_PYTHON_USED !== undefined;
   const groups = new Set<number>();
   const killGroup = (pid: number) => { try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ } groups.delete(pid); };
   // If Pi exits (cancel, timeout, shutdown) while a script runs, its process group goes with it.
@@ -57,7 +59,7 @@ export default function runPython(pi: ExtensionAPI) {
     parameters: Type.Object({ code: Type.String({ description: 'Complete Python script; print what you need' }) }),
     async execute(_id, params, signal) {
       if (signal?.aborted) throw new Error('Cancelled before running.');
-      if (runs >= MAX_RUNS) throw new Error(`run_python limit reached (${MAX_RUNS} runs in this task).`);
+      if (readOnly || runs >= MAX_RUNS) throw new Error(`run_python limit reached (${MAX_RUNS} runs in this task).`);
       const runNumber = ++runs;
       const script = `run-${runNumber}.py`;
       await writeFile(join(cwd, script), params.code, { mode: 0o600 });

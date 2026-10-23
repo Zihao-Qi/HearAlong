@@ -39,6 +39,15 @@ for (const kind of ['plans', 'explore']) test(`${kind} omits unknown question an
   assert.equal(detail(card, 'write'), '1 of about 3');
 });
 
+test('outline counts are exact while fallback and Explore retain estimates', () => {
+  const render = fixture();
+  for (const written of [0, 3, 8]) {
+    const card = render('plans', { phase: 'write', startedAt: Date.now(), expected: 8, exact: true, written, latest: 'Lantern shelf' }, () => {});
+    assert.equal(detail(card, 'write'), `${written} of 8`);
+    assert.match(card.querySelector('.progress-latest')!.textContent, /Lantern shelf/);
+  }
+});
+
 test('notes parts with unavailable counts are blank, not invented zeros', () => {
   const render = fixture(), card = render('notes', { phase: 'write', startedAt: Date.now() }, () => {});
   assert.deepEqual(card.querySelectorAll('.progress-count').map(n => n.textContent), ['', '', '']);
