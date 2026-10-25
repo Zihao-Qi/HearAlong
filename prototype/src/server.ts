@@ -1123,7 +1123,7 @@ export async function startServer(options: {
         if (req.method === 'POST' && action === 'retry') {
           appStore.assertAudioAvailable(meetingId);
           if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
-          for (const chunk of appStore.chunks(meetingId)) if (chunk.status === 'failed') appStore.setStatus(chunk.id, 'queued');
+          for (const chunk of appStore.chunks(meetingId)) if (chunk.status === 'failed') appStore.retryChunk(chunk.id);
           appJobs.kick(); send(res, 200, { queued: appStore.queuedCount() }); return;
         }
         if (req.method === 'POST' && action === 'pcm') {

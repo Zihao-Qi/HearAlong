@@ -22,7 +22,7 @@ const recognizer = new LocalRecognizer(config.path);
 try {
   const start = performance.now();
   const job: Chunk = { id: randomUUID(), meetingId: 'smoke', source: 'synthetic', sequence: 0, path: audio,
-    decodeStart: 0, startMs: 0, seconds, sampleRate: null, status: 'queued', text: '', error: null, metrics: null, hash: 'synthetic' };
+    decodeStart: 0, startMs: 0, seconds, sampleRate: null, status: 'queued', text: '', error: null, metrics: null, hash: 'synthetic', attempts: 0, retryAt: null };
   const first = await recognizer.transcribe(job);
   const coldMs = performance.now() - start;
   const warm = await recognizer.transcribe({ ...job, id: randomUUID() });

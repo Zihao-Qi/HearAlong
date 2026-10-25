@@ -6,7 +6,7 @@ import type { Chunk } from '../src/store.ts';
 
 function job(seconds: number): Chunk {
   return { id: randomUUID(), meetingId: 'test', source: 'test', sequence: 0, path: '/unused', decodeStart: 0, startMs: 0,
-    seconds, sampleRate: null, status: 'queued', text: '', error: null, metrics: null, hash: 'test' };
+    seconds, sampleRate: null, status: 'queued', text: '', error: null, metrics: null, hash: 'test', attempts: 0, retryAt: null };
 }
 
 test('a crashed STT subprocess fails its job without killing the host; the next job can recover', async () => {

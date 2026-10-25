@@ -16,7 +16,7 @@ export type CorrectionStats = {
   linesSent?: number; linesSkipped?: number; tokensIn?: number; tokensOut?: number; tokensCached?: number; callsWithoutUsage?: number;
 };
 /** `learned`: misheard spans from accepted corrections in this meeting, by term; later occurrences are fixed without a model call. */
-export type CorrectionState = { lastCallAt: number; glossaryVersion: number; stats: CorrectionStats; lastError?: string; learned?: Record<string, string[]> };
+export type CorrectionState = { lastCallAt: number; glossaryVersion: number; stats: CorrectionStats; lastError?: string; learned?: Record<string, string[]>; failures: number; retryAfter: number };
 
 const NEGATIONS = new Set(['no', 'not', 'never', 'none', 'nothing', 'nor', 'neither', 'cannot', "can't", "don't", "doesn't", "didn't",
   "isn't", "aren't", "wasn't", "weren't", "won't", "wouldn't", "shouldn't", "couldn't", 'without']);
@@ -321,7 +321,7 @@ export class Corrector {
   isBusy(meetingId: string) { return this.busy.has(meetingId); }
   state(meetingId: string): CorrectionState {
     const saved = this.store.correctionState<CorrectionState>(meetingId);
-    return { lastCallAt: 0, glossaryVersion: 0, ...saved, stats: { ...ZERO, ...saved?.stats } };
+    return { lastCallAt: 0, glossaryVersion: 0, failures: 0, retryAfter: 0, ...saved, stats: { ...ZERO, ...saved?.stats } };
   }
   pending(meetingId: string): Segment[] {
     return this.store.visibleSegments(meetingId, this.clock()).filter(s => !s.correctionChecked);
@@ -354,7 +354,7 @@ export class Corrector {
       }
       const pending = unchecked.filter(s => !isFiller(s));
       const due = this.clock() - state.lastCallAt >= this.minIntervalMs;
-      if (!pending.length || !(due || (finished && pending.length <= this.maxBatch))) return filler.length ? 'done' : 'skipped';
+      if (!pending.length || this.clock() < state.retryAfter || !(due || (finished && pending.length <= this.maxBatch))) return filler.length ? 'done' : 'skipped';
       const editable = pending.slice(0, this.maxBatch);
       const visible = this.store.visibleSegments(meetingId, this.clock());
       const firstIndex = visible.findIndex(s => s.id === editable[0].id);
@@ -366,10 +366,12 @@ export class Corrector {
       const known = this.learn ? knownMishearings(editable, learned, glossary.terms) : [];
       let proposed: unknown[] = [];
       let malformed: unknown;
+      let replied = false;
       try {
         stats.calls++;
         stats.linesSent = (stats.linesSent ?? 0) + editable.length;
         const reply = await this.ask(correctionPrompt(editable, context, glossary.terms, this.learn ? learned : {}));
+        replied = true;
         // Token accounting per call, as the provider reported it (every attempt of a retried call); missing usage is counted, not zeroed.
         const usages = (reply.usages ?? (reply.usage ? [reply.usage] : [])) as { input?: number; output?: number; cacheRead?: number }[];
         if (!usages.length) stats.callsWithoutUsage = (stats.callsWithoutUsage ?? 0) + 1;
@@ -409,9 +411,11 @@ export class Corrector {
         }
       }
       if (!lastError && !accepted.size && !rejected.length) stats.noop++;
-      // Checked even on failure: correction is best-effort and must not stall or loop on one batch.
-      this.store.markCorrectionChecked(editable.map(s => s.id), glossary.version);
-      this.store.setCorrectionState(meetingId, { lastCallAt: this.clock(), glossaryVersion: glossary.version, stats, learned, ...(lastError ? { lastError } : {}) } satisfies CorrectionState);
+      // A failed call leaves the batch unchecked; any reply, even malformed, finishes the check.
+      if (replied) this.store.markCorrectionChecked(editable.map(s => s.id), glossary.version);
+      const failures = replied ? 0 : state.failures + 1;
+      const retryAfter = replied ? 0 : this.clock() + [60_000, 120_000, 300_000, 600_000][Math.min(failures - 1, 3)];
+      this.store.setCorrectionState(meetingId, { lastCallAt: this.clock(), glossaryVersion: glossary.version, stats, learned, failures, retryAfter, ...(!replied && lastError ? { lastError } : {}) } satisfies CorrectionState);
       return 'done';
     } finally { this.busy.delete(meetingId); }
   }
