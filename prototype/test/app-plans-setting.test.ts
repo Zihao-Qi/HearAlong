@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 
 const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
-const setting = app.slice(app.indexOf('const planSettingSaves ='), app.indexOf("$('export').href = meetingId", app.indexOf('const planSettingSaves =')));
+const setting = app.slice(app.indexOf('const planSettingSaves ='), app.indexOf('updateTranscriptDownloads(meetingId);', app.indexOf('const planSettingSaves =')));
 
 test('a plan-setting save belongs to its project: switching projects and saving the second one cannot be overwritten by the first reply', async () => {
   const a = { id: 'A', name: 'A', planAfterNotes: false }, b = { id: 'B', name: 'B', planAfterNotes: false };

@@ -497,16 +497,15 @@ export class MeetingStore {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return source;
   }
-  /** Paragraph export from segments; failed chunks stay visible as gaps rather than disappearing. */
-  markdown(id: string, mode: 'corrected' | 'raw' = 'corrected', locale?: string): string {
-    const meeting = this.meeting(id);
-    const stamp = (ms: number) => new Date(ms).toISOString().slice(11, 19);
+  /** Both exports share entries and paragraph boundaries; only their presentation differs. */
+  private transcriptParagraphs(id: string, mode: 'corrected' | 'raw', locale?: string, plain = false) {
+    const prefix = (ms: number) => plain ? '' : `[${new Date(ms).toISOString().slice(11, 19)}] `;
     // Online meetings (a tab source): Me/Them per paragraph, a new paragraph at each change of speaker, one fixed order.
     const { labelled, roleOf } = this.speakers(id);
     const segments = this.segments(id);
     if (labelled) segments.sort(compareSegments);
     const entries = [
-      ...this.captureGaps(id).map(g => ({ at: g.atMs, end: g.atMs, gap: `*${captureGapText(g, locale)}*` })),
+      ...this.captureGaps(id).map(g => ({ at: g.atMs, end: g.atMs, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
       ...segments.map(s => ({ at: s.startMs, end: s.endMs, text: mode === 'raw' ? s.originalText : s.text, speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })),
       ...this.chunks(id).filter(c => c.status !== 'completed').map(c => ({ at: c.startMs, end: c.startMs, gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` })),
     ].sort((a, b) => a.at - b.at);
@@ -518,13 +517,24 @@ export class MeetingStore {
     const label = () => (speaker ? `${ROLE_LABEL[speaker]}: ` : '');
     for (const entry of entries) {
       const changed = labelled && !('gap' in entry) && entry.speaker !== speaker;
-      if (current.length && ('gap' in entry || changed || entry.at - last >= 2000 || entry.at - start >= 45_000)) { paragraphs.push(`[${stamp(start)}] ${label()}${current.join(' ')}`); current = []; }
-      if ('gap' in entry) { paragraphs.push(`[${stamp(entry.at)}] ${entry.gap}`); continue; }
+      if (current.length && ('gap' in entry || changed || entry.at - last >= 2000 || entry.at - start >= 45_000)) { paragraphs.push(`${prefix(start)}${label()}${current.join(' ')}`); current = []; }
+      if ('gap' in entry) { paragraphs.push(`${prefix(entry.at)}${entry.gap}`); continue; }
       if (!current.length) { start = entry.at; speaker = entry.speaker; last = entry.end; }
       current.push(entry.text);
       last = labelled ? Math.max(last, entry.end) : entry.end; // overlapping sources: the latest end within this paragraph
     }
-    if (current.length) paragraphs.push(`[${stamp(start)}] ${label()}${current.join(' ')}`);
+    if (current.length) paragraphs.push(`${prefix(start)}${label()}${current.join(' ')}`);
+    return { labelled, paragraphs };
+  }
+  plainText(id: string): string {
+    const title = this.meeting(id).title.replace(/[\r\n]/g, ' ');
+    const { paragraphs } = this.transcriptParagraphs(id, 'corrected', undefined, true);
+    return `${title}${paragraphs.length ? `\n\n${paragraphs.join('\n\n')}` : ''}\n`;
+  }
+  /** Paragraph export from segments; failed chunks stay visible as gaps rather than disappearing. */
+  markdown(id: string, mode: 'corrected' | 'raw' = 'corrected', locale?: string): string {
+    const meeting = this.meeting(id);
+    const { labelled, paragraphs } = this.transcriptParagraphs(id, mode, locale);
     const note = mode === 'raw' ? 'Raw speech recognition, before glossary corrections.' : 'Glossary-corrected where marked in the app; raw export is available.';
     const who = labelled ? 'Speaker labels are capture channels: "Them" is the meeting tab (everyone on the call), "Me" is this microphone during the call.' : 'No speaker labels;';
     return `# ${meeting.title.replace(/[\r\n]/g, ' ')}\n\nTranscript — ${note} ${who}${labelled ? ' Not' : ' not'} verified meeting decisions.\n\n${paragraphs.join('\n\n')}\n`;

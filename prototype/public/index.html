@@ -24,6 +24,11 @@
         <button id="new-meeting" role="menuitem" class="menu-item strong">New meeting</button>
         <button id="rename-meeting" role="menuitem" class="menu-item">Rename this meeting…</button>
         <button id="open-replay" role="menuitem" class="menu-item">Replay a recording…<span class="muted small">Play an audio file as if it were live (a new meeting)</span></button>
+        <div id="meeting-download-sep" class="menu-sep" role="separator" hidden></div>
+        <div id="meeting-download-label" class="menu-label" aria-hidden="true" hidden>Download this transcript</div>
+        <a id="meeting-export" class="menu-item" role="menuitem" href="#" download hidden>With timestamps (.md)</a>
+        <a id="meeting-export-plain" class="menu-item" role="menuitem" href="#" download hidden>Without timestamps (.txt)</a>
+        <a id="meeting-export-raw" class="menu-item" role="menuitem" href="#" download hidden>Raw speech recognition (.md)<span class="muted small">Before glossary corrections</span></a>
         <div class="menu-sep" role="separator"></div>
         <div id="meeting-list-label" class="menu-label" aria-hidden="true">Meetings</div>
         <div id="meeting-list" class="menu-list" role="group" aria-label="Meetings"></div>
@@ -264,7 +269,17 @@
     </section>
     <section class="settings-section" data-section="export" hidden>
       <h3>Export</h3>
-      <div class="row"><a id="export" class="button" href="#">Transcript (.md)</a><a id="export-raw" class="button" href="#">Raw transcript</a><a id="export-notes-panel" class="button" href="#" aria-disabled="true" title="Write notes first">Notes (.md)</a></div>
+      <div class="row transcript-export-row">
+        <div class="transcript-options-wrap">
+          <button id="transcript-options" class="button options-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="transcript-menu"><span>Transcript</span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></button>
+          <div id="transcript-menu" class="menu" role="menu" aria-label="Download the transcript" hidden>
+            <a id="export" class="menu-item" role="menuitem" href="#" download>With timestamps (.md)</a>
+            <a id="export-plain" class="menu-item" role="menuitem" href="#" download>Without timestamps (.txt)</a>
+            <a id="export-raw" class="menu-item" role="menuitem" href="#" download>Raw speech recognition (.md)<span class="muted small">Before glossary corrections</span></a>
+          </div>
+        </div>
+        <a id="export-notes-panel" class="button" href="#" aria-disabled="true" title="Write notes first">Notes (.md)</a>
+      </div>
     </section>
     <section class="settings-section setup-ui" data-section="setup" hidden>
       <h3>Setup</h3>

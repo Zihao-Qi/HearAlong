@@ -398,6 +398,18 @@ async function refreshDetail() {
   } catch { /* status polling reports connection problems */ }
 }
 
+function updateTranscriptDownloads(id) {
+  const paths = { export: 'transcript.md', 'export-plain': 'transcript.txt', 'export-raw': 'transcript.md?mode=raw' };
+  for (const [key, path] of Object.entries(paths)) {
+    const href = id ? `/api/meetings/${id}/${path}` : '#';
+    $(key).href = href;
+    $(`meeting-${key}`).href = href;
+    $(`meeting-${key}`).hidden = !id;
+  }
+  $('meeting-download-sep').hidden = !id;
+  $('meeting-download-label').hidden = !id;
+  $('transcript-options').disabled = !id;
+}
 function selectMeeting(id) {
   if (id === meetingId) return;
   selectionGeneration++;
@@ -413,8 +425,8 @@ function selectMeeting(id) {
   store.set('meeting-id', id ?? '');
   view.reset();
   lastSnapshot = undefined;
-  $('export').href = id ? `/api/meetings/${id}/transcript.md` : '#';
-  $('export-raw').href = id ? `/api/meetings/${id}/transcript.md?mode=raw` : '#';
+  updateTranscriptDownloads(id);
+  closeTranscriptMenu();
   // Invalidate everything shown for the previous meeting's notes, including in-flight requests and the export link.
   notesView.owner = null; notesView.signature = null; notesView.data = null; notesView.sequence++; notesView.busy = false;
   $('notes-body').replaceChildren(); $('notes-body').classList.remove('has-notes'); delete $('notes-body').dataset.record;
@@ -852,6 +864,22 @@ async function refreshNotes() {
   finally { if (sequence === notesView.sequence) notesView.busy = false; }
 }
 // ---------- Notes options ----------
+function bindMenuKeys(menu, close) {
+  menu.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); return; }
+    if (event.key === 'Tab') { close(); return; }
+    const items = [...menu.querySelectorAll('[role="menuitem"]')];
+    const at = items.indexOf(document.activeElement);
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
+        : (at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === ' ' && document.activeElement?.tagName === 'A') {
+      event.preventDefault(); document.activeElement.click();
+    }
+  });
+}
 let notesMenuOpener = null;
 function closeNotesMenu(returnFocus = false) {
   const wasOpen = !$('notes-menu').hidden;
@@ -880,19 +908,7 @@ $('notes-options').onkeydown = event => {
   }
 };
 $('notes-stale').onclick = event => { event.preventDefault(); toggleNotesMenu($('notes-stale')); };
-$('notes-menu').addEventListener('keydown', event => {
-  if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeNotesMenu(true); return; }
-  const items = [...$('notes-menu').querySelectorAll('[role="menuitem"]')];
-  const at = items.indexOf(document.activeElement);
-  if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
-    event.preventDefault();
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
-      : (at + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-    items[next]?.focus();
-  } else if (event.key === ' ' && document.activeElement?.tagName === 'A') {
-    event.preventDefault(); document.activeElement.click();
-  }
-});
+bindMenuKeys($('notes-menu'), closeNotesMenu);
 $('notes-menu').addEventListener('click', event => {
   const item = event.target.closest?.('[role="menuitem"]');
   if (item && item.getAttribute('aria-disabled') !== 'true') closeNotesMenu(true);
@@ -923,6 +939,41 @@ $('copy-notes').onclick = guarded(async () => {
   await navigator.clipboard.writeText(text);
   log(`Notes v${version} copied as Markdown.`);
 });
+
+// ---------- Transcript downloads ----------
+function closeTranscriptMenu(returnFocus = false) {
+  const wasOpen = !$('transcript-menu').hidden;
+  $('transcript-menu').hidden = true;
+  $('transcript-options').setAttribute('aria-expanded', 'false');
+  if (wasOpen && returnFocus) $('transcript-options').focus();
+}
+function openTranscriptMenu(last = false) {
+  if ($('transcript-options').disabled) return;
+  $('transcript-menu').hidden = false;
+  $('transcript-options').setAttribute('aria-expanded', 'true');
+  const items = $('transcript-menu').querySelectorAll('[role="menuitem"]');
+  items[last ? items.length - 1 : 0]?.focus();
+}
+$('transcript-options').onclick = () => {
+  if ($('transcript-menu').hidden) openTranscriptMenu();
+  else closeTranscriptMenu(true);
+};
+$('transcript-options').onkeydown = event => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault(); openTranscriptMenu(event.key === 'ArrowUp');
+  }
+};
+bindMenuKeys($('transcript-menu'), closeTranscriptMenu);
+$('transcript-menu').addEventListener('click', event => {
+  if (event.target.closest?.('[role="menuitem"]')) closeTranscriptMenu();
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest?.('.transcript-options-wrap')) closeTranscriptMenu();
+});
+document.addEventListener('focusin', event => {
+  if (!event.target.closest?.('.transcript-options-wrap')) closeTranscriptMenu();
+});
+// ---------- End transcript downloads ----------
 
 // ---------- Actions (M3): answer cards on the Board ----------
 
@@ -1734,7 +1785,7 @@ function renderMeetingMenu() {
   }));
   controls();
 }
-function menuItems() { return [...$('meeting-menu').querySelectorAll('[role^="menuitem"]')].filter(n => !n.disabled); }
+function menuItems() { return [...$('meeting-menu').querySelectorAll('[role^="menuitem"]')].filter(n => !n.disabled && !n.hidden); }
 function openMeetingMenu(focusLast = false) {
   closePanel();
   $('meeting-menu').hidden = false;
@@ -1766,6 +1817,12 @@ $('meeting-menu').addEventListener('keydown', event => {
   else if (event.key === 'End') go(items.length - 1);
   else if (event.key === 'Escape') { event.preventDefault(); closeMeetingMenu(true); }
   else if (event.key === 'Tab') closeMeetingMenu();
+  else if (event.key === ' ' && document.activeElement?.tagName === 'A') {
+    event.preventDefault(); document.activeElement.click();
+  }
+});
+$('meeting-menu').addEventListener('click', event => {
+  if (event.target.closest?.('a[download]')) closeMeetingMenu();
 });
 document.addEventListener('click', event => { if (!event.target.closest?.('.meeting-wrap')) closeMeetingMenu(); });
 // Rename in place: the name becomes a text field; Enter or leaving it saves, Escape cancels.
@@ -3673,8 +3730,7 @@ $('plan-after-notes').onchange = async () => {
   }
 };
 
-$('export').href = meetingId ? `/api/meetings/${meetingId}/transcript.md` : '#';
-$('export-raw').href = meetingId ? `/api/meetings/${meetingId}/transcript.md?mode=raw` : '#';
+updateTranscriptDownloads(meetingId);
 // Initialize project-dependent visibility/count even when no meeting detail will ever call setProject().
 setProject(null);
 await refreshStatus();

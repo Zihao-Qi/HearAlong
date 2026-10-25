@@ -6,6 +6,7 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { numberInRange } from './config.ts';
+import { downloadDisposition } from './download.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
@@ -937,12 +938,15 @@ export async function startServer(options: {
           appStore.updateMode(meetingId, value.mode as Mode, Math.round(interval));
           send(res, 200, appStore.meeting(meetingId)); return;
         }
-        if (req.method === 'GET' && action === 'transcript.md') {
-          const raw = url.searchParams.get('mode') === 'raw';
-          res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="transcript${raw ? '-raw' : ''}.md"` });
+        if (req.method === 'GET' && (action === 'transcript.md' || action === 'transcript.txt')) {
+          const plain = action === 'transcript.txt';
+          const raw = !plain && url.searchParams.get('mode') === 'raw';
+          const suffix = plain ? 'transcript.txt' : raw ? 'transcript (raw).md' : 'transcript.md';
+          res.writeHead(200, { 'Content-Type': `${plain ? 'text/plain' : 'text/markdown'}; charset=utf-8`,
+            'Content-Disposition': downloadDisposition(appStore.meeting(meetingId).title, suffix) });
           let locale: string | undefined;
           try { locale = Intl.getCanonicalLocales(req.headers['accept-language']?.split(',')[0].split(';')[0] ?? [])[0]; } catch { /* use the Mac's locale */ }
-          res.end(appStore.markdown(meetingId, raw ? 'raw' : 'corrected', locale)); return;
+          res.end(plain ? appStore.plainText(meetingId) : appStore.markdown(meetingId, raw ? 'raw' : 'corrected', locale)); return;
         }
         if (req.method === 'GET' && action === 'segments') {
           // The complete visible snapshot; the client reconciles by segment ID (no delta cursor).
@@ -1002,7 +1006,7 @@ export async function startServer(options: {
           // The UI asks for the version it shows, so an export never silently carries different notes.
           const version = url.searchParams.get('version');
           if (version !== null && Number(version) !== status.notes.version) throw new HttpError(409, `These notes changed (now v${status.notes.version}); reload the Notes tab.`);
-          res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': 'attachment; filename="notes.md"' });
+          res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': downloadDisposition(appStore.meeting(meetingId).title, 'notes.md') });
           res.end(notesMarkdown(status.notes, status.stale, status.coverage)); return;
         }
         if (req.method === 'GET' && action === 'actions') {
