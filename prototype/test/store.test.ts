@@ -35,16 +35,19 @@ test('disk-backed queue isolates failed jobs and exports an honest transcript', 
   const directory = await mkdtemp(join(tmpdir(), 'meeting-jobs-'));
   const store = new MeetingStore(directory);
   const meeting = store.createMeeting('Test meeting');
-  let calls = 0;
+  let now = 100_000;
   const manager = new JobManager(store, {
-    async transcribe() { if (++calls === 1) throw new Error('Decoder failed'); return metrics; },
+    async transcribe(chunk) { if (chunk.sequence === 0) throw new Error('Decoder failed'); return metrics; },
     close() {},
-  });
+  }, { clock: () => now });
   try {
     await store.addPcm(meeting.id, 'mic:test', 0, 0, 16000, Buffer.alloc(16000 * 4));
     await store.addPcm(meeting.id, 'mic:test', 1, 1000, 16000, Buffer.alloc(16000 * 4));
     manager.kick();
     await manager.wait();
+    assert.deepEqual(store.chunks(meeting.id).map(chunk => chunk.status), ['queued', 'completed']);
+    now += 15_000; manager.kick(); await manager.wait();
+    now += 60_000; manager.kick(); await manager.wait();
     assert.deepEqual(store.chunks(meeting.id).map(chunk => chunk.status), ['failed', 'completed']);
     assert.match(store.markdown(meeting.id), /Decoder failed/);
     assert.match(store.markdown(meeting.id), /The experiment passed/);

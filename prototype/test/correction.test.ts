@@ -58,7 +58,7 @@ test('a generated glossary never overwrites a user edit, and versions only move 
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('the corrector respects the interval, advances its cursor through failures, and drops stale-glossary results', async () => {
+test('the corrector respects the interval, retries failed batches, and drops stale-glossary results', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'meeting-corrector-'));
   const store = new MeetingStore(directory);
   try {
@@ -84,7 +84,13 @@ test('the corrector respects the interval, advances its cursor through failures,
     answers.push(() => { throw new Error('Pi timed out'); });
     await corrector.tick(meeting.id);
     assert.equal(corrector.state(meeting.id).stats.failed, 1);
-    assert.equal(corrector.pending(meeting.id).length, 0, 'cursor advanced past the failed batch');
+    assert.equal(corrector.pending(meeting.id).length, 1, 'the failed batch remains unchecked');
+    assert.equal(store.segment(ids[2])?.text, 'Exhibit c has protein skimmer offline.', 'known mishearings still apply on failure');
+    assert.equal(await corrector.tick(meeting.id, true), 'skipped', 'finished does not bypass failure backoff');
+    now += 60_000;
+    answers.push(() => '{"edits":[]}');
+    await corrector.tick(meeting.id);
+    assert.equal(corrector.pending(meeting.id).length, 0, 'a successful retry checks the failed batch');
 
     const late = await store.addPcm(meeting.id, 'mic:t', 9, 20_000, 16000, Buffer.alloc(16000 * 4, 9));
     store.completeChunk(late.id, recognition('Spare pro teen simmer arrived.'));

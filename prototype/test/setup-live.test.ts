@@ -25,7 +25,7 @@ async function directory(t: TestContext) {
 }
 function chunk(seconds = .02): Chunk {
   return { id: randomUUID(), meetingId: 'example', source: 'example', sequence: 0, path: '/unused', decodeStart: 0, startMs: 0,
-    seconds, sampleRate: null, status: 'queued', text: '', error: null, metrics: null, hash: 'example' };
+    seconds, sampleRate: null, status: 'queued', text: '', error: null, metrics: null, hash: 'example', attempts: 0, retryAt: null };
 }
 async function pids(path: string) { return (await readFile(`${path}.pids`, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(Number); }
 function gone(pid: number) { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; } }

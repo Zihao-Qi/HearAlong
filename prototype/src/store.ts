@@ -27,6 +27,7 @@ export type Chunk = {
   decodeStart: number; startMs: number; seconds: number; sampleRate: number | null;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   text: string; error: string | null; metrics: string | null; hash: string;
+  attempts: number; retryAt: number | null;
 };
 
 /** A saved 1 s piece of live audio (16 kHz mono f32). It belongs to no window until a seal groups it into a chunk. */
@@ -112,6 +113,8 @@ export class MeetingStore {
         pageId TEXT, state TEXT NOT NULL, PRIMARY KEY (meetingId, source));`);
     const chunkColumns = (this.db.prepare('PRAGMA table_info(chunks)').all() as { name: string }[]).map(c => c.name);
     if (!chunkColumns.includes('completedAt')) this.db.exec('ALTER TABLE chunks ADD COLUMN completedAt INTEGER');
+    if (!chunkColumns.includes('attempts')) this.db.exec('ALTER TABLE chunks ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0');
+    if (!chunkColumns.includes('retryAt')) this.db.exec('ALTER TABLE chunks ADD COLUMN retryAt INTEGER');
     const frameColumns = (this.db.prepare('PRAGMA table_info(frames)').all() as { name: string }[]).map(c => c.name);
     if (!frameColumns.includes('savedAt')) this.db.exec('ALTER TABLE frames ADD COLUMN savedAt INTEGER');
     if (!frameColumns.includes('captureWallMs')) this.db.exec('ALTER TABLE frames ADD COLUMN captureWallMs REAL');
@@ -275,8 +278,30 @@ export class MeetingStore {
   queuedCount(): number {
     return Number((this.db.prepare("SELECT COUNT(*) AS count FROM chunks WHERE status IN ('queued','running')").get() as { count: number }).count);
   }
-  nextChunk(): Chunk | undefined {
-    return this.db.prepare("SELECT * FROM chunks WHERE status='queued' AND path <> '' AND meetingId NOT IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL) ORDER BY rowid LIMIT 1").get() as Chunk | undefined;
+  nextChunk(now = Date.now()): Chunk | undefined {
+    return this.db.prepare("SELECT * FROM chunks WHERE status='queued' AND (retryAt IS NULL OR retryAt <= ?) AND path <> '' AND meetingId NOT IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL) ORDER BY rowid LIMIT 1").get(now) as Chunk | undefined;
+  }
+  nextRetryAt(): number | null {
+    return (this.db.prepare("SELECT MIN(retryAt) AS at FROM chunks WHERE status='queued' AND path <> '' AND meetingId NOT IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL)").get() as { at: number | null }).at;
+  }
+  startChunk(id: string) {
+    this.transaction(() => {
+      this.setStatus(id, 'running');
+      this.db.prepare('UPDATE chunks SET attempts=attempts+1, retryAt=NULL WHERE id=?').run(id);
+    });
+  }
+  failChunk(id: string, error: string, retryAt: number | null) {
+    this.transaction(() => {
+      this.setStatus(id, retryAt === null ? 'failed' : 'queued', '', error);
+      this.db.prepare('UPDATE chunks SET retryAt=? WHERE id=?').run(retryAt, id);
+    });
+  }
+  /** Manual retry starts a fresh bounded budget, unlike an automatic retry. */
+  retryChunk(id: string) {
+    this.transaction(() => {
+      this.setStatus(id, 'queued');
+      this.db.prepare('UPDATE chunks SET attempts=0, retryAt=NULL WHERE id=?').run(id);
+    });
   }
   setStatus(id: string, status: Chunk['status'], text = '', error: string | null = null, metrics: unknown = null) {
     const chunk = this.chunk(id);
