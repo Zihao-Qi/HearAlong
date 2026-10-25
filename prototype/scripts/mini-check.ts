@@ -4,11 +4,15 @@
 // Usage: node --experimental-strip-types scripts/mini-check.ts <speech.wav> <them.wav> [outDir=artifacts/mini-view]
 // speech.wav is the microphone ("Me"); them.wav plays in a stand-in meeting tab ("Them") for the online part.
 // The speech file must be 16 kHz mono (for example: say -o s.aiff "…" && afconvert -f WAVE -d LEI16@16000 -c 1 s.aiff s.wav).
+import './check-env.ts';
+import { testBrowser } from './test-browser.ts';
 import { chromium, type Frame, type Page, type Response, type Route } from 'playwright-core';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
+import { LiveDrafts } from '../src/drafts.ts';
 
 const [speech, them, out = 'artifacts/mini-view'] = process.argv.slice(2);
 if (!speech || !them) throw new Error('Usage: mini-check.ts <speech.wav> <them.wav> [outDir]');
@@ -23,9 +27,13 @@ const board = async (message: string) => {
   return { text: JSON.stringify({ items: [{ type: 'action', text: 'Pack twelve seed-library envelopes with marigold seeds, stamp the sowing month on each flap, and place them in the blue pickup tray.', cites: [ref], quote, confidence: 'high', materials: false, nonProject: false }] }),
     ms: 1, attempts: 1, stopReason: 'stop', aborted: false, usages: [] };
 };
-const app = await startServer({ directory, port: 0, quick: null, heavy: null, board });
+const app = await startServer({ directory, port: 0, quick: null, heavy: null, board, setup: await dashboardSetup(directory, true),
+  recognizer: { async transcribe() { return { text: 'The fictional seed library will pack twelve marigold envelopes for the spring workshop. Volunteers will label each envelope and place it in the blue pickup tray.',
+    backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 20, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {} },
+  drafts: new LiveDrafts({ modelPath: 'unused', workerScript: new URL('../test/fixtures/fake-stream-worker.ts', import.meta.url) }),
+});
 const browser = await chromium.launch({
-  executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true,
+  executablePath: testBrowser(), headless: true,
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(speech)}`],
 });
 const results: string[] = [];

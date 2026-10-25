@@ -1,5 +1,5 @@
 // Headless, fictional capture checks: no physical microphone, models, cloud, or external browser requests.
-import '../test/helpers/pi-env.ts';
+import './check-env.ts';
 import assert from 'node:assert/strict';
 import { chromium, type Page } from 'playwright-core';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';

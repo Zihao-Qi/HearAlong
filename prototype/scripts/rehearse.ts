@@ -1,4 +1,5 @@
 // A disposable, real-time Chrome microphone rehearsal. No app code or user's browser profile is changed.
+import { testBrowser } from './test-browser.ts';
 import { chromium, type BrowserContext, type Page } from 'playwright-core';
 import { access, mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,7 +10,6 @@ import { clock, loadWav, parseArgs, validateRunFiles, writeTrimmed } from './reh
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const RUNS = join(ROOT, 'prototype/artifacts/rehearsal/runs');
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The optional observer drives lifecycle/UI checks; the command itself always uses the real UI unmodified. */
@@ -18,7 +18,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
   // All input validation precedes starting a server or Chrome (or creating a run).
   const mic = args.mic ? await loadWav(resolve(args.mic), args.from, args.minutes) : undefined;
   const them = args.them ? await loadWav(resolve(args.them), args.from, args.minutes) : undefined;
-  const executable = args.headless ? process.env.MEETING_TEST_CHROME ?? CHROME : CHROME;
+  const executable = testBrowser();
   try { await access(executable); }
   catch { throw new Error(`Google Chrome is not installed at ${executable}.`); }
   let directory: string;

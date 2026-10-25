@@ -7,6 +7,7 @@
 // With --fullscreen, a stand-in app also goes into native full screen for a few seconds (it takes over the screen meanwhile), to see
 // the window over it for real.
 // Usage: npm run build:app && node --experimental-strip-types scripts/native-mini-check.ts <speech.wav> [outDir=artifacts/mini-view] [--fullscreen]
+import { testBrowser } from './test-browser.ts';
 import { chromium } from 'playwright-core';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtemp, mkdir, rm, readFile, writeFile, copyFile, access } from 'node:fs/promises';
@@ -51,7 +52,7 @@ if (sh('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN'])) throw new Error(`Port ${
 const helper = spawn(binary, [], { stdio: 'ignore', env: { ...process.env, MEETING_DATA_DIR: data, MEETING_LAUNCHER_PORT: String(port), MEETING_LAUNCHER_NO_WINDOW: '1',
   MEETING_CLOUD: '0', MEETING_HELPER_TEST_DIR: testDir, MEETING_HELPER_APP_BUNDLE_ID: 'local.meeting-assistant.check-stand-in' } });
 const browser = await chromium.launch({
-  executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true,
+  executablePath: testBrowser(), headless: true,
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(speech)}`],
 });
 let pgid = 0;

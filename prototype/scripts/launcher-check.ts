@@ -3,6 +3,7 @@
 // started is left running; a server started outside it is left alone; another program on the port is reported. Runs on temporary
 // data folders and its own ports, without opening a Chrome window (MEETING_LAUNCHER_NO_WINDOW); the page is a headless Chrome.
 // Usage: npm run build:app && node --experimental-strip-types scripts/launcher-check.ts <speech.wav>
+import { testBrowser } from './test-browser.ts';
 import { chromium } from 'playwright-core';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, readFile, access } from 'node:fs/promises';
@@ -34,7 +35,7 @@ const started: { child: ChildProcess; group?: number }[] = [];
 const run = (command: string, args: string[], env: NodeJS.ProcessEnv) => { const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: 'ignore' }); started.push({ child }); return child; };
 const temp = async () => { const d = await mkdtemp(join(tmpdir(), 'meeting-launcher-')); directories.push(d); return d; };
 const browser = await chromium.launch({
-  executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true,
+  executablePath: testBrowser(), headless: true,
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(speech)}`],
 });
 try {

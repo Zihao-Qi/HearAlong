@@ -1,5 +1,6 @@
 // Design D: real Notes interactions and all requested Notes/Plans screenshots. Temporary store, scripted notes, no model calls.
 // Usage: MEETING_TEST_CHROME=<headless shell> node --experimental-strip-types scripts/notes-ui-check.ts [outDir]
+import './check-env.ts';
 import assert from 'node:assert/strict';
 import { chromium, type Browser, type Page } from 'playwright-core';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

@@ -1,6 +1,8 @@
 // Checks the installed-app parts in Chrome (M7): Chrome finds the page installable (manifest, icons, service worker), and with the
 // server stopped the app shows "Starting…" and loads by itself once the server is back. No model is called.
 // Usage: node --experimental-strip-types scripts/app-check.ts
+import './check-env.ts';
+import { testBrowser } from './test-browser.ts';
 import { chromium } from 'playwright-core';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,12 +13,13 @@ import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 const results: string[] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`); };
 const directory = await mkdtemp(join(tmpdir(), 'meeting-app-'));
-const port = 4394;
+let port = 0;
 const setup = await dashboardSetup(directory, true);
 let app = await startServer({ directory, port, setup, quick: null, heavy: null, recognizer: null, drafts: null });
+port = Number(new URL(app.url).port);
 // A real (not incognito) profile in a temporary folder: Chrome does not offer installing apps in incognito windows.
 const profile = await mkdtemp(join(tmpdir(), 'meeting-app-profile-'));
-const context = await chromium.launchPersistentContext(profile, { executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true, viewport: { width: 1280, height: 860 } });
+const context = await chromium.launchPersistentContext(profile, { executablePath: testBrowser(), headless: true, viewport: { width: 1280, height: 860 } });
 try {
   const page = await context.newPage();
   const errors: string[] = [];

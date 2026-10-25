@@ -11,9 +11,10 @@
     "start": "node --experimental-strip-types src/server.ts",
     "rehearse": "node --experimental-strip-types scripts/rehearse.ts",
     "check": "tsc --noEmit",
+    "checks": "sh scripts/run-checks.sh",
     "delete-meetings": "node --experimental-strip-types scripts/delete-meetings.ts",
     "guard:install": "cd .. && common=$(git rev-parse --path-format=absolute --git-common-dir) && git config core.hooksPath \"${common%/*}/.githooks\"",
-    "test": "node --experimental-strip-types --import ./test/helpers/pi-env.ts --test test/*.test.ts",
+    "test": "node --experimental-strip-types --import ./scripts/check-isolation.ts --test test/*.test.ts",
     "smoke:stt": "node --experimental-strip-types scripts/stt-smoke.ts",
     "smoke:browser": "node --experimental-strip-types scripts/browser-smoke.ts",
     "build:app": "sh scripts/build-app.sh"

@@ -1,5 +1,6 @@
 // Model-free retention UI check; all data is temporary, browser uses an isolated profile.
 import assert from 'node:assert/strict';
+import { testBrowser } from './test-browser.ts';
 import { chromium, type Browser } from 'playwright-core';
 import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -26,7 +27,7 @@ try {
     app.store.db.prepare('UPDATE meetings SET audioLegacy=1, audioDoneAt=? WHERE id=?').run(Date.now() - 3 * AUDIO_RETENTION.day, m.id);
   }
   await app.audioRetention.run();
-  browser = await chromium.launch({ executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true,
+  browser = await chromium.launch({ executablePath: testBrowser(), headless: true,
     args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
   await mkdir(resolve('artifacts'), { recursive: true });
   for (const width of [1280, 390]) {

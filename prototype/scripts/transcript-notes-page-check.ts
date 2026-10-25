@@ -1,4 +1,6 @@
 // Option A: real durable capture metadata, main-page selection, desktop/390 px screenshots. No user data or models.
+import './check-env.ts';
+import { testBrowser } from './test-browser.ts';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -35,9 +37,7 @@ const upload = async (audioSource: string, sequence: number, captureWallMs?: num
   assert.equal(response.status, 201, await response.text());
 };
 const errors: string[] = [], results: string[] = [], screenshots: string[] = [];
-// Set MEETING_TEST_CHROME to a local Chrome/Chromium executable; otherwise use the standard macOS Chrome installation.
-const browser = await chromium.launch({ headless: true, executablePath: process.env.MEETING_TEST_CHROME
-  ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
+const browser = await chromium.launch({ headless: true, executablePath: testBrowser() });
 try {
   await upload(mic, 0, from - 1000);
   await upload(mic, 1, to, true);

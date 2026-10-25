@@ -377,14 +377,14 @@ async function refreshDetail() {
     $('query').closest('.row').hidden = !data.materials.length;
     $('search-results').hidden = !data.materials.length;
     $('material-scope').hidden = !data.project;
-    $('materials').replaceChildren(...data.materials.map(material => {
+    keepFocus($('materials'), () => $('materials').replaceChildren(...data.materials.map(material => {
       const item = el('li', `${material.label} (${material.kind})`);
       if (data.project) item.firstChild.after(el('span', material.scope.startsWith('project:') ? 'project' : 'this meeting only', 'scope'));
-      const remove = el('button', 'Remove', 'button');
+      const remove = focusKey(el('button', 'Remove', 'button'), material.id);
       remove.onclick = guarded(async () => { await api(`${base()}/materials/${material.id}`, { method: 'DELETE' }); await refreshDetail(); });
       item.append(remove);
       return item;
-    }));
+    })));
     const jobs = [...data.chunks].reverse().slice(0, 40);
     $('jobs').replaceChildren(...jobs.map(chunk => {
       const row = el('div', `${stamp(chunk.startMs)} · ${chunk.status}`, 'job');
@@ -1396,6 +1396,7 @@ const cardSelection = (card, owner) => ({ owner, text: card.occurrences[0].quote
 function boardCard(card, owner) {
   const node = el('article', undefined, `note board-card type-${card.type}${card.dismissed ? ' dismissed' : ''}${boardView.unread.has(card.id) ? ' unread' : ''}`);
   node.dataset.card = card.id;
+  node.tabIndex = -1;
   const head = el('div', undefined, 'action-head');
   const meeting = ['decision', 'action', 'other'].includes(card.type);
   // The type says where it comes from (decisions, actions and other matters were said; questions and claims are suggested).
@@ -1496,7 +1497,7 @@ function captureState(node) {
     forms: [...node.querySelectorAll('form')].map(form => {
       const field = form.querySelector('input, textarea');
       const key = field?.dataset.key ?? `follow-${form.closest('[data-id]')?.dataset.id}`;
-      return field ? { key, value: field.value, hidden: form.hidden, focused: active === field, at: field.selectionStart } : null;
+      return field ? { key, value: field.value, hidden: form.hidden, focused: active === field, at: field.selectionStart, end: field.selectionEnd, direction: field.selectionDirection } : null;
     }).filter(Boolean),
   };
 }
@@ -1513,7 +1514,7 @@ function restoreState(node, state) {
     if (!saved || !field) continue;
     field.value = saved.value;
     form.hidden = saved.hidden;
-    if (saved.focused) boardView.refocus = () => { field.focus(); field.setSelectionRange?.(saved.at ?? field.value.length, saved.at ?? field.value.length); };
+    if (saved.focused) boardView.refocus = () => { field.focus({ preventScroll: true }); field.setSelectionRange?.(saved.at ?? field.value.length, saved.end ?? saved.at ?? field.value.length, saved.direction ?? 'none'); };
   }
 }
 /** Everything under a job that can change what its card shows: state, status, draft presence, summary, and all descendants. */
@@ -1523,6 +1524,8 @@ function jobTree(job, depth = 0) {
 }
 function renderBoard(owner) {
   const data = boardView.data;
+  const container = $('board-cards');
+  const restoreFocus = rememberFocus(container);
   renderPinned(owner);
   const pane = $('board-panel');
   const anchor = pane.scrollTop > 0 ? anchorOf(pane) : null;
@@ -1540,7 +1543,6 @@ function renderBoard(owner) {
     }
   }
   boardView.initialised = true;
-  const container = $('board-cards');
   const keep = new Set();
   const nodeFor = card => {
     keep.add(card.id);
@@ -1586,6 +1588,7 @@ function renderBoard(owner) {
   container.replaceChildren(...children);
   // Focus is restored only once the card is attached in its final place (moving a node drops focus).
   if (boardView.refocus) { const refocus = boardView.refocus; boardView.refocus = null; refocus(); }
+  restoreFocus();
   // Streaming drafts and elapsed times update in place, without rebuilding cards.
   for (const job of actionsView.jobs) {
     const holder = container.querySelector(`[data-id="${CSS.escape(job.id)}"]`);
@@ -1774,15 +1777,15 @@ function renderMeetingMenu() {
   $('meeting-list-label').textContent = scope ? `${scopeName ?? 'Project'} · meetings` : projectView.projects.length ? 'Meetings without a project' : 'Meetings';
   $('switch-project').hidden = !projectView.projects.length;
   $('move-meeting').disabled = !meetingId;
-  $('meeting-list').replaceChildren(...(status?.meetings ?? []).filter(m => (m.projectId ?? null) === scope).map(m => {
-    const item = el('button', undefined, 'menu-item');
+  keepFocus($('meeting-list'), () => $('meeting-list').replaceChildren(...(status?.meetings ?? []).filter(m => (m.projectId ?? null) === scope).map(m => {
+    const item = focusKey(el('button', undefined, 'menu-item'), m.id);
     item.setAttribute('role', 'menuitemradio');
     item.setAttribute('aria-checked', String(m.id === meetingId));
     item.tabIndex = -1;
     item.append(el('span', m.title), el('span', meetingWhen(m), 'when'));
     item.onclick = () => { closeMeetingMenu(true); projectView.menuProject = undefined; selectMeeting(m.id); void refreshStatus(); };
     return item;
-  }));
+  })));
   controls();
 }
 function menuItems() { return [...$('meeting-menu').querySelectorAll('[role^="menuitem"]')].filter(n => !n.disabled && !n.hidden); }
@@ -2623,20 +2626,40 @@ function renderProject() {
   renderMemoryLists();
 }
 
-/**
- * Re-renders a container without losing the user's place: the focused control (by its `data-focus` key) gets focus back,
- * with its text selection, so timers, polling and actions on other rows never throw focus to the page.
- */
-function keepFocus(container, render) {
+/** Capture before any synchronous rebuild (including card replacements), then restore only focus lost by that rebuild. */
+function rememberFocus(container) {
   const active = document.activeElement;
-  const key = container.contains(active) ? active?.dataset?.focus : null;
-  const selection = key && 'selectionStart' in active ? [active.selectionStart, active.selectionEnd] : null;
+  if (!container.contains(active)) return () => {};
+  const card = active.closest('[data-card]');
+  const job = active.closest('[data-id]');
+  const scopes = [card, job].filter((node, i, nodes) => node && container.contains(node) && nodes.indexOf(node) === i);
+  const scopeKeys = scopes.map(node => node.hasAttribute('data-card') ? `[data-card="${CSS.escape(node.dataset.card)}"]` : `[data-id="${CSS.escape(node.dataset.id)}"]`);
+  const scope = scopes.at(-1) ?? container;
+  const key = active.dataset.focus !== undefined ? ['data-focus', active.dataset.focus] : active.dataset.key !== undefined ? ['data-key', active.dataset.key] : null;
+  const signature = node => JSON.stringify([node.tagName, node.className, node.getAttribute('type'), node.getAttribute('href'), node.getAttribute('aria-label'), node.textContent]);
+  const identity = signature(active);
+  const peers = [...scope.querySelectorAll(active.tagName)].filter(node => signature(node) === identity);
+  const index = peers.indexOf(active);
+  const selection = 'selectionStart' in active && active.selectionStart !== null ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+  return () => {
+    // Rendering is synchronous: an intentional focus change during it must win over restoration.
+    const now = document.activeElement;
+    if (now === active && active.isConnected) return;
+    if (now && now !== document.body && now !== document.documentElement) return;
+    let root = container;
+    for (const selector of scopeKeys) { root = root.querySelector(selector); if (!root) return; }
+    const again = active.isConnected && container.contains(active) ? active : active === scope ? root
+      : key ? root.querySelector(`[${key[0]}="${CSS.escape(key[1])}"]`)
+      : scopes.length ? [...root.querySelectorAll(active.tagName)].filter(node => signature(node) === identity)[index] : null;
+    if (!again) return;
+    again.focus({ preventScroll: true });
+    if (selection) try { again.setSelectionRange(...selection); } catch { /* not a text field */ }
+  };
+}
+function keepFocus(container, render) {
+  const restore = rememberFocus(container);
   render();
-  if (!key) return;
-  const again = container.querySelector(`[data-focus="${CSS.escape(key)}"]`);
-  if (!again) return;
-  again.focus({ preventScroll: true });
-  if (selection) try { again.setSelectionRange(...selection); } catch { /* not a text field */ }
+  restore();
 }
 const focusKey = (node, key) => { node.dataset.focus = key; return node; };
 

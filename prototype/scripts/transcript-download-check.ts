@@ -1,4 +1,5 @@
 // Real downloads from both menus, using fictional speech and a disposable local server only.
+import './check-env.ts';
 import assert from 'node:assert/strict';
 import { chromium, type Download, type Page } from 'playwright-core';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

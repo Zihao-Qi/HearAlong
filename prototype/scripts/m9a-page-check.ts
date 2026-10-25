@@ -1,10 +1,13 @@
 // Scripted word timings through the real page's snapshot polling, plus headless pointer/selection checks.
+import './check-env.ts';
+import { testBrowser } from './test-browser.ts';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../src/server.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import { handoffCases, words, active, source } from '../test/fixtures/m9a-handoff.ts';
 import { transcriptRows, type DisplaySegment } from '../public/transcript-view.js';
 import { miniPreviewWords, miniLog } from '../public/preview-composition.js';
@@ -13,10 +16,11 @@ import { checkFix4Page } from './m9a-fix4-page-cases.ts';
 import { assertUniqueTranscriptKeys, watchTranscriptKeys, finishTranscriptKeyCheck } from './transcript-key-check.ts';
 // Repeat the same handoff/selection suite with a historical gap; only speech-only queries exclude the notice.
 const earlierGap = process.argv.includes('--earlier-gap') ? { atMs: 0, fromWallMs: 100000, toWallMs: 597000, reason: 'sleep' as const } : null;
+const outDir = process.argv.slice(2).find(arg => !arg.startsWith('--')) ?? 'artifacts/m9a';
 const directory = await mkdtemp(join(tmpdir(), 'm9a-page-'));
-const app = await startServer({ directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null });
+const app = await startServer({ directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null, setup: await dashboardSetup(directory, true) });
 const meeting = app.store.createMeeting('M9a scripted handoff');
-const browser = await chromium.launch({ headless: true, executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
+const browser = await chromium.launch({ headless: true, executablePath: testBrowser() });
 const results: string[] = [], errors: string[] = [];
 try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
@@ -396,8 +400,8 @@ try {
   }
   assert.deepEqual(errors, []);
 } finally {
-  await mkdir('artifacts/m9a', { recursive: true });
-  await writeFile(`artifacts/m9a/page-check${earlierGap ? '-earlier-gap' : ''}.json`, JSON.stringify({ earlierGap, results, errors }, null, 2));
+  await mkdir(outDir, { recursive: true });
+  await writeFile(join(outDir, `page-check${earlierGap ? '-earlier-gap' : ''}.json`), JSON.stringify({ earlierGap, results, errors }, null, 2));
   await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true });
 }
 console.log(results.join('\n'));
