@@ -23,6 +23,7 @@ import { LiveCapture } from './live.ts';
 import { captureDiscontinuities } from './capture-gaps.ts';
 import { LiveView, type MiniAction } from './live-view.ts';
 import { ROLE_LABEL, compareSegments } from './speakers.ts';
+import { SegmentsTag } from './segments-tag.ts';
 import { searchRoots } from './materials.ts';
 import { PdfText } from './pdf-text.ts';
 import { Projects, meetingScope, projectScope } from './projects.ts';
@@ -132,6 +133,7 @@ export async function startServer(options: {
       '/live-shared.js': ['live-shared.js', 'text/javascript'],
       '/preview-composition.js': ['preview-composition.js', 'text/javascript'],
       '/transcript-view.js': ['transcript-view.js', 'text/javascript'],
+      '/segments-poll.js': ['segments-poll.js', 'text/javascript'],
       '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
       '/upload-retry.js': ['upload-retry.js', 'text/javascript'],
       '/capture-gaps.js': ['capture-gaps.js', 'text/javascript'],
@@ -526,6 +528,7 @@ export async function startServer(options: {
     // The mini view (M7 native mini window, docs/design/M7-native-mini.md): drawn from the server alone, so it stays current while
     // the app's page is hidden and throttled (another app in full screen); Stop and cards reach the page through frame replies.
     const liveView = new LiveView(clock);
+    const segmentsTag = new SegmentsTag();
     /** The recording now, with only the sources of its own recording (a reloaded page's old sources are not). */
     const recordingNow = () => {
       return capture.recordingNow(source => liveView.has(source));
@@ -949,7 +952,11 @@ export async function startServer(options: {
           res.end(plain ? appStore.plainText(meetingId) : appStore.markdown(meetingId, raw ? 'raw' : 'corrected', locale)); return;
         }
         if (req.method === 'GET' && action === 'segments') {
-          // The complete visible snapshot; the client reconciles by segment ID (no delta cursor).
+          // Only the transcript list is a delta; all live state still travels on every poll.
+          const { labelled, visible, speaker } = labelledLines(meetingId);
+          const segments = visible.map(s => ({ id: s.id, startMs: s.startMs, endMs: s.endMs, text: s.text, originalText: s.originalText, edits: JSON.parse(s.edits),
+            revision: s.revision, timing: s.timing, ...(labelled ? { source: s.source, speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
+          const delta = segmentsTag.delta(meetingId, segments, url.searchParams.get('have'));
           const replay = appStore.replay(meetingId);
           const now = clock();
           const glossary = projects.glossaryFor(meetingId);
@@ -958,10 +965,7 @@ export async function startServer(options: {
             captureGaps: appStore.captureGaps(meetingId),
             replay: replay ? { speed: replay.speed, positionMs: appStore.replayPositionMs(replay, now), durationMs: replay.durationMs, baseMs: replay.baseMs } : null,
             // Active recognizers and sealed display previews have separate lifetimes.
-            ...(() => {
-              const { visible, speaker } = labelledLines(meetingId);
-              return displayPreviews(meetingId, visible, speaker);
-            })(),
+            ...displayPreviews(meetingId, visible, speaker),
             draftsAvailable: drafts?.available() ?? false,
             // Sources recording now, and whether each has been quiet for a minute (problem notices in the app and the mini view).
             sources: capture.liveSources(meetingId),
@@ -976,14 +980,8 @@ export async function startServer(options: {
                 reveal: liveView.revealFor(meetingId) };
             })(),
             // Online meetings: speaker per line ("Me"/"Them", or null for unlabelled audio) and per draft source, in one fixed order.
-            ...(() => {
-              const { labelled, visible, speaker } = labelledLines(meetingId);
-              return {
-                labelled,
-                segments: visible.map(s => ({ id: s.id, startMs: s.startMs, endMs: s.endMs, text: s.text, originalText: s.originalText, edits: JSON.parse(s.edits),
-                  revision: s.revision, timing: s.timing, ...(labelled ? { source: s.source, speaker: speaker(s.source, s.startMs, s.endMs) } : {}) })),
-              };
-            })(),
+            labelled,
+            ...delta,
             correction: { enabled: Boolean(corrector), canBuild: !heavy ? 'Needs cloud models (they are off).' : !rootsFor(meetingId).length ? 'Attach materials first.' : null, glossary: glossary ? { version: glossary.version, origin: glossary.origin, terms: glossary.terms.length } : null,
               building: building.get(projects.scope(meetingId).glossaryScope) ?? null, state: corrector?.state(meetingId) ?? null },
           }); return;

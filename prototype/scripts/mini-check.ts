@@ -169,14 +169,14 @@ try {
       if (body.recording) body.recording.notices = addQuiet(body.recording.notices);
       await route.fulfill({ response, json: body });
     });
-    await page.route('**/segments', async route => {
+    await page.route('**/segments*', async route => {
       const response = await route.fetch();
       const body = await response.json();
       body.notices = addQuiet(body.notices);
       await route.fulfill({ response, json: body });
     });
   };
-  const unfakeQuiet = async () => { await context.unroute(liveApi); await page.unroute('**/segments'); };
+  const unfakeQuiet = async () => { await context.unroute(liveApi); await page.unroute('**/segments*'); };
   for (const [w, h] of [[260, 240], [360, 268], [640, 320]]) {
     await pip.setViewportSize({ width: w, height: h });
     const samples = [];

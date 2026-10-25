@@ -88,8 +88,9 @@ try {
   await watchTranscriptKeys(page);
   const words = 'Please stack the blue crates beside the kiln before opening'.split(' ').map((text, i) => ({ text, startMs: 526000 + i * 240, endMs: 526240 + i * 240 }));
   let lateOverlap = false, override: any = null;
-  await page.route('**/api/meetings/*/segments', async route => {
-    const response = await route.fetch();
+  await page.route('**/api/meetings/*/segments*', async route => {
+    // Overrides below are full snapshots, not suffixes of the server's transcript.
+    const response = await route.fetch({ url: route.request().url().split('?')[0] });
     const json = await response.json();
     if (lateOverlap) json.captureGaps.push({ atMs: 514000, fromWallMs: from - 100, toWallMs: to, reason: 'sleep' });
     const snapshot = { ...json, drafts: [{ source: mic, speaker: 'Me', window: 'note-preview', windowStartMs: 526000,
@@ -137,7 +138,7 @@ try {
   });
   await page.locator('#selection-menu').waitFor();
   lateOverlap = true;
-  await page.waitForResponse(response => response.url().endsWith('/segments'));
+  await page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/segments'));
   await page.waitForTimeout(100);
   assert.equal(await page.locator('.capture-gap').count(), 1, 'a late overlapping source cannot duplicate a held gap row');
   assert.ok(!(await page.evaluate(() => getSelection()!.toString())).includes('Not recorded'));
@@ -179,7 +180,7 @@ try {
   }
   results.push('option A alignment, 13px/1.6 accent gap, accent drag note, no overflow at desktop and 390 px');
   await checkGapFixesPage(page, async next => {
-    const response = page.waitForResponse(r => r.url().endsWith('/segments'));
+    const response = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/segments'));
     override = next; await response; await page.waitForTimeout(150);
   }, results, out);
   results.push(`${await finishTranscriptKeyCheck(page)}; every gap snapshot also has unique keys`);
