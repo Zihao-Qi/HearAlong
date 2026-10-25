@@ -105,7 +105,7 @@ try {
 
       // A successful response with an intentionally non-exiting stand-in tests width stability and the 10-second fallback.
       let shutdownReported = false;
-      for (const pattern of ['**/api/status', '**/segments']) await page.route(pattern, async route => {
+      for (const pattern of ['**/api/status', '**/segments*']) await page.route(pattern, async route => {
         const response = await route.fetch(); const json = await response.json();
         await route.fulfill({ response, json: { ...json, shuttingDown: shutdownReported } });
       });
@@ -133,7 +133,7 @@ try {
         assert.equal(await page.locator('#update-bar').evaluate(n => (n as HTMLElement).inert), false);
       });
       await shot(page, `${width}-failed`); pass(`${width}: 10 s failure without buttons`);
-      await page.unroute('**/api/status'); await page.unroute('**/segments');
+      await page.unroute('**/api/status'); await page.unroute('**/segments*');
       await page.unroute('**/api/restart');
       await page.reload(); await visible(page);
 

@@ -1,6 +1,7 @@
 import { stamp, TYPE_LABELS, NOTICES, SAVING_BEHIND_FRAMES } from '/live-shared.js';
 import { choosePlansApi, createPlansView, progressCard } from '/plans.js';
 import { createTranscriptView } from '/transcript-view.js';
+import { createSegmentsPoll } from '/segments-poll.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
 import { SetupUI, setupRequest, copyCommand } from '/setup-ui.js';
@@ -259,15 +260,19 @@ function quitting() {
   $('quit-banner').focus();
   if (capture && !capture.stopping) { log('HearAlong is quitting: the recording was stopped.'); void stopCapture(); }
 }
+const segmentsPoll = createSegmentsPoll();
 let segmentsBusy = false;
 async function refreshSegments() {
   if (segmentsBusy || !meetingId) { if (!meetingId) renderTranscript([]); return; }
   segmentsBusy = true;
-  const requested = meetingId;
+  const requested = meetingId, generation = selectionGeneration;
   const savesBefore = mini.saves;
   try {
-    const snapshot = await api(`/api/meetings/${requested}/segments`);
-    if (requested !== meetingId || snapshot.meetingId !== requested) return; // a stale answer for a meeting no longer shown
+    const have = segmentsPoll.have(requested);
+    const reply = await api(`/api/meetings/${requested}/segments${have ? `?have=${encodeURIComponent(have)}` : ''}`);
+    if (requested !== meetingId || generation !== selectionGeneration) { segmentsPoll.reset(); return; }
+    const snapshot = segmentsPoll.merge(requested, reply);
+    if (!snapshot) return; // a stale answer for another meeting
     lastSnapshot = snapshot;
     // The mini window's setting as saved now (it may have been changed in another app page), unless a change here is saving
     // or was saved after this answer was asked for (a late answer must not undo it).
@@ -286,6 +291,7 @@ async function refreshSegments() {
       else void refreshBoard();
     }
   } catch (error) {
+    segmentsPoll.reset();
     if (quitView.seen) { $('quit-text').textContent = 'HearAlong has quit. You can close this window.'; return; }
     $('connection').textContent = 'Server unavailable';
     if (/local session/.test(error.message)) $('connection').textContent = 'Server restarted — reload this page';
@@ -425,6 +431,7 @@ function selectMeeting(id) {
   store.set('meeting-id', id ?? '');
   view.reset();
   lastSnapshot = undefined;
+  segmentsPoll.reset();
   updateTranscriptDownloads(id);
   closeTranscriptMenu();
   // Invalidate everything shown for the previous meeting's notes, including in-flight requests and the export link.

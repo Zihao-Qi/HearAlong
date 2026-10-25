@@ -30,8 +30,9 @@ try {
   await watchTranscriptKeys(page);
   let state: any = handoffCases()[0].steps[0];
   let sent = 0;
-  await page.route('**/api/meetings/*/segments', async route => {
-    const response = await route.fetch();
+  await page.route('**/api/meetings/*/segments*', async route => {
+    // This fixture replaces the whole transcript, independent of the page's delta cursor.
+    const response = await route.fetch({ url: route.request().url().split('?')[0] });
     const json = { ...await response.json(), ...state, ...(earlierGap ? { captureGaps: [earlierGap] } : {}) };
     assertUniqueTranscriptKeys(json);
     if (earlierGap) assert.deepEqual(transcriptRows(json).filter(r => !r.gap), transcriptRows({ ...json, captureGaps: [] }),
