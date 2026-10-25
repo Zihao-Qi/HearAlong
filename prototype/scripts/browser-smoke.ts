@@ -1,3 +1,6 @@
+import { piPackages } from './check-env.ts';
+import { testBrowser } from './test-browser.ts';
+import { checkAudio } from './check-audio.ts';
 import { chromium } from 'playwright-core';
 import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,11 +11,14 @@ import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import type { ActionRunner } from '../src/actions.ts';
 import { LiveDrafts } from '../src/drafts.ts';
 
-// Fictional lantern-workshop check. With real local STT, supply generated speech matching the workshop lines below.
-// MEETING_TEST_NO_MODELS=1 substitutes speech too (no model calls); a generated WAV still drives replay and capture.
+// Fictional lantern-workshop check; a generated WAV drives replay/capture with scripted speech and models.
+piPackages(true);
 const directory = await mkdtemp(join(tmpdir(), 'meeting-browser-'));
-const audio = resolve('artifacts/synthetic-meeting.wav');
-const screenshot = resolve('artifacts/dashboard.png');
+const outDir = resolve(process.argv[2] ?? 'artifacts/browser-smoke');
+await mkdir(outDir, { recursive: true });
+const audio = join(directory, 'synthetic-meeting.wav');
+await checkAudio(audio);
+const screenshot = join(outDir, 'dashboard.png');
 // A scripted notes model: cites the first transcript line and quotes its first words (no cloud call).
 const notes = async ({ inputPath }: { inputPath: string }) => {
   const first = (await readFile(inputPath, 'utf8')).split('\n').find(line => /^S1 /.test(line))!;
@@ -51,7 +57,7 @@ const serve = () => startServer({ directory, port: 0, quick: null, heavy: null, 
   drafts: new LiveDrafts({ modelPath: 'unused', workerScript: new URL('../test/fixtures/fake-stream-worker.ts', import.meta.url) }) } : {}) });
 let app = await serve();
 const browser = await chromium.launch({
-  executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath: testBrowser(),
   headless: true,
   // Only a generated file is used as a fake microphone. No physical device is accessed.
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${audio}`],
@@ -215,7 +221,7 @@ try {
     await page.locator('#live-chip').waitFor({ state: 'hidden' });
   }
   assert.deepEqual(errors, [], 'no page errors (unhandled rejections) in the online scenarios');
-  await mkdir(resolve('artifacts'), { recursive: true });
+  await mkdir(outDir, { recursive: true });
   await pickMeeting(replayMeeting.title);
   await page.waitForFunction(() => document.getElementById('transcript')?.textContent?.includes('parade'));
   // Notes tab: write notes, then the summary sentence scrolls to and highlights its cited line.
@@ -349,6 +355,6 @@ try {
     notesTab: true, citationJump: true, actionCards: true, followUpThread: true, lookIntoIt: true, boardCards: true, boardInvestigate: true, dismissUndo: true, transcriptMarks: true, syntheticMicrophoneCapture: true, onlineMicAndTab: true, newAndRenameMeeting: true, roomModeTake: true, tailFrameSealed: true, liveDrafts: true, persistedAfterRestart: true, browserErrors: errors, screenshot,
     speech: noModels ? 'Scripted recognizer and fake draft worker; no models called' : 'Local STT',
     limitation: 'Synthetic audio only; real room audio and hour-long live recording are not validated here.' };
-  await writeFile(resolve('artifacts/browser-smoke.json'), JSON.stringify(report, null, 2));
+  await writeFile(join(outDir, 'browser-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally { await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); }

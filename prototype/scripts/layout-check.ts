@@ -1,6 +1,7 @@
 // Layout validation on a real meeting: wide and compact at every width, the divider at and past its limits, compact tabs.
 // Usage: node --experimental-strip-types scripts/layout-check.ts <storeDir> [outDir]
 // The store is copied first, so the source is never modified. Cloud models are off.
+import { testBrowser } from './test-browser.ts';
 import { chromium, type Page } from 'playwright-core';
 import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,7 @@ import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 
 const [source, out = 'artifacts/layouts'] = process.argv.slice(2);
 if (!source) throw new Error('Usage: layout-check.ts <storeDir> [outDir]');
+const chrome = testBrowser();
 const directory = await mkdtemp(join(tmpdir(), 'meeting-layout-'));
 await cp(resolve(source), directory, { recursive: true });
 await rm(join(directory, 'server.lock'), { force: true });
@@ -20,7 +22,7 @@ const outDir = resolve(out);
 await mkdir(outDir, { recursive: true });
 await dashboardSetup(directory);
 const app = await startServer({ directory, port: 0, quick: null, heavy: null, notes: null, recognizer: null, drafts: null });
-const browser = await chromium.launch({ executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const failures: string[] = [];
 const check = (ok: boolean, message: string) => { if (!ok) failures.push(message); };
 const SIZES: [number, number][] = [[375, 667], [390, 844], [480, 800], [700, 800], [899, 800], [900, 800], [1024, 800], [1280, 800], [1440, 900], [1920, 1080], [2560, 1440]];

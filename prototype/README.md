@@ -6,7 +6,7 @@ Local speech recognition, selectable transcript text, draft notes, a live board,
 
 Requirements:
 - Node.js ≥ 22.19.0 and npm.
-- Google Chrome. Browser checks default to its standard macOS application location; set `MEETING_TEST_CHROME` to a compatible Chromium executable elsewhere.
+- Google Chrome for the app. Browser checks and rehearsals require `MEETING_TEST_CHROME` pointing to a disposable Chromium executable; they never default to the user's browser.
 - FFmpeg and ffprobe on PATH for audio import and recognition.
 - A compatible speech model for `transcribe-cpp`; the setup page finds installed models or downloads Parakeet.
 - Optional AI: Pi signed in to your model subscription. A pinned Pi is included; a Pi on PATH is preferred. Calculations also need `uv`; the app prepares a pinned Python environment. Web lookup needs Pi's `pi-web-access` package enabled.
@@ -53,14 +53,18 @@ Run from this directory:
 ```sh
 npm test
 npm run check                 # tsc --noEmit
-node --experimental-strip-types scripts/app-check.ts
+MEETING_TEST_CHROME=/path/to/disposable/chromium node --experimental-strip-types scripts/app-check.ts
+# Full isolated suite (Node, npm, FFmpeg/ffprobe and test Chromium must be installed):
+MEETING_TEST_CHROME=/path/to/disposable/chromium npm run checks -- /path/to/new-output-dir
 ```
 
-`app-check` uses headless Chrome with disposable profiles and a temporary database. It checks installability and service-worker recovery when the local server stops and restarts; port 4394 must be free. It makes no model calls.
+The full runner runs at most two suites at once, each under `nice -n 19` with a 20-minute timeout. Each suite has its own temporary directory; timeout cleanup finishes group escalation and removes only that suite's detached test browsers before reusing its slot. Logs, screenshots and `summary.txt` stay in the output directory, including the leftover test-browser count. HOME, HF_HOME and temporary state are isolated there; npm is offline, Pi is a metadata-only stand-in, model calls fail, and Node fetch/browser requests are loopback-only (Node redirects are checked before each hop). The runner generates fictional WAV audio, so a fresh checkout needs no untracked recording or speech weights. The browser checks it runs also install these guards when invoked directly.
+
+`app-check` uses headless Chrome with disposable profiles, a temporary database and a free port. It checks installability and service-worker recovery when the local server stops and restarts. It makes no model calls. `board-focus-check.ts` exercises mini-card reveal and keyboard focus across periodic refreshes.
 
 Other included tools:
 - `npm run smoke:stt`: creates a synthetic speech clip with macOS `say`, then checks real local recognition. Requires a model and FFmpeg.
-- `npm run smoke:browser`: UI plus STT smoke check; run the speech smoke first to generate its audio. `MEETING_TEST_NO_MODELS=1` substitutes scripted speech recognition.
+- `npm run smoke:browser`: UI smoke check with generated fictional audio, scripted speech recognition and fake streaming drafts; requires `MEETING_TEST_CHROME`, not a model or prior speech-smoke run.
 - `scripts/plans-fixtures-build.ts`: regenerates the fictional Plans page fixtures. The unit suite checks that generated data stays current.
 - `scripts/plans-check.ts`, `plans-lifecycle-check.ts`, `notes-ui-check.ts`, `m9a-page-check.ts`, `transcript-notes-page-check.ts`, and `audio-retention-check.ts`: browser/domain checks using temporary or fictional data.
 - Layout, mini, launcher, native-mini, replay, and transcription tools document their required input arguments in their source. Supply only your own or synthetic recordings/stores; no private input is bundled. Native launcher checks require a separately built macOS helper and Swift tools.

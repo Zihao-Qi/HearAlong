@@ -1,6 +1,7 @@
 // Update guard end-to-end contract. Disposable code/public/data roots; never uses the user's server or models.
 // Usage: node --experimental-strip-types --import ./test/helpers/pi-env.ts scripts/update-check.ts [evidenceDir]
 import assert from 'node:assert/strict';
+import { testBrowser } from './test-browser.ts';
 import { chromium, type Page } from 'playwright-core';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,7 +21,7 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: join(out, `${name}.png`), fullPage: true }); shots.push(`${name}.png`);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${name}: no horizontal overflow`);
 };
-const browser = await chromium.launch({ executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+const browser = await chromium.launch({ executablePath: testBrowser(), headless: true });
 const root = await mkdtemp(join(tmpdir(), 'hearalong-update-browser-'));
 async function fixture(name: string, helper = true) {
   const codeRoot = join(root, name), directory = join(codeRoot, 'data'); await mkdir(directory, { recursive: true });

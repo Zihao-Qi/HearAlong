@@ -1,6 +1,7 @@
 // Headless first-run browser contract. Only disposable data, fictional GGUFs, a local HTTP transfer and a fake Pi.
 // SETUP_CHECK_OUT=/absolute/evidence/folder node --experimental-strip-types scripts/setup-check.ts
 import assert from 'node:assert/strict';
+import { testBrowser } from './test-browser.ts';
 import { chromium, type Page } from 'playwright-core';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,7 +56,7 @@ let app = await startServer({ directory, port: 0, quick: null, heavy: null, draf
       sha256: createHash('sha256').update(payload).digest('hex'), freeSpace: async () => free }); return download; },
   },
 });
-const browser = await chromium.launch({ executablePath: process.env.MEETING_TEST_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true,
+const browser = await chromium.launch({ executablePath: testBrowser(), headless: true,
   args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
 async function shot(page: Page, name: string) {
   await page.screenshot({ path: join(out, `${name}.png`), fullPage: true }); shots.push(`${name}.png`);
