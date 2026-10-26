@@ -1,0 +1,64 @@
+# A fresh checkout must pass on an Apple Silicon Mac: type check, unit tests, the public guard and the isolated browser suites.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: prototype
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22' # Latest 22.x; package.json requires >=22.19.0.
+          cache: npm
+          cache-dependency-path: prototype/package-lock.json
+      # Xcode's swiftc (PDF text tool), cupsfilter, git, python3 and ps come with the runner; only FFmpeg/ffprobe are missing.
+      - run: brew install ffmpeg
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm test
+      # Its fixtures write their own fictional deny list, so the private one is not needed.
+      - name: Public guard tests
+        working-directory: .
+        run: node --test prototype/scripts/public-guard.test.cjs
+      # The pinned playwright-core's own CLI installs the Chromium revision it was built for.
+      - name: Install test Chromium
+        run: |
+          npx --no-install playwright-core install --no-shell chromium
+          chrome=$(node -e "process.stdout.write(require('playwright-core').chromium.executablePath())")
+          test -x "$chrome"
+          echo "MEETING_TEST_CHROME=$chrome" >> "$GITHUB_ENV"
+      - name: Isolated suites
+        run: npm run checks -- "$RUNNER_TEMP/checks"
+      - name: Summary
+        if: always()
+        run: cat "$RUNNER_TEMP/checks/summary.txt" 2>/dev/null || echo 'No summary was written.'
+      # Logs, screenshots and summary only: the suites' isolated HOME/temporary folders and any data folder stay behind.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: checks-output
+          path: |
+            ${{ runner.temp }}/checks
+            !${{ runner.temp }}/checks/home/**
+            !${{ runner.temp }}/checks/tmp/**
+            !${{ runner.temp }}/checks/**/data/**
+          if-no-files-found: ignore
+          retention-days: 7

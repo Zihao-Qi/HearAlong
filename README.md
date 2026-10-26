@@ -2,6 +2,8 @@
 
 # HearAlong
 
+[![CI](https://github.com/Zihao-Qi/HearAlong/actions/workflows/ci.yml/badge.svg)](https://github.com/Zihao-Qi/HearAlong/actions/workflows/ci.yml)
+
 **A private, on-device Mac assistant that listens alongside you in meetings and talks, and turns them into a live transcript, explanations and next steps.**
 
 Speech recognition runs entirely on your Mac. You follow the conversation as it happens, select any line to have it explained, and get notes and evidence-backed next-step plans afterwards. The design is calm and focused, made for someone who mostly listens.
