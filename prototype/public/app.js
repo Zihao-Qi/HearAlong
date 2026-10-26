@@ -1,6 +1,7 @@
 import { stamp, TYPE_LABELS, NOTICES, SAVING_BEHIND_FRAMES } from '/live-shared.js';
 import { choosePlansApi, createPlansView, progressCard } from '/plans.js';
 import { createTranscriptView } from '/transcript-view.js';
+import { createListenPlayer } from '/listen.js';
 import { createSegmentsPoll } from '/segments-poll.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
@@ -22,8 +23,11 @@ let busy = false;
 let glossaryOwner = null; // the meeting whose glossary is open in the editor
 let selectionGeneration = 0;
 let statusSequence = 0;
-const view = createTranscriptView($('transcript'), { segmentNode, changed: updateJump,
+const view = createTranscriptView($('transcript'), { segmentNode, listen: ms => listen.open(ms), changed: updateJump,
   emptyText: () => meetingId ? 'Waiting for transcribed speech…' : 'Create a meeting, then start the microphone or replay a recording.' });
+const listen = createListenPlayer($('transcript-pane'), { owner: () => meetingId,
+  recording: () => Boolean(capture || requestingMic || micTest || status?.recordingAnywhere),
+  request: api, hear: ms => view.hear(ms) });
 // The mini view (M7): the helper's native floating window, or without the helper Chrome's Picture-in-Picture window; see openMini.
 const mini = { win: null, revealed: 0, byItself: false, saves: 0 }; // byItself: the user's setting, open it when they leave the app; saves: changes saved here
 const miniSupported = () => 'documentPictureInPicture' in window;
@@ -251,6 +255,7 @@ function quitting() {
   // Every shutdown signal (status, transcript, upload reply) passes here. A deliberate restart owns its strip even on failure.
   if (quitView.seen || updateView.phase === 'restarting' || updateView.accepted) return;
   quitView.seen = true;
+  listen.close();
   captureGeneration++; // a recording still starting (a permission prompt, the tab picker) is cancelled when it resumes
   closeMini();
   $('quit-text').textContent = 'HearAlong is quitting…';
@@ -274,6 +279,7 @@ async function refreshSegments() {
     const snapshot = segmentsPoll.merge(requested, reply);
     if (!snapshot) return; // a stale answer for another meeting
     lastSnapshot = snapshot;
+    if (listen.opened) void refreshStatus();
     // The mini window's setting as saved now (it may have been changed in another app page), unless a change here is saving
     // or was saved after this answer was asked for (a late answer must not undo it).
     if (typeof snapshot.mini?.opensItself === 'boolean' && !$('mini-by-itself').dataset.running && mini.saves === savesBefore) $('mini-by-itself').checked = mini.byItself = snapshot.mini.opensItself;
@@ -350,6 +356,8 @@ async function refreshStatus() {
     renderUpdate();
     renderOlderAudio(fresh.audioRetentionNotice);
     renderAudioRemoved(fresh.meetings.find(m => m.id === meetingId));
+    listen.recording(fresh.recordingAnywhere || capture || requestingMic);
+    listen.meeting(fresh.meetings.find(m => m.id === meetingId));
     if (fresh.shuttingDown) quitting(); // also with no meeting selected (no transcript polling)
     $('connection').textContent = '';
     // Only a snapshot requested after the current selection may say that meeting no longer exists.
@@ -374,6 +382,7 @@ async function refreshDetail() {
     if (requested !== meetingId) return;
     detail = data;
     renderAudioRemoved(data.meeting);
+    listen.meeting(data.meeting);
     $('retry').hidden = Boolean(data.meeting.audioRemovedAt != null) || !data.chunks.some(c => c.status === 'failed');
     setProject(data.project);
     // Memory changed (a run finished, something waits for an OK): reload it, so the badge and the pills are right without the tab open.
@@ -419,6 +428,7 @@ function updateTranscriptDownloads(id) {
 function selectMeeting(id) {
   if (id === meetingId) return;
   selectionGeneration++;
+  listen.close();
   meetingId = id;
   renderAudioRemoved(status?.meetings.find(m => m.id === id));
   $('retry').hidden = true;
@@ -2114,6 +2124,7 @@ function stopLevel() {
 let micTest = null; // { stop } while a level test runs
 $('mic-test').onclick = guarded(async () => {
   if (capture) { $('mic-hint').textContent = 'Recording: the meter shows the live microphone.'; return; }
+  listen.recording(true);
   const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(false), video: false });
   const context = new AudioContext();
   try {
@@ -2304,7 +2315,7 @@ async function startRecording(online) {
   // The tab picker first, straight from the click; everything else may wait on the network or a permission prompt.
   // Settled at once (stream or error), so a cancelled share is never an unhandled rejection while the microphone starts.
   const tabRequest = online ? pickMeetingTab().then(stream => ({ stream }), error => ({ error })) : null;
-  requestingMic = true; controls();
+  requestingMic = true; listen.recording(true); controls();
   let micStream, context, session;
   const stillOwner = () => {
     if (quitView.seen) throw new Error('HearAlong is quitting; the recording was not started.');

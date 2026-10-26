@@ -84,7 +84,7 @@ export function transcriptRows(snapshot) {
 const compareRows = (a, b) => a.startMs - b.startMs || (Number(b.kind === 'gap') - Number(a.kind === 'gap')) || a.key.localeCompare(b.key);
 
 /** Keyed, synchronous handoffs. A drag holds the render; a lingering selection holds only its intersecting rows. */
-export function createTranscriptView(box, { segmentNode, changed = () => {}, emptyText = () => 'Waiting for transcribed speech…' }) {
+export function createTranscriptView(box, { segmentNode, listen = () => {}, changed = () => {}, emptyText = () => 'Waiting for transcribed speech…' }) {
   const view = { paragraphs: new Map(), following: true };
   const displayed = new Map();
   const originalBottom = box.style.paddingBottom, bottom = parseFloat(getComputedStyle(box).paddingBottom);
@@ -95,7 +95,7 @@ export function createTranscriptView(box, { segmentNode, changed = () => {}, emp
     extraBottom = extra;
   };
   let snapshot, down = false, pointer = null, draftDrag = null, setTop = box.scrollTop, selectionAnchor = null;
-  let draftNote = null, noteTimer, transcriptSelected = false;
+  let draftNote = null, noteTimer, transcriptSelected = false, heardMs = null, userScrolledAt = 0;
   const selectionRanges = () => {
     const selection = getSelection();
     if (!selection || selection.isCollapsed) return [];
@@ -151,7 +151,12 @@ export function createTranscriptView(box, { segmentNode, changed = () => {}, emp
     }
   }
   function fill(node, row) {
-    const time = document.createElement('time'); time.textContent = stamp(row.startMs);
+    const time = document.createElement('time');
+    if (row.kind === 'final' && row.segments.length) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'listen-time';
+      button.textContent = stamp(row.startMs); button.setAttribute('aria-label', `Listen from ${stamp(row.startMs)}`);
+      button.onclick = () => listen(row.startMs); time.append(button);
+    } else time.textContent = stamp(row.startMs);
     if (row.speaker) { const who = document.createElement('span'); who.className = 'speaker'; who.textContent = row.speaker; time.append(who); }
     const text = document.createElement('p');
     for (const segment of row.segments) text.append(segmentNode(segment));
@@ -167,6 +172,7 @@ export function createTranscriptView(box, { segmentNode, changed = () => {}, emp
     node.setAttribute('aria-hidden', row.segments.length || row.kind === 'gap' ? 'false' : 'true');
     node.dataset.kind = row.kind;
     node.dataset.ids = row.segments.map(s => s.id).join(' ');
+    node.dataset.start = String(row.startMs);
     node.dataset.end = String(row.endMs);
     node.dataset.signature = row.signature;
     node.replaceChildren(time, text);
@@ -280,17 +286,19 @@ export function createTranscriptView(box, { segmentNode, changed = () => {}, emp
       const target = rangeLive ? reading.range : reading.node?.isConnected ? reading.node : replacement ? view.paragraphs.get(replacement.key) : null;
       if (target) { scrollTo(box.scrollTop + target.getBoundingClientRect().top - (rangeLive ? reading.y : reading.nodeY ?? reading.y)); anchored = true; }
     }
-    if (view.following && !preserve && !ranges.length) scrollTo(box.scrollHeight - box.clientHeight);
+    if (heardMs === null && view.following && !preserve && !ranges.length) scrollTo(box.scrollHeight - box.clientHeight);
     else if (!anchored) scrollTo(oldTop);
     // Only a transcript interaction release may reconsider following; hidden geometry and timer renders cannot.
     if (released && !ranges.length && visible()) view.following = atBottom();
     selectionAnchor = ranges.length ? { ...reading, y: reading.range.getBoundingClientRect().top, nodeY: reading.node?.getBoundingClientRect().top } : null;
     // Release flushes at the anchor. It follows again only if the reader is still at the actual bottom.
+    if (heardMs !== null) view.hear(heardMs);
     if (oldHeight !== box.scrollHeight || rows.length) changed();
   }
   box.addEventListener('scroll', () => {
     if (!visible() || Math.abs(box.scrollTop - setTop) < 1) return;
     setTop = box.scrollTop;
+    userScrolledAt = Date.now();
     if (blocked()) { changed(); return; }
     heightFloor = 0; reserveHeight(0); setTop = box.scrollTop;
     view.following = atBottom(); changed();
@@ -333,7 +341,20 @@ export function createTranscriptView(box, { segmentNode, changed = () => {}, emp
   });
   Object.defineProperty(view, 'paused', { get: blocked });
   view.render = render;
+  // Share M9a's drag/selection guard, visibility check and tracked programmatic scrolls.
+  view.hear = ms => {
+    heardMs = ms;
+    const heard = ms === null ? null : [...view.paragraphs.values()].findLast(n => n.dataset.kind === 'final'
+      && Number(n.dataset.start) <= ms && ms < Number(n.dataset.end));
+    for (const node of view.paragraphs.values()) node.classList.toggle('heard', node === heard);
+    if (!heard || blocked() || !visible() || Date.now() - userScrolledAt < 4000) return;
+    const rect = heard.getBoundingClientRect(), pane = box.getBoundingClientRect();
+    if (rect.top < pane.top || rect.bottom > pane.bottom) {
+      scrollTo(box.scrollTop + rect.top - pane.top - Math.max(0, (box.clientHeight - rect.height) / 2));
+      view.following = atBottom(); changed();
+    }
+  };
   view.follow = () => { if (blocked()) return; heightFloor = 0; reserveHeight(0); view.following = true; scrollTo(box.scrollHeight); changed(); };
-  view.reset = () => { clearTimeout(noteTimer); draftNote = null; draftDrag = null; transcriptSelected = false; snapshot = null; down = false; heightFloor = 0; reserveHeight(0); selectionAnchor = null; displayed.clear(); view.following = true; view.paragraphs.clear(); box.replaceChildren(); setTop = 0; };
+  view.reset = () => { clearTimeout(noteTimer); draftNote = null; draftDrag = null; transcriptSelected = false; snapshot = null; down = false; heardMs = null; userScrolledAt = 0; heightFloor = 0; reserveHeight(0); selectionAnchor = null; displayed.clear(); view.following = true; view.paragraphs.clear(); box.replaceChildren(); setTop = 0; };
   return view;
 }

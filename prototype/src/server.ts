@@ -12,6 +12,7 @@ import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
 import { resolvePi } from './pi-command.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
+import { serveMeetingAudio } from './listen.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
 import { MeetingStore, type Mode } from './store.ts';
 import { finishPendingMeetingDeletions } from './delete-meeting.ts';
@@ -133,6 +134,7 @@ export async function startServer(options: {
       '/live-shared.js': ['live-shared.js', 'text/javascript'],
       '/preview-composition.js': ['preview-composition.js', 'text/javascript'],
       '/transcript-view.js': ['transcript-view.js', 'text/javascript'],
+      '/listen.js': ['listen.js', 'text/javascript'],
       '/segments-poll.js': ['segments-poll.js', 'text/javascript'],
       '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
       '/upload-retry.js': ['upload-retry.js', 'text/javascript'],
@@ -754,7 +756,7 @@ export async function startServer(options: {
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const ready = fingerprint.ready();
-          send(res, 200, { update: { ready, canRestart }, working: working(), config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), shuttingDown, audioRetentionNotice: audioRetention.notice,
+          send(res, 200, { update: { ready, canRestart }, working: working(), config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), recordingAnywhere: recordingAnywhere(), shuttingDown, audioRetentionNotice: audioRetention.notice,
             queued: appStore.queuedCount(), sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
             capabilities: { microphone: true, systemAudio: false, cloudModels: Boolean(quick), mainModel: ai.current('main'), correctionModel: quick ? ai.currentCorrection() : null, notesModel: notesRunner ? ai.current('main') : null, actionModel: actionRunner ? ai.current('main') : null, quickModel: quick ? ai.current('quick') : null, heavyModel: heavy ? ai.current('main') : null, participationScheduler: false, pdfExtraction: false },
           }); return;
@@ -909,6 +911,9 @@ export async function startServer(options: {
         if (!match) throw new HttpError(404, 'Not found.');
         const [, meetingId, action] = match;
         try { appStore.meeting(meetingId); } catch { throw new HttpError(404, 'Meeting not found.'); }
+        if (req.method === 'GET' && action === 'audio') {
+          await serveMeetingAudio(req, res, appStore, meetingId, url.searchParams.get('metadata') === '1', recordingAnywhere()); return;
+        }
         if (req.method === 'GET' && !action) {
           const chunks = appStore.chunks(meetingId).map(({ path: _path, hash: _hash, ...chunk }) => chunk);
           const projectId = projects.projectOf(meetingId);

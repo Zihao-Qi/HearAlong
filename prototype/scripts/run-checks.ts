@@ -125,6 +125,7 @@ async function main() {
     ['npm-test', ['npm', 'test', '--', '--test-concurrency=2']],
     ['typecheck', ['npm', 'run', 'check']],
     ['transcript-download', check('transcript-download-check', join(out, 'transcript-download'))],
+    ['listen', check('listen-check', join(out, 'listen'))],
     ['browser-smoke', check('browser-smoke', join(out, 'browser-smoke'))],
     ['mini-check', check('mini-check', audio, audio, join(out, 'mini'))],
     ['m9a', check('m9a-page-check', join(out, 'm9a'))],
