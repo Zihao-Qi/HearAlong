@@ -1,5 +1,6 @@
 // Usage: MEETING_TEST_CHROME=<bundled headless shell> node --experimental-strip-types scripts/pane-head-check.ts [outDir]
 // All data is fictional, in a disposable store. No cloud calls or user browser/profile.
+import './check-env.ts';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,7 @@ const notes = async () => ({ model: 'scripted', text: JSON.stringify({ title: 'L
 await dashboardSetup(directory);
 const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, notes, actions: null, board: null });
 let browser: Browser | undefined;
-const screenshots: string[] = [], errors: string[] = [], measurements: Record<string, unknown> = {};
+const screenshots: string[] = [], errors: string[] = [], layoutFailures: string[] = [], measurements: Record<string, unknown> = {};
 try {
   const meeting = app.store.createMeeting('Label shipment');
   const chunk = await app.store.addPcm(meeting.id, 'mic:test', 0, 0, 16000, Buffer.alloc(64000));
@@ -140,7 +141,7 @@ try {
       const badgeStyle = await page.locator(`#${badge}`).evaluate(node => {
         const style = getComputedStyle(node); return { top: style.top, right: style.right };
       });
-      assert.deepEqual(badgeStyle, width < 900 ? { top: '0px', right: '2px' } : { top: '2px', right: '0px' });
+      assert.deepEqual(badgeStyle, width < 900 ? { top: '0px', right: '2px' } : { top: '-3px', right: '0px' });
       measurements[`${width}-plus22-badge`] = badgeStyle;
       await shot(page, `${width}-notes-plus22`);
       await tab('board').click(); await tab('notes').click();
@@ -204,41 +205,71 @@ try {
       await page.locator('[data-focus="options"]').click(); assert.equal(await page.locator('#plans-menu').isVisible(), true);
       await page.keyboard.press('Escape');
       if (width === 1280) {
-        console.log('Checking 380px pane');
+        console.log('Checking project pane widths 380, 400 and 440px');
         await call('/api/projects', { name: 'Display labels', repoPath: null, fromMeetingId: meeting.id });
         await page.setViewportSize({ width: 1280, height: 900 });
         await page.locator('#tab-project').waitFor();
         await page.locator('#divider').focus(); await page.keyboard.press('Home');
-        // Home is the narrow limit; the project's fourth tab may put tools on a second row.
-        for (const kind of ['board', 'notes', 'plans', 'project']) {
-          await page.locator(`#tab-${kind}`).click();
-          const layout = await page.evaluate(() => {
-            const pane = document.getElementById('board-pane')!.getBoundingClientRect();
-            const controls = [...document.querySelectorAll('.board-pane .pane-head [role="tab"], .board-pane .pane-head .options-button, .board-pane .pane-head .sort-toggle')]
-              .filter(n => n.getClientRects().length).map(n => { const r = n.getBoundingClientRect(); return { id: n.id || n.textContent, left: r.left, right: r.right, top: r.top, bottom: r.bottom }; });
-            return { pane: { left: pane.left, right: pane.right, width: pane.width }, controls };
-          });
-          assert.equal(layout.pane.width, 380);
-          assert.equal(await page.locator('#tab-project').isVisible(), true);
-          for (const a of layout.controls) {
-            assert.ok(a.left >= layout.pane.left && a.right <= layout.pane.right, `${a.id} stays in pane`);
-            for (const b of layout.controls) if (a !== b) assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, `${a.id} and ${b.id} do not overlap`);
+        assert.equal(await page.locator('#divider').getAttribute('aria-valuenow'), '380');
+        for (const boardWidth of [380, 400, 440]) {
+          // Reload through the app's persisted setting, not a CSS-variable override.
+          await page.evaluate(width => localStorage.setItem('board-width', String(width)), boardWidth);
+          await page.reload();
+          await page.locator('#tab-project').waitFor();
+          for (const kind of ['board', 'notes', 'plans', 'project']) {
+            await page.locator(`#tab-${kind}`).click();
+            if (kind !== 'project') await page.locator(kind === 'board' ? '#board-sort' : kind === 'notes' ? '#notes-options' : '[data-focus="options"]').waitFor();
+            // Stress both corner badges without changing tab flow or project visibility.
+            const before = await rects();
+            await page.evaluate(() => { for (const id of ['board-badge', 'project-badge']) { const n = document.getElementById(id)!; n.textContent = '+22'; n.hidden = false; } });
+            assert.deepEqual(await rects(), before);
+            const layout = await page.evaluate(() => {
+              const box = (node: Element) => {
+                const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+              };
+              const pane = document.getElementById('board-pane')!, head = pane.querySelector('.pane-head')!, tabs = head.querySelector('.tabs')!;
+              const controls = [...head.querySelectorAll('[role="tab"], .options-button, .sort-toggle')]
+                .filter(n => n.getClientRects().length).map(n => ({ id: n.id || n.textContent, ...box(n) }));
+              const tool = [...head.querySelectorAll('.options-button, .sort-toggle')].find(n => n.getClientRects().length);
+              const toolBox = tool ? box(tool) : null;
+              const range = document.createRange();
+              range.selectNodeContents(document.getElementById('tab-board')!.firstChild!);
+              const label = range.getBoundingClientRect();
+              const badge = box(document.getElementById('board-badge')!);
+              const style = getComputedStyle(head), row = box(tabs);
+              return { pane: box(pane), head: box(head), tabs: row, controls, tool: toolBox,
+                centreDelta: toolBox ? Math.abs((toolBox.top + toolBox.bottom - row.top - row.bottom) / 2) : null,
+                oneRowHeight: row.height + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom),
+                scrollWidth: pane.scrollWidth, clientWidth: pane.clientWidth,
+                badge, label: { left: label.left, right: label.right, top: label.top, bottom: label.bottom },
+                badgeIntersectsLabel: badge.left < label.right && label.left < badge.right && badge.top < label.bottom && label.top < badge.bottom };
+            });
+            const name = `${boardWidth}-${kind}`;
+            measurements[name] = layout;
+            await shot(page, `${name}-project-visible`);
+            console.log(`${name}: tabs=${layout.tabs.width} head=${layout.head.height} tool=${layout.tool?.width ?? 'none'} centreDelta=${layout.centreDelta ?? 'n/a'} badgeIntersectsLabel=${layout.badgeIntersectsLabel}`);
+            assert.equal(layout.pane.width, boardWidth);
+            assert.equal(await page.locator('#tab-project').isVisible(), true);
+            for (const a of layout.controls) {
+              assert.ok(a.left >= layout.pane.left && a.right <= layout.pane.right, `${name}: ${a.id} stays in pane`);
+              for (const b of layout.controls) if (a !== b) assert.ok(a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top, `${name}: ${a.id} and ${b.id} do not overlap`);
+            }
+            assert.equal(Boolean(layout.tool), kind !== 'project', `${name}: active tab's tool is present`);
+            if (layout.centreDelta !== null && layout.centreDelta > layout.tabs.height / 2) layoutFailures.push(`${name}: tool centre outside tabs row (${layout.centreDelta}px)`);
+            if (layout.head.height !== layout.oneRowHeight) layoutFailures.push(`${name}: head ${layout.head.height}px, expected one row ${layout.oneRowHeight}px`);
+            if (layout.scrollWidth > layout.clientWidth) layoutFailures.push(`${name}: horizontal pane overflow`);
+            if (layout.badgeIntersectsLabel) layoutFailures.push(`${name}: Board badge intersects label text`);
           }
-          // Project and Board badges are also removed from layout flow.
-          const before = await rects();
-          await page.evaluate(() => { for (const id of ['board-badge', 'project-badge']) { const n = document.getElementById(id)!; n.textContent = '+22'; n.hidden = false; } });
-          assert.deepEqual(await rects(), before);
-          measurements[`380-${kind}`] = layout;
-          await shot(page, `380-${kind}-project-visible`);
         }
       }
     } finally { await context.close(); }
   }
   assert.deepEqual(errors, []);
+  assert.deepEqual(layoutFailures, [], 'Project-tab pane heads stay on one row with non-overlapping badges');
+  console.log(`PASS pane head: wide/compact badge geometry and arrival counts; synchronous tab updates; tool positions; mouse/keyboard/outside/focus/stale/resize menu behavior; 380/400/440px project pane heads. ${screenshots.length} screenshots.`);
+} finally {
   await writeFile(join(out, 'pane-head-measurements.json'), JSON.stringify(measurements, null, 2));
   await writeFile(join(out, 'screenshots.txt'), screenshots.join('\n') + '\n');
-  console.log(`PASS pane head: wide/compact badge geometry and arrival counts; synchronous tab updates; tool positions; mouse/keyboard/outside/focus/stale/resize menu behavior; 380px Project-tab wrapping. ${screenshots.length} screenshots.`);
-} finally {
   console.log('Closing check browser and server');
   await browser?.close(); await app.close(); await rm(directory, { recursive: true, force: true });
 }

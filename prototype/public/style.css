@@ -276,7 +276,7 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .selection-other input { flex: 1; min-width: 0; }
 .selection-hint { margin: 0; font-size: 13px; color: #5C4400; background: var(--mark); padding: 6px 10px; border-radius: 8px; }
 .tab-badge { position: absolute; top: 3px; right: 2px; min-width: 16px; box-sizing: border-box; padding: 0 4px; border-radius: 999px; background: var(--accent); color: #FFF; font-size: 10px; font-weight: 600; line-height: 16px; text-align: center; letter-spacing: 0; }
-.board-pane .tabs .tab-badge { top: 2px; right: 0; }
+.board-pane .tabs .tab-badge { top: -3px; right: 0; }
 .compact-tabs .tab-badge { top: 0; }
 .actions-status { padding: 0 20px; }
 .actions-list { padding: 0 20px; display: flex; flex-direction: column; }
@@ -522,9 +522,10 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .board-filter[hidden] { display: none; }
 .board-filter select { min-height: 34px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); font: 13px var(--sans); color: var(--ink); }
 .board-pane .pane-head .segmented button { min-height: 28px; } /* 28 + 2 × 3 = 34, the tabs' height */
-/* Four pane tabs keep their full labels; the board's order control can wrap at the pane minimum. */
+/* Sentence-case pane tabs keep all four labels and their tool on one row at the pane minimum. */
 .board-pane .pane-head { flex-wrap: wrap; gap: 8px; }
-.board-pane .tabs button { padding: 0 14px; }
+.board-pane .tabs { gap: 0; }
+.board-pane .tabs button { padding: 0 10px; letter-spacing: 0; text-transform: none; }
 .sort-toggle { margin-left: auto; min-height: 34px; padding: 0 8px; border: none; border-radius: 8px; background: none; font: 500 13px var(--sans); color: var(--accent-ink); white-space: nowrap; cursor: pointer; }
 .sort-toggle:hover { background: var(--accent-tint); }
 /* The active tab's tool shares the head, without adding a row inside its panel. */

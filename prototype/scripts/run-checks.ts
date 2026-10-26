@@ -132,6 +132,8 @@ async function main() {
     ['capture-resilience', check('capture-resilience-check', join(out, 'capture'))],
     ['transcript-notes-page', check('transcript-notes-page-check', join(out, 'transcript-notes-page'))],
     ['notes-ui', check('notes-ui-check', join(out, 'notes-ui'))],
+    ['pane-head', check('pane-head-check', join(out, 'pane-head'))],
+    ['plans', [...node, '--import', './scripts/check-env.ts', 'scripts/plans-check.ts', join(out, 'plans')]],
     ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
   ];
   const running = new Set<number>();
