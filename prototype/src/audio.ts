@@ -49,12 +49,12 @@ export async function probeDuration(path: string): Promise<number> {
   return seconds;
 }
 
-export async function decodeChunk(path: string, startSeconds: number, seconds: number, sampleRate?: number): Promise<Float32Array> {
+export async function decodeChunk(path: string, startSeconds: number, seconds: number, sampleRate?: number, signal?: AbortSignal): Promise<Float32Array> {
   const args = ['-nostdin', '-v', 'error'];
   if (sampleRate) args.push('-f', 'f32le', '-ar', String(sampleRate), '-ac', '1');
   if (startSeconds > 0) args.push('-ss', String(startSeconds));
   args.push('-i', path, '-t', String(seconds), '-map', '0:a:0', '-vn', '-ac', '1', '-ar', String(SAMPLE_RATE), '-f', 'f32le', 'pipe:1');
-  const pcm = await runBinary(process.env.MEETING_FFMPEG ?? 'ffmpeg', args, { maxBytes: (seconds + 1) * SAMPLE_RATE * 4 });
+  const pcm = await runBinary(process.env.MEETING_FFMPEG ?? 'ffmpeg', args, { maxBytes: (seconds + 1) * SAMPLE_RATE * 4, signal });
   if (!pcm.length || pcm.length % 4) throw new Error('The decoder returned no usable audio.');
   // slice gives an aligned, exclusively owned ArrayBuffer for the native library.
   return new Float32Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
