@@ -11,6 +11,7 @@ import { ROLE_LABEL, compareSegments, speakerPrefix, type Speakers } from './spe
 import type { MeetingStore, Segment } from './store.ts';
 import type { Glossary } from './correction.ts';
 import type { ActionJobs } from './actions.ts';
+import { boardOutcomes, recordQuoteChecks } from './quote-metrics.ts';
 
 export type CardType = 'question' | 'claim' | 'decision' | 'action' | 'other';
 export const CARD_TYPES: CardType[] = ['question', 'claim', 'decision', 'action', 'other'];
@@ -407,6 +408,7 @@ export class Boards {
       log.kept = fresh.length;
       return fresh;
     });
+    if (!log.error) await recordQuoteChecks(this.options.directory, 'board', log.model, boardOutcomes({ kept: items, dropped: log.dropped }), this.options.clock());
     for (const card of created) if (autoEligible(card)) await this.autoInvestigate(meetingId, card.id);
   }
 

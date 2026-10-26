@@ -13,6 +13,7 @@ import type { Material } from './materials.ts';
 import { isPdf, pageAt, pdfQuoteSpan, quoteReadings, type PdfRoot, type PdfText } from './pdf-text.ts';
 import { speakerPrefix } from './speakers.ts';
 import { Cooldowns, RATE_LIMIT, toolErrors } from './quota.ts';
+import { actionOutcomes, recordQuoteChecks } from './quote-metrics.ts';
 
 export type ActionKind = 'explain' | 'answer' | 'compute' | 'findSource' | 'lookUp' | 'other';
 type ActionSpec = { label: string; tools: string; needsMaterials: boolean; needsWeb?: boolean; extensions?: string[]; request: string; rules: string[] };
@@ -849,6 +850,8 @@ export class ActionJobs {
       await writeFile(join(this.jobDir(job.meetingId), `${job.id}.evidence`), JSON.stringify(evidence), { mode: 0o600 });
       const checked = await checkAnswer(result.text, roots, evidence, job.context.lines,
         this.options.pdfText && { text: this.options.pdfText, view, deadline: Date.now() + 60_000, signal: controller.signal });
+      const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null;
+      await recordQuoteChecks(this.options.directory, 'actions', model, actionOutcomes(checked.checks), this.options.clock());
       const webCalls = results.filter(r => ['web_search', 'fetch_content', 'get_search_content'].includes(r.name) && !r.isError).length;
       if (controller.signal.aborted) throw new Error('cancelled');
       if (toolRateLimited()) this.cooldowns.hit('web', 'actions', LIMITS.rateLimitPauseMs);
@@ -856,7 +859,7 @@ export class ActionJobs {
         state: 'done', finishedAt: this.options.clock(), draft: '', error: null,
         result: {
           ...checked, compute: computeOf(), manifest, ms: Math.round(performance.now() - started), firstTextMs: firstTextMs === null ? null : Math.round(firstTextMs),
-          model: result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null,
+          model,
           tools: result.tools.map(t => ({ name: t.name, arg: JSON.stringify(t.args ?? {}).slice(0, 200) })),
           notes: ACTIONS[job.action].needsWeb && !webCalls ? ['No web tool completed for this answer; web search may be unavailable.'] : [],
         },

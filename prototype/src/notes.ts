@@ -11,6 +11,7 @@ import type { Glossary } from './correction.ts';
 import { ROLE_LABEL, compareSegments, speakerPrefix } from './speakers.ts';
 import { RATE_LIMIT, clockTime, type Cooldowns } from './quota.ts';
 import { DurationHistory, ItemScanner, textDelta, type NotesProgress } from './progress.ts';
+import { notesOutcomes, recordQuoteChecks } from './quote-metrics.ts';
 
 /** `source` and `speaker` are set only in a labelled (online) meeting; `speaker` is "Me"/"Them", frozen when the snapshot is taken. */
 export type SnapshotSegment = { ref: string; id: string; startMs: number; endMs: number; revision: number; text: string; originalText: string; source?: string; speaker?: string };
@@ -548,9 +549,11 @@ export class NotesJobs {
         const result = results[0].result;
         progress.phase = 'check';
         const { notes, dropped } = validateNotes(Object.assign({}, ...results.map(r => r.raw)), snapshot);
+        const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null;
+        await recordQuoteChecks(this.options.directory, 'notes', model, notesOutcomes({ notes, dropped }), this.options.clock());
         if (!NOTE_SECTIONS.some(section => notes[section].length) && !notes.needsReview.length) throw new Error('The model returned no usable notes.');
         await this.file(meetingId).save({
-          createdAt: this.options.clock(), model: result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null,
+          createdAt: this.options.clock(), model,
           meetingId, title: snapshot.title,
           input: { inputHash: snapshot.inputHash, coverage: snapshot.coverage, glossaryVersion: snapshot.glossaryVersion, segments: snapshot.segments.length, takenAt: snapshot.takenAt },
           notes, sources: sourcesFor(notes, snapshot), dropped,

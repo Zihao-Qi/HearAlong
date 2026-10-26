@@ -40,6 +40,8 @@ Audio recognition stays local. Do not treat that as a guarantee that all app dat
 
 Runtime data lives in `data/`, or `MEETING_DATA_DIR`: SQLite records, audio, imports, notes, project memory, tool scratch files, and AI session logs. These can contain sensitive content and are Git-ignored. Audio retention defaults to one day after completed processing; settings also offer a week, a month, or always. Transcripts and notes are retained. Do not publish runtime folders or logs.
 
+Quote checks are counted locally in `data/metrics/quote-checks.json`: per feature (board, notes, plans, actions), model id and ISO week, how many model claims passed the evidence check and how many failed, by a fixed list of reasons (such as `quote_not_found` or `no_citation`). The file holds counts only, never quotes, text, meeting ids, paths or times finer than a week, and it never leaves the Mac. `node --experimental-strip-types scripts/quote-metrics.ts [file or data folder] [--json]` prints the share that failed per feature and model; it only reads.
+
 ## Public repository guard
 
 Run `npm run guard:install` from `prototype/` to set the absolute main-tree `.githooks` path for every worktree, including older revisions (requires Git and Node.js).
