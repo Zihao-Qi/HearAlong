@@ -10,6 +10,7 @@ import { folderOf, type ExplorationContext, type ExplorationJob, type Exploratio
 import { checkCompleted, extractJson } from '../pi-task.ts';
 import { DurationHistory, ItemScanner, planProgress, updatePlanProgress, type PlanProgress } from '../progress.ts';
 import { RATE_LIMIT, modelQuotaMessage, type Cooldowns } from '../quota.ts';
+import { plansOutcomes, recordQuoteChecks } from '../quote-metrics.ts';
 import type { Memory } from '../memory.ts';
 import type { NotesJobs } from '../notes.ts';
 import type { PdfText } from '../pdf-text.ts';
@@ -374,6 +375,7 @@ export class PlanJobs {
         const moved = [...changedFiles(pins.materials, after)];
         const { materials: _manifest, ...planPins } = pins;
         const checked = checkPlans(answer, { run: ctx.job.id, refs: built.refs, evidence: saved, pins: planPins, changed });
+        await recordQuoteChecks(o.directory, 'plans', model, plansOutcomes(checked), o.clock());
         checked.review.push(...passReview);
         const doc = plansDocument(checked, { kind, base, plan: data.plan, createdAt: o.clock(), pins, finished: true, evidenceComplete: evidence.complete,
           warnings: [...(moved.length ? [`The materials changed during this run (${moved.slice(0, 3).join(', ')}${moved.length > 3 ? ` and ${moved.length - 3} more` : ''}).`] : []),
