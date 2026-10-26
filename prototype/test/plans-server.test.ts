@@ -344,6 +344,8 @@ test('Explore further: only on a click, its own instruction after the frozen pro
     assert.deepEqual([started.status, started.body.run.kind, started.body.run.plan, started.body.run.label, started.body.run.limitMinutes], [202, 'explore', 'p1', 'Temporary robot dock', 20]);
     assert.equal((await s.call(`/api/meetings/${id}/plans/1/plans/p1/explore`, 'POST', { opId })).body.replayed, true);
     await s.until(async () => (await s.page(id)).current?.version === 2, 'version 2');
+    // The page keeps the run active until its terminal state is persisted, even after publication.
+    await s.until(() => s.app.explorations.get(started.body.run.id)?.state === 'done', 'the published exploration to finish');
     const call = s.calls[1];
     assert.ok(call.prompt.startsWith(`${PLAN_PROMPT}\n\n`) && call.prompt === EXPLORE_PROMPT, 'the frozen prompt, then the instruction for one plan');
     assert.deepEqual([call.options.model, call.options.thinking, call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['example/main', 'high', '8', '120000']);
