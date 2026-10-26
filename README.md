@@ -36,6 +36,8 @@ Speech recognition runs entirely on your Mac. You follow the conversation as it 
 - **Decisions backed by experiments.** One example: sealing audio earlier would have cut the final-text delay from about 15 s to 6.5 s. An offline experiment on real recordings showed it made 2–8 percentage points more recognition errors and lost some technical terms, so it was not shipped.
 - **Tested like a product.** 390 unit and integration tests, plus browser checks in headless Chrome: layouts at 11 window sizes, the mini window, the plans view, an end-to-end smoke test with real local speech recognition, and a *rehearsal* tool that replays a recording as a live microphone.
 
+How these work, with links to the code: [Architecture](docs/architecture.md).
+
 ## How it was built
 
 HearAlong was built by one person directing a small team of AI agents, each with a clear role:

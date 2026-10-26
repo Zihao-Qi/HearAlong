@@ -1,0 +1,277 @@
+# HearAlong architecture
+
+HearAlong is a local web app for macOS. A Node.js server (TypeScript, run with `--experimental-strip-types`) listens on `127.0.0.1` and serves a plain-JavaScript page in Chrome. The page sends audio to the server one second at a time. The server saves it, transcribes it with a local speech model in a separate process, and keeps its state in one SQLite database and a data folder. Language-model features run through the [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent CLI, always as separate processes.
+
+This page covers four parts: audio that is not lost, a live transcript that does not flicker, agent processes that cannot outlive their job, and quote checks on model output. Each claim links to the code that implements it.
+
+```mermaid
+flowchart LR
+  subgraph Page["Chrome page"]
+    WL["PCM worklet<br/>1 s frames"]
+    TV["Transcript view"]
+  end
+  subgraph Server["Node server on 127.0.0.1"]
+    RT["HTTP routes"]
+    LC["LiveCapture"]
+    JM["JobManager"]
+    LD["LiveDrafts"]
+    AJ["AI jobs"]
+  end
+  DB[("SQLite<br/>meetings.sqlite")]
+  FS[("Data folder<br/>audio, notes, plans")]
+  STT["STT worker<br/>one process"]
+  SW["Stream workers<br/>one per live source"]
+  PI["Pi processes"]
+  PRV["Model provider"]
+  WL -- "POST /pcm" --> RT
+  TV -- "GET /segments, every 1 s" --> RT
+  RT --> LC
+  LC --> FS
+  LC --> DB
+  LC --> LD
+  LD --> SW
+  JM --> STT
+  JM --> DB
+  RT --> AJ
+  AJ --> PI
+  PI -- "excerpts, when AI is on" --> PRV
+```
+
+The entry point is [`startServer`](../prototype/src/server.ts); a lock file ensures one server per data folder ([`lock`](../prototype/src/server.ts)).
+
+## 1. Audio capture and durability
+
+### In the browser
+
+[`startRecording`](../prototype/public/app.js) opens one 16 kHz `AudioContext` for the recording. The microphone ("Me") always records; for an online meeting, [`pickMeetingTab`](../prototype/public/app.js) also takes a Chrome tab's audio ("Them") and refuses a window or a screen. [`addSource`](../prototype/public/app.js) gives each source its own mono `AudioWorkletNode`, so a stereo tab is mixed down, not cut to one channel.
+
+The worklet, [`PcmCapture`](../prototype/public/pcm-worklet.js), fills a 1-second `Float32Array` (16,000 samples) and transfers it to the page. Each frame carries the wall-clock time of its first sample, taken from the audio clock by [`SampleCaptureClock`](../prototype/public/capture-clock.js), not from the time of upload.
+
+Frames of one source are uploaded strictly in order through [`uploadWithRetry`](../prototype/public/upload-retry.js). Network errors and 5xx replies are retried with backoff from 0.5 s to 4 s, each attempt has a 10 s limit, and a frame gives up only after at least three failures and 30 seconds. A 4xx reply is not retried. If a frame gives up, or 30 frames are waiting, that source stops and the page says what was lost; the other source keeps recording.
+
+### On the server
+
+The route `POST /api/meetings/:id/pcm` in [`server.ts`](../prototype/src/server.ts) checks the headers (source id, sequence, 16 kHz), reads at most one second of float32 samples and rejects non-finite or out-of-range values. [`LiveCapture.accept`](../prototype/src/live.ts) then runs all work for that source on one promise chain, so saving, sealing and ending never interleave.
+
+[`MeetingStore.addFrame`](../prototype/src/store.ts) decides durability:
+
+- The frame must have the next sequence number and start where the previous one ended (within 1 ms). A repeat with the same bytes returns the saved frame, so a retry after a lost reply cannot duplicate audio; a different frame under the same number is refused.
+- The bytes go to a new file opened with `wx`, which is then `fsync`ed. The directory is synced too, as a best effort ([`syncDirectory`](../prototype/src/store.ts)).
+- The frame row and any capture-gap rows commit in one SQLite transaction, with `journal_mode=WAL` and `synchronous=FULL`.
+
+Only then does the route answer `201`.
+
+```mermaid
+sequenceDiagram
+  participant P as Page
+  participant R as Route /pcm
+  participant L as LiveCapture
+  participant M as MeetingStore
+  participant J as JobManager
+  participant W as STT worker
+  P->>R: frame n, 1 s of float32
+  R->>L: accept()
+  L->>M: addFrame()
+  M->>M: write file, fsync, commit row
+  R-->>P: 201
+  Note over L,M: 24 s held, cut at the quietest boundary after 16 s
+  L->>M: sealWindow(frames)
+  M->>M: write window file, fsync, insert chunk and link frames in one transaction
+  J->>W: transcribe(chunk)
+  W-->>J: words with timings
+  J->>M: completeChunk()
+```
+
+### Windows and transcription
+
+Saved frames are held until they are grouped into a transcription window. Once 24 seconds are held, [`LiveCapture.sealIfDue`](../prototype/src/live.ts) cuts at the quietest frame boundary between 16 and 24 seconds ([`chooseCut`](../prototype/src/live.ts)). A source that ends, or is silent on the network for 10 seconds, is sealed whole.
+
+[`MeetingStore.sealWindow`](../prototype/src/store.ts) writes and syncs the window's audio, then inserts the chunk row and links the frames to it in one transaction. A crash leaves either held frames, which are sealed again, or a complete window. Frame files are deleted only after the commit; [`removeSealedFrameFiles`](../prototype/src/store.ts) finishes interrupted cleanup at startup, and only if the window file exists.
+
+[`JobManager`](../prototype/src/jobs.ts) transcribes queued chunks one at a time. A failure is retried after 15 seconds and again after 60; after three attempts the chunk stays failed and shows as a gap the user can retry. [`LocalRecognizer`](../prototype/src/recognizer.ts) runs recognition in a forked [`stt-worker.ts`](../prototype/src/stt-worker.ts), so a crash in the native library ends that process, not the server. Each chunk has a 120-second limit. [`completeChunk`](../prototype/src/store.ts) publishes the text and its timed segments in one transaction.
+
+### Gaps and sleep
+
+[`detectFrameCaptureGaps`](../prototype/src/capture-gaps.ts) compares the capture time where one frame ended with the capture time of the next frame's first sample; more than 5 seconds apart is a gap. The worklet also reports gaps inside a frame. The page watches its timers and Chrome's `resume` event ([`CaptureSuspension`](../prototype/public/capture-clock.js)), and a gap that overlaps such a pause is labelled as sleep. Gaps are saved with the frame and shown in the transcript as a line such as "Not recorded for 8 minutes … the Mac was asleep" ([`captureGapText`](../prototype/public/capture-gaps.js)). They are never sent to a model.
+
+### Server restarts
+
+A recording continues across a server restart. The page keeps capturing and retrying while the server is down. At startup the store re-queues chunks that were `running` (the [`MeetingStore`](../prototype/src/store.ts) constructor), and [`LiveCapture`](../prototype/src/live.ts) marks open recordings as `recovering`. The next request from the same page reopens them, and its frames continue at the next sequence number. A sweep every 2 seconds seals sources that went quiet; a recording whose page has not returned within 60 seconds is marked abandoned. A normal shutdown seals everything held before closing the store ([`LiveCapture.close`](../prototype/src/live.ts)).
+
+### Audio retention
+
+[`AudioRetention`](../prototype/src/audio-retention.ts) deletes raw audio a set time after a meeting is fully transcribed: one day by default, or a week, a month, or never. The removal is first committed in the database (the meeting is marked and its file paths are cleared), then the files are deleted. Only `.f32` files of that recording inside `data/audio/<meeting id>` are removed, checked with `realpath`; database paths are never followed, so imported files elsewhere are never touched. Transcripts and notes are kept.
+
+### The guarantee, precisely
+
+**Once the server has answered `201` to a frame, that second of audio has been handed to the disk (file `fsync`ed, row committed with `synchronous=FULL`). It will be transcribed, once a speech model is available, or shown as a failed gap, even if the server is killed right after.**
+
+It does not cover:
+
+- audio still in the page: up to a second in the worklet, plus frames queued or retrying (at most 30). If the tab or Chrome closes, or a source gives up, that audio is lost, and the page says so.
+- the last part of a second when a source ends, if the worklet does not hand it over within 1.5 seconds.
+- time when nothing was captured, such as a sleeping Mac. It is shown as a gap, not recovered.
+- sudden power loss, fully. The audio file is flushed through the drive's write cache (Node's `fsync` uses `F_FULLFSYNC` on macOS), but SQLite's commit uses a plain `fsync` because its `fullfsync` pragma is off by default, so the frame's row could be lost with the drive cache. The directory sync is best effort.
+- disk failure: there is no second copy.
+- audio removed by the retention setting.
+
+## 2. Final, live and pending text
+
+The transcript shows three kinds of text:
+
+- **Final**: segments from the batch recognizer, stored in SQLite.
+- **Live (active)**: the current window's draft from a streaming recognizer.
+- **Pending**: a draft frozen when its window was sealed, shown until that window's final text arrives.
+
+[`LiveDrafts`](../prototype/src/drafts.ts) runs one [`stt-stream-worker.ts`](../prototype/src/stt-stream-worker.ts) process per live source (at most two) and one stream per window, fed with every new frame that `LiveCapture.accept` saves. A worker more than 4 seconds behind stops being fed for that window; one that hangs for 10 seconds is killed. Drafts are never stored or sent to a model, and nothing in this path can delay saving audio or final text. At a seal, [`LiveDrafts.seal`](../prototype/src/drafts.ts) keeps the last displayed draft as the new chunk's pending block, and the next stream starts from the frames after the cut ([`restartDraft`](../prototype/src/live.ts)).
+
+```mermaid
+flowchart LR
+  FR["Saved frames"] --> SW["Stream worker"]
+  SW --> AC["Active draft<br/>current window"]
+  AC -- "window sealed" --> PE["Pending draft<br/>frozen copy"]
+  FR --> CH["Sealed chunk"] --> BR["Batch recognizer"] --> FI["Final segments"]
+  FI --> CP["composePreview<br/>one owner per word"]
+  AC --> CP
+  PE --> CP
+  CP --> DOM["Keyed DOM rows"]
+```
+
+### One owner per moment
+
+Each stretch of audio is drawn from exactly one layer. Ownership is decided per source and per word, by the time of the word's midpoint (word times come from the stream's token timestamps, [`timedWords`](../prototype/public/preview-composition.js)):
+
+1. **Final wins.** In the same response that carries the final segments, the server removes draft and pending words inside any finished chunk: completed (with its lines shown, or empty), failed or cancelled ([`ownsDisplayInterval`](../prototype/src/drafts.ts), [`LiveDrafts.pending`](../prototype/src/drafts.ts)). A final line and the draft words it replaces never arrive in different polls.
+2. **Active beats pending.** Pending words that the new stream has committed are retired ([`retireCovered`](../prototype/src/drafts.ts)).
+3. **Newer pending beats older pending** ([`composePreview`](../prototype/public/preview-composition.js)).
+
+### No flicker
+
+[`transcriptRows`](../prototype/public/transcript-view.js) gives every row a stable key. The pending text before a cut and the first final paragraph of the same chunk share the key `chunk:<chunk id>`, so when the final text arrives the same DOM node is refilled in one synchronous step; nothing is removed and added again. [`render`](../prototype/public/transcript-view.js) rewrites a node only when its content signature changes.
+
+### Selection-safe scrolling
+
+[`createTranscriptView`](../prototype/public/transcript-view.js) keeps text still while the reader works with it:
+
+- While a pointer button is down, rendering waits.
+- Rows that intersect the selection are frozen; new text goes around them ([`aroundSelection`](../prototype/public/transcript-view.js)), never inside the selected range.
+- After each render, the scroll position is corrected so the selected text, or the line under the pointer, stays at the same height. Extra bottom padding stops the browser from clamping the scroll when a preview gets shorter.
+- The view follows new text only while the reader is at the bottom.
+
+### The lighter poll
+
+The page polls `GET /api/meetings/:id/segments` once a second. Drafts, pending text and status are sent whole; the list of final segments is sent as a delta. The page returns the tag it received last ([`createSegmentsPoll`](../prototype/public/segments-poll.js)), and [`SegmentsTag.delta`](../prototype/src/segments-tag.ts), which hashes the serialized list as a running prefix, answers with:
+
+- only the new segments, if the page's list is still a prefix of the current one;
+- otherwise everything after a checkpoint 32 segments from the end, if that is unchanged (glossary corrections edit recent lines);
+- otherwise the full list.
+
+Tags carry an HMAC and a per-process nonce, so a restarted server or a malformed tag gets the full list. The page also falls back to the full list after any inconsistent reply.
+
+## 3. Agent process isolation
+
+All language-model work goes through Pi, which always runs as a child process; the server process loads neither Pi nor the speech library. A crash, hang or runaway tool in Pi cannot stop a recording, which runs entirely in the server and the STT workers.
+
+There are two lanes:
+
+- **Quick lane**: a warm `pi --mode rpc` process ([`PiRpc`](../prototype/src/pi-rpc.ts)) with tools off, one request at a time and at most 20 queued. The session is reset after every request, so prompts never see each other. A timeout kills and restarts the process, so a late answer cannot reach the next caller. [`ModelRpc`](../prototype/src/pi-rpc.ts) picks the model when a request is admitted. The server runs two: glossary correction (30-second limit) and Board scans (90 seconds).
+- **Heavy tasks**: one `pi --mode json` process per task ([`runPiTask`](../prototype/src/pi-task.ts)), with a tool allowlist, a saved session log and a time limit: 10 minutes for notes, actions and glossary builds, 5 minutes for a whole plan pass, 20 for Explore further ([`EXPLORATION_LIMITS`](../prototype/src/explorations.ts)). A run counts only if it ends cleanly ([`checkCompleted`](../prototype/src/pi-task.ts)).
+
+### Process groups
+
+Actions and plans can run tools, including Python, so `runPiTask` starts them through [`spawnGated`](../prototype/pi-extensions/process-groups.ts):
+
+1. A detached `/bin/sh` starts as the leader of a new process group and waits.
+2. The server writes a record to `data/processes/<job>/`: pid, group id and the leader's start time from `ps`.
+3. The server says "go"; the shell starts a small sentinel whose command line names the job's folder, then replaces itself with Pi.
+
+The `run_python` tool records each script's own group in the same folder.
+
+```mermaid
+sequenceDiagram
+  participant S as Server
+  participant D as Process folder
+  participant G as Gate shell
+  participant P as Pi
+  S->>G: spawn detached, new group
+  S->>D: write record with pid, group, start time
+  S->>G: go
+  G->>G: start sentinel
+  G->>P: exec pi
+  Note over S,P: time limit or Cancel
+  S->>P: SIGTERM to the group
+  S->>D: end recorded Python groups
+  S->>P: SIGKILL after 3 s if still alive
+  S->>D: endRecorded, then remove the folder
+```
+
+When Pi exits, [`endRecorded`](../prototype/pi-extensions/process-groups.ts) ends whatever is left in every recorded group and removes the folder only once that is confirmed; otherwise the records stay for the next start. Pi's own group is signalled directly only while Pi is still the server's live child, so its id cannot have been reused. Every group found through a record is first checked by [`verdict`](../prototype/pi-extensions/process-groups.ts): the leader's start time must match, or, if the leader is gone, the sentinel must still be in the group. A group that cannot be verified is left alone and logged, so a reused pid is never killed.
+
+Notes, memory updates and glossary builds use no tools or read-only file tools and run as ordinary child processes, stopped with `SIGTERM` and then `SIGKILL` after 3 seconds.
+
+### Crash recovery
+
+At server start, before the database is opened, [`recoverExplorations`](../prototype/src/explorations.ts) ends the groups of plan runs that were running and marks those runs interrupted, and [`endLeftoverProcesses`](../prototype/pi-extensions/process-groups.ts) ends everything else recorded under `data/processes`. Unfinished actions become `interrupted` and never restart by themselves ([`ActionJobs.load`](../prototype/src/actions.ts)).
+
+### Plan pass: parallel copies
+
+[`runPlanPass`](../prototype/src/plans/pass.ts) reads once, then writes in parallel. Stage 1 is one Pi run that reads the inputs, uses tools and returns an outline of at most 8 plans. For each plan, the stage-1 session file is copied and continued in its own Pi process, with the same model, tools and environment so that the shared prefix can come from the provider's prompt cache. Each copy has its own process folder. A rate limit or timeout in any copy stops all of them; another failure in one copy becomes a warning. Plan runs are scheduled by [`Explorations`](../prototype/src/explorations.ts): one at a time across the app, never during a recording or replay, and after the meeting's notes, memory update and actions.
+
+### What each feature sends
+
+Cloud AI is **on by default** whenever Pi has a signed-in provider; `MEETING_CLOUD=0` turns off everything below ([`startServer`](../prototype/src/server.ts), [`AiSetup.require`](../prototype/src/setup/ai.ts)). Audio and speech recognition never leave the Mac.
+
+| Feature | Lane | Sent to the model provider |
+|---|---|---|
+| Correction ([`correctionPrompt`](../prototype/src/correction.ts)) | quick | The glossary and up to 24 unchecked lines with 2 lines of context, at most once a minute per meeting; lines of only filler words are not sent. |
+| Glossary build ([`glossaryPrompt`](../prototype/src/correction.ts)) | heavy, read-only file tools | Attached materials, as Pi reads them, including PDF text. |
+| Board scan ([`scanInput`](../prototype/src/board.ts)) | quick | Title, glossary terms, up to 30 open cards, open project-memory items (about 12,000 characters at most), and up to 4 minutes of unscanned final speech with 90 s of context. |
+| Notes ([`notesInput`](../prototype/src/notes.ts)) | heavy, no tools, three parallel calls | The whole final transcript (corrected and as heard), title and glossary terms. |
+| Memory ([`proposalInput`](../prototype/src/proposals.ts), [`MemoryFiles`](../prototype/src/memory-files.ts)) | heavy, no tools | Project memory items; the meeting's decisions, actions and open questions with their cited lines; lines added to the memory files by people or agents; subjects and paths of up to 50 recent commits, to guess a change's source. |
+| Explain and other actions ([`actionInput`](../prototype/src/actions.ts)) | heavy, per-action tools | The selection, the transcript from 2 minutes before to 30 seconds after it, title, glossary terms; files Pi reads from the materials and a read-only memory snapshot. Compute runs Python on the Mac and sends its output. |
+| Plans ([`buildPlanInput`](../prototype/src/plans/input.ts)) | heavy, file, web and Python tools | The notes, the transcript lines they cite, project memory and the list of materials (about 200 KB at most); files Pi reads. |
+| Web lookups | tools in actions and plans | Queries and addresses go to the services behind Pi's `pi-web-access` package; page text then goes to the model. |
+
+## 4. Quote checking
+
+Each AI feature that makes claims about a meeting must cite its sources and copy a short quote from each. Code, not the model, checks the quote against the text the model was given or actually read. The checks prove that the quoted words exist in that source. **They do not prove that the claim is true, or that the quote supports it.** That is why notes, cards and plans are presented as drafts.
+
+```mermaid
+flowchart TB
+  A["Model answer"] --> B{"Citations resolve?"}
+  B -- "no" --> X["Dropped, with a reason"]
+  B -- "yes" --> C{"Quote length within limits?"}
+  C -- "no" --> F["Failed check"]
+  C -- "yes" --> D{"Quote found as whole tokens<br/>in the cited source?"}
+  D -- "yes" --> OK["Shown as checked"]
+  D -- "no" --> F
+  F --> BD["Board: no card"]
+  F --> NR["Notes: Needs review"]
+  F --> PR["Plans: review list in the plan"]
+  F --> AC["Actions: source marked not found"]
+```
+
+### Matching
+
+All checks share [`tokens`](../prototype/src/notes.ts) and [`contains`](../prototype/src/notes.ts). Text is normalized (NFKC, lower case, one form for quote marks and dashes) and sentence punctuation is ignored. Numbers stay whole ("7.25"); hyphens, signs, comparisons and brackets are tokens of their own, so "n-1" never matches "n 1". A match must be whole tokens in order: "sort crate labels" is not found in "sort crate labelling". A quote may match the corrected line or the line as first heard, and the result records which.
+
+### Per feature
+
+- **Board** ([`validateItems`](../prototype/src/board.ts)). An item cites 1 to 8 scanned lines, at least one new, with a quote of 3 to 25 words. A quote may span cited lines only if they are consecutive in the transcript (and on one channel when Me and Them are labelled), so joining two lines can never skip a "not" said between them. The shortest run of lines containing the quote must include a new line. **On failure the item is dropped and no card is made**; the reason goes to the scan log.
+- **Notes** ([`validateNotes`](../prototype/src/notes.ts)). An item cites lines of the snapshot the model was given, with a 5 to 25 word quote that occurs within one cited line. An owner counts only if a cited sentence assigns the work to that name with no negation or condition ([`assignsTo`](../prototype/src/notes.ts)); otherwise it is shown as unconfirmed. **On failure the item goes to Needs review** with the reason. Items without a valid citation are dropped.
+- **Plans** ([`checkSource`](../prototype/src/plans/validate.ts) in [`checkPlans`](../prototype/src/plans/validate.ts)). Each finding has a 5 to 25 word quote from a transcript line in the input; from a file, starting within 5 lines of the cited line in what the run's `read` and `grep` calls returned; or from a page fetched in this run. Tool results are saved as they stream in ([`EvidenceRecorder`](../prototype/src/plans/evidence.ts)), so the check uses the text Pi saw, not the file as it is later. A quick check must name a `run_python` call that finished without error. **On failure the finding is listed in the plan's review section; the plan is still shown.** Only structural faults drop a plan, such as having neither an answer nor a next step. A run is published by compare-and-swap on the version it started from ([`PlanVersions.publish`](../prototype/src/plans/versions.ts)), so a stale run never overwrites a newer version.
+- **Actions** ([`checkAnswer`](../prototype/src/actions.ts)). A file quote must lie within the cited line range, ±3 lines, of a file inside an attached root ([`checkFileSource`](../prototype/src/actions.ts)); a web quote must be in a page this run's tools returned ([`checkWebSource`](../prototype/src/actions.ts)); a transcript quote must be in the transcript context. Each source is marked, for example "quote found", "quote not found" or "seen in search only".
+
+### PDFs
+
+Pi's file tools would see a PDF's compressed bytes, so [`PdfText`](../prototype/src/pdf-text.ts) extracts each PDF once with macOS PDFKit, adding page markers, and gives each task its own copy of the text. [`pdfQuoteSpan`](../prototype/src/pdf-text.ts) matches quotes against it:
+
+- A word hyphenated across a line break, or with a soft hyphen, matches both its joined and its hyphenated form, and [`quoteReadings`](../prototype/src/pdf-text.ts) does the same for a quote copied with the break.
+- A hyphen with no space after it ("x-y") and a minus sign never count as a word break.
+- Lines the app wrote (header, page markers) are never evidence, and a quote may cross a page break. The page number comes from the markers ([`pageAt`](../prototype/src/pdf-text.ts)).
+
+## Testing
+
+`npm test` runs 890 tests in 93 files under [`prototype/test`](../prototype/test); in the run made for this page, 889 passed and 1 was skipped. They use real SQLite databases in temporary folders, with scripted stand-ins for the speech model and Pi. [`check-isolation.ts`](../prototype/scripts/check-isolation.ts) loads first: it sets a temporary home folder, replaces Pi with a stub that refuses model calls, and blocks any `fetch` not addressed to `127.0.0.1`.
+
+Browser checks drive the real page in a disposable headless Chromium with fictional audio and data, for example [`capture-resilience-check.ts`](../prototype/scripts/capture-resilience-check.ts), [`m9a-page-check.ts`](../prototype/scripts/m9a-page-check.ts) (live and pending text, selection) and [`plans-check.ts`](../prototype/scripts/plans-check.ts). [`run-checks.sh`](../prototype/scripts/run-checks.sh) runs everything before a merge: 14 suites (unit tests, type check and 12 browser checks), at most two at a time under `nice -n 19`, each with its own home and temporary folder and npm offline. It fails if a test browser is left running ([`run-checks.ts`](../prototype/scripts/run-checks.ts)). The public-repository guard is tested separately in [`public-guard.test.cjs`](../prototype/scripts/public-guard.test.cjs).
