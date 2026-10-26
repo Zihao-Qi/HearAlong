@@ -362,18 +362,24 @@ test('the cleanup removes text only of PDFs that are gone, not of PDFs it cannot
   } finally { await chmod(locked, 0o700).catch(() => {}); await m.close(); }
 });
 
-test('waits are bounded and Cancel stops them; shutdown stops the extractor and starts nothing new', async () => {
+test('waits are bounded and Cancel stops them; shutdown stops the extractor and starts nothing new', async t => {
   const folder = await realpath(await mkdtemp(join(tmpdir(), 'meeting-pdf-slow-')));
+  let pdfText: PdfText | undefined;
   try {
     const pdf = join(folder, 'slow.pdf');
     await writeFile(pdf, 'slow');
     const fake = await fakeExtractor(folder, 'exec sleep 20');
-    const pdfText = new PdfText(join(folder, 'data'), { extractor: fake.path });
+    pdfText = new PdfText(join(folder, 'data'), { extractor: fake.path });
     let started = Date.now();
     assert.deepEqual(await pdfText.read(pdf, { waitMs: 50 }), { problem: 'its text is still being extracted' });
     assert.ok(Date.now() - started < 2_000);
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 50);
+    const listen = controller.signal.addEventListener.bind(controller.signal);
+    t.mock.method(controller.signal, 'addEventListener', (...args: Parameters<AbortSignal['addEventListener']>) => {
+      listen(...args);
+      // Cancel after the bounded PDF wait subscribes, not during preceding directory discovery.
+      if (args[0] === 'abort') queueMicrotask(() => controller.abort());
+    });
     started = Date.now();
     const roots: Material[] = [{ id: 'S', scope: 'meeting:m', path: folder, kind: 'folder', label: 's' }];
     const [prepared] = await pdfText.prepare(roots, { signal: controller.signal, view: join(folder, 'view') });
@@ -388,7 +394,7 @@ test('waits are bounded and Cancel stops them; shutdown stops the extractor and 
     const runs = await fake.runs();
     assert.deepEqual(await pdfText.text(pdf), { problem: 'the app is closing' });
     assert.equal(await fake.runs(), runs, 'nothing started after shutdown');
-  } finally { await rm(folder, { recursive: true, force: true }); }
+  } finally { await pdfText?.close(); await rm(folder, { recursive: true, force: true }); }
 });
 
 test('a failed build of the extractor is not held against the PDFs', async () => {

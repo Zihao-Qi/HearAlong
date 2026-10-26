@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { PiRpc } from '../src/pi-rpc.ts';
+import { until } from './helpers/until.ts';
 
 const fake = () => new PiRpc({
   model: 'fake', cwd: tmpdir(), command: process.execPath,
@@ -47,14 +48,23 @@ test('a rejected or unacknowledged session reset restarts the process instead of
   } finally { await pi.close(); }
 });
 
-test('a prompt that is never acknowledged cannot leak its late answer into the next request', async () => {
+test('a prompt that is never acknowledged cannot leak its late answer into the next request', async t => {
   const pi = fake();
-  pi.options.ackMs = 150;
+  let received = false;
+  pi.options.log = message => { if (message.includes('no-ack received')) received = true; };
   try {
-    await assert.rejects(pi.ask('no-ack'), /did not acknowledge prompt/);
+    const before = (await pi.ask('pid')).text; // Startup is not part of the acknowledgement deadline.
+    pi.options.ackMs = 150;
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const failed = assert.rejects(pi.ask('no-ack'), /did not acknowledge prompt/);
+    await until(() => received);
+    t.mock.timers.tick(150);
+    await failed;
+    t.mock.timers.reset();
+    delete pi.options.ackMs; // A replacement child's startup gets the normal deadline.
     const next = await pi.ask('second');
-    assert.equal(next.text, 'echo: second');
-    await new Promise(resolve => setTimeout(resolve, 500)); // the old child would have answered by now
+    assert.equal(next.text, 'echo: second'); // Reusing the old child would deliver FIRST here.
+    assert.notEqual((await pi.ask('pid')).text, before);
     assert.equal((await pi.ask('third')).text, 'echo: third');
-  } finally { await pi.close(); }
+  } finally { t.mock.timers.reset(); await pi.close(); }
 });

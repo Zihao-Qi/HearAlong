@@ -13,11 +13,13 @@ const session = stage === -1 ? join(flag('--session-dir'), 'session.jsonl') : fl
 await mkdir(dirname(session), { recursive: true });
 if (stage === -1) await writeFile(session, JSON.stringify({ original: true, configPath }));
 else if (!JSON.parse(await readFile(session, 'utf8')).original) throw new Error('not a copied session');
+// Publish readiness only after SIGTERM is handled, not merely after a process exists.
+process.on('SIGTERM', () => { void writeFile(join(dirname(configPath), `${name}.aborted`), 'aborted').then(() => process.exit(0)); });
 await writeFile(join(dirname(configPath), `${name}.json`), JSON.stringify({ args, pid: process.pid, env: { RUN_PYTHON_MS: process.env.RUN_PYTHON_MS, RUN_PYTHON_MAX_RUNS: process.env.RUN_PYTHON_MAX_RUNS, RUN_PYTHON_USED: process.env.RUN_PYTHON_USED }, recorded: existsSync(join(process.env.MEETING_PROCESS_DIR!, `pi-${process.pid}.json`)) }));
 const event = (e: unknown) => process.stdout.write(JSON.stringify(e) + '\n');
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const setting = stage === -1 ? config.stage1 ?? {} : config.writers?.[stage] ?? {};
-process.on('SIGTERM', () => { void writeFile(join(dirname(configPath), `${name}.aborted`), 'aborted').then(() => process.exit(0)); });
+await writeFile(join(dirname(configPath), `${name}.ready`), 'ready');
 if (config.material) {
   const line = stage === -1 ? 1 : stage + 1;
   event({ type: 'tool_execution_start', toolCallId: 'same-id', toolName: 'read', args: { path: config.material, offset: line, limit: 1 } });
@@ -29,9 +31,16 @@ if (stage === -1) {
   event({ type: 'tool_execution_start', toolCallId: 'python', toolName: 'run_python', args: { code: 'print(2)' } });
   event({ type: 'tool_execution_end', toolCallId: 'python', toolName: 'run_python', result: { content: [{ type: 'text', text: '2' }], details: { runNumber: 1, script: 'run-1.py', stdout: '2', stderr: '', status: 'exit 0', exitCode: 0 } } });
 }
+if (setting.gate) while (!existsSync(join(dirname(configPath), `${name}.release`))) await sleep(10);
 if (setting.hang) await new Promise(() => { setInterval(() => {}, 10000); });
 await sleep(setting.delay ?? 0);
 if (setting.rate) {
+  // A sibling's startup time is unrelated to provider quota. Let the cancellation scenarios own both workers first.
+  if (stage > 0) for (const [writer, other] of Object.entries(config.writers ?? {})) {
+    if (Number(writer) !== stage && (other as any).hang) {
+      while (!existsSync(join(dirname(configPath), `p${writer}.ready`))) await sleep(10);
+    }
+  }
   await writeFile(join(dirname(configPath), `${name}.rate`), String(Date.now()));
   if (setting.retryEvent) event({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 60000, errorMessage: '429 rate limit: quota used up' });
   else event({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: '429 rate limit: quota used up', content: [], model: 'fiction/model', usage: { input: 1, output: 0, cacheRead: 38000 } } });

@@ -6,16 +6,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from '../src/server.ts';
-import { piTaskArgs, runPiTask } from '../src/pi-task.ts';
+import { piTaskArgs, runPiTask, type PiTaskOptions } from '../src/pi-task.ts';
 import { EXPLORATION_LIMITS } from '../src/explorations.ts';
 import { loadRunPlans } from '../src/plans/versions.ts';
 const fixture = fileURLToPath(new URL('./fixtures/fake-plan-pi.ts', import.meta.url));
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-async function until(fn: () => boolean | Promise<boolean>, ms = 6000) {
+async function until(fn: () => boolean | Promise<boolean>, ms = 30_000) {
   const end = Date.now() + ms;
   while (!(await fn())) { if (Date.now() > end) assert.fail('timed out'); await sleep(20); }
 }
-async function setup(config: any = {}) {
+async function setup(config: any = {}, observe?: (options: PiTaskOptions, finished: boolean) => void) {
   const directory = await mkdtemp(join(tmpdir(), 'split-server-'));
   const material = join(directory, 'materials', 'guide.md'); await mkdir(join(directory, 'materials'));
   await writeFile(material, 'The guide was approved during the workshop on Monday morning.\nThe paper lanterns stay on the lower shelf until parade day.\nThe painted crates must remain beside the workshop door until Friday.');
@@ -24,8 +24,13 @@ async function setup(config: any = {}) {
     ai: { env: { ...process.env, MEETING_HEAVY_MODEL: 'fiction/model' } },
     notes: async () => ({ text: JSON.stringify({ summary: [], decisions: [], actions: [], otherMatters: [], otherTalk: [], openQuestions: [1, 2, 3].map(n => ({ text: `Where should workshop item ${n} stay?`, cites: ['S1'], quote: 'Keep the lanterns and crates in their designated workshop locations' })) }) }),
     plans: async (prompt, options) => {
-      try { return await runPiTask(prompt, { ...options, command: process.execPath,
-        args: ['--experimental-strip-types', '--no-warnings', fixture, ...piTaskArgs(prompt, options)], env: { ...options.env, FAKE_PLAN_CONFIG: configPath } }); }
+      try {
+        observe?.(options, false);
+        const result = await runPiTask(prompt, { ...options, command: process.execPath,
+          args: ['--experimental-strip-types', '--no-warnings', fixture, ...piTaskArgs(prompt, options)], env: { ...options.env, FAKE_PLAN_CONFIG: configPath } });
+        observe?.(options, true);
+        return result;
+      }
       catch (error) {
         // Deterministic timeout/abort race: the task timer can win while quota teardown is in flight.
         if (config.timeoutOnAbort && (error as any).reason === 'cancelled') throw Object.assign(new Error('Pi task exceeded its time.'), { reason: 'timeout' });
@@ -55,11 +60,12 @@ async function setup(config: any = {}) {
 const readJson = async (p: string) => JSON.parse(await readFile(p, 'utf8'));
 
 test('copied-session processes preserve arguments/cache, merge, coverage and colliding evidence IDs', async () => {
-  const s = await setup({ writers: { 2: { delay: 350 } } });
+  const s = await setup({ writers: { 2: { gate: true } } });
   try {
     await until(async () => (await s.page()).run?.progress?.written === 1);
     const p = (await s.page()).run.progress;
     assert.deepEqual([p.phase, p.expected, p.exact, p.written, p.latest], ['write', 2, true, 1, 'Lantern shelf']);
+    await writeFile(join(s.directory, 'p2.release'), 'release');
     assert.equal((await s.terminal()).state, 'done');
     const page = await s.page(); const doc = await loadRunPlans(s.folder);
     assert.equal(doc!.prompt, '1.8'); assert.deepEqual(doc!.notCovered, []);
@@ -102,8 +108,20 @@ test('rate limits in either stage fail with quota message; writer quota aborts t
     } finally { await s.close(); }
   }
 });
-for (const stage of ['stage1', 'writers', 'fallback', 'timeout-race', 'retry-event'] as const) test(`rate-limit retry in ${stage} aborts the pass immediately and preserves quota over timeout`, async () => {
+for (const stage of ['stage1', 'writers', 'fallback', 'timeout-race', 'retry-event'] as const) test(`rate-limit retry in ${stage} aborts the pass immediately and preserves quota over timeout`, async t => {
   const limit = EXPLORATION_LIMITS.plan; EXPLORATION_LIMITS.plan = 2000;
+  t.mock.method(performance, 'now', () => 0);
+  const realTimeout = globalThis.setTimeout;
+  let held = 0, expired = false;
+  // Startup is not the scenario: keep the invocation deadlines unexpired while Pi retries forever.
+  // A quota event must itself stop the process; merely waiting for a task timeout cannot pass.
+  t.mock.method(globalThis, 'setTimeout', (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    if (ms === 2000) {
+      held++;
+      return realTimeout(() => { expired = true; callback(...args); }, 60_000);
+    }
+    return realTimeout(callback, ms, ...args);
+  });
   const retry = { rate: true, retryRate: true, delay: 250 };
   const config = stage === 'stage1' || stage === 'timeout-race' || stage === 'retry-event' ? { stage1: { ...retry, retryEvent: stage === 'retry-event' }, timeoutOnAbort: stage === 'timeout-race' }
     : stage === 'fallback' ? { outline: 'unparseable', writers: { 0: retry } }
@@ -114,8 +132,8 @@ for (const stage of ['stage1', 'writers', 'fallback', 'timeout-race', 'retry-eve
     assert.equal(job.state, 'failed', 'quota must not become a time-limit stop');
     assert.equal(job.stopped, null); assert.match(job.error!, /model's quota is used up/);
     const name = stage === 'writers' ? 'p1' : stage === 'fallback' ? 'fallback' : 'stage1';
-    const emittedAt = Number(await readFile(join(s.directory, `${name}.rate`), 'utf8'));
-    assert.ok(Date.now() - emittedAt < 1000, 'do not wait for Pi retries or the invocation timeout');
+    assert.ok(existsSync(join(s.directory, `${name}.rate`)), 'the provider quota event was emitted');
+    assert.ok(held > 0); assert.equal(expired, false, 'quota stops Pi retries without any invocation deadline firing');
     assert.ok(s.app.cooldowns.pausedUntil('model'), 'the model cooldown remains set');
     assert.equal((await s.page()).current, null); assert.equal(await loadRunPlans(s.folder), null);
     for (const process of stage === 'writers' ? ['p1', 'p2'] : [name]) {
@@ -131,7 +149,7 @@ test('Cancel during either stage ends every owned process and publishes nothing;
     const s = await setup(when === 'stage1' ? { stage1: { hang: true } } : { writers: { 1: { hang: true }, 2: { hang: true } } });
     try {
       const names = when === 'stage1' ? ['stage1'] : ['p1', 'p2'];
-      await until(() => names.every(n => existsSync(join(s.directory, `${n}.json`))));
+      await until(() => names.every(n => existsSync(join(s.directory, `${n}.ready`))));
       if (when === 'close') await s.app.close(); else await s.call(`${s.base}/plans/runs/${s.runId}/cancel`, 'POST', {});
       const job = await s.terminal(); assert.equal(job.state, when === 'close' ? 'interrupted' : 'cancelled');
       assert.equal(await loadRunPlans(s.folder), null);
@@ -143,13 +161,31 @@ test('Cancel during either stage ends every owned process and publishes nothing;
     } finally { await s.close(); }
   }
 });
-test('the plan time limit spans both stages, not a fresh allowance per writer', async () => {
-  const limit = EXPLORATION_LIMITS.plan; EXPLORATION_LIMITS.plan = 1500;
-  const started = performance.now();
-  const s = await setup({ stage1: { delay: 650 }, writers: { 1: { hang: true }, 2: { hang: true } } });
+test('the plan time limit spans both stages, not a fresh allowance per writer', async t => {
+  const limit = EXPLORATION_LIMITS.plan; EXPLORATION_LIMITS.plan = 60_000;
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const budgets: number[] = [], expire: (() => void)[] = [];
+  const realTimeout = globalThis.setTimeout;
+  // Control only the writer invocation timers; process startup/HTTP/cleanup keep their real timers.
+  t.mock.method(globalThis, 'setTimeout', (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+    if (ms === 20_000) {
+      expire.push(() => callback(...args));
+      return realTimeout(callback, 60_000, ...args);
+    }
+    return realTimeout(callback, ms, ...args);
+  });
+  const s = await setup({ writers: { 1: { hang: true }, 2: { hang: true } } }, (options, finished) => {
+    if (!finished) budgets.push(options.timeoutMs!);
+    else if (!options.session) now = 40_000; // Stage 1 consumes exactly 40 s of the shared allowance.
+  });
   try {
+    await until(() => ['p1', 'p2'].every(n => existsSync(join(s.directory, `${n}.ready`))));
+    assert.deepEqual(budgets, [60_000, 20_000, 20_000], 'stage 2 gets only the remaining time');
+    assert.equal(expire.length, 2);
+    now = 60_000;
+    expire.forEach(timeout => timeout());
     const job = await s.terminal(); assert.equal(job.state, 'stopped'); assert.equal(job.stopped, 'time limit');
-    assert.ok(performance.now() - started < 2300, 'stage 2 gets only the remaining time');
     assert.equal((await s.page()).current, null);
     for (const n of ['p1', 'p2']) assert.ok(existsSync(join(s.directory, `${n}.aborted`)));
   } finally { EXPLORATION_LIMITS.plan = limit; await s.close(); }

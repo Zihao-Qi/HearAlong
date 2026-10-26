@@ -8,10 +8,7 @@ import { dashboardSetup } from './helpers/dashboard-setup.ts';
 import { request } from 'node:http';
 import { CodeFingerprint } from '../src/update-guard.ts';
 
-const until = async (check: () => boolean | Promise<boolean>) => {
-  for (let i = 0; i < 200; i++) { if (await check()) return; await new Promise(r => setTimeout(r, 10)); }
-  assert.fail('condition did not settle');
-};
+import { until } from './helpers/until.ts';
 
 async function fixture(t: { after(fn: () => unknown): void }, helper = false, extra: Parameters<typeof startServer>[0] = {}, prepare = async (_root: string) => {}) {
   const root = await mkdtemp(join(tmpdir(), 'hearalong-update-'));
@@ -149,7 +146,8 @@ async function pendingBody(f: Awaited<ReturnType<typeof fixture>>, path: string,
   const req = request(f.app.url + path, { method: 'POST', headers: { Cookie: f.cookie, Origin: f.app.url, 'Content-Length': '999999' } });
   req.on('error', () => {}); req.on('response', res => res.resume());
   req.write(payload);
-  await new Promise(r => setTimeout(r, 100));
+  // A connected socket is not enough: wait until the server has admitted the body.
+  await until(async () => (await (await f.call('/api/status')).json()).working);
   return req;
 }
 

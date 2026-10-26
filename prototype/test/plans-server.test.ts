@@ -404,11 +404,15 @@ test('Plan after the notes: off by default, saved per project; one automatic run
     assert.equal(s.calls.length, 1);
     const auto = s.app.explorations.list(id)[0];
     assert.deepEqual([(auto.data as any).origin, (auto.data as any).notesVersion], ['auto', 2]);
+    // Publication precedes durable completion; release that slot before installing the blocker.
+    await s.until(() => s.app.explorations.get(auto.id)?.state === 'done', 'the automatic run to finish');
     // Another meeting's run holds the one slot, so the next automatic run waits.
     let free!: () => void;
     const blocker = await s.app.explorations.submit(other, { kind: 'plan', work: () => new Promise<void>(r => { free = r; }) });
+    await s.until(() => Boolean(free), 'the blocker to own the slot');
     await s.writeNotes(id);
-    await s.until(async () => (await s.page(id)).run?.state === 'waiting', 'a waiting automatic run');
+    // Notes also schedule a memory update; let that prerequisite drain before inspecting the slot blocker.
+    await s.until(async () => (await s.page(id)).run?.waiting?.reason === 'Waiting for another plan run to finish', 'the automatic run to reach the held plan slot');
     const waiting = (await s.page(id)).run!;
     assert.deepEqual([waiting.origin, waiting.waiting?.reason], ['auto', 'Waiting for another plan run to finish']);
     // The user's Plan replaces it.
@@ -534,6 +538,10 @@ test('manual Plan and an automatic admission serialize: onManualPlan leaves only
     const [id, other] = s.ids;
     const project = await s.intoProject(id);
     await s.writeNotes(id);
+    // The saved version is visible before onSaved and its admission finish. Drain those while
+    // auto-planning is still off, or enabling it can turn the setup's first notes into an extra run.
+    await s.until(async () => !(await s.call(`/api/meetings/${id}/notes`)).body.job, 'the initial notes job to finish');
+    await s.app.plans.notesSaved(id);
     await s.app.explorations.submit(other, { kind: 'plan', work: () => block.promise });
     await s.call(`/api/projects/${project.id}`, 'PATCH', { planAfterNotes: true });
     await s.writeNotes(id);

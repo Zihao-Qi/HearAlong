@@ -214,13 +214,16 @@ test('notes and action runners resolve each call, running task keeps its model; 
 });
 
 async function serverFixture(t: any, initial: Record<string, unknown> = {}, saved: object = {}) {
-  const f = await fakePi(t, initial); useEnvironment(t, f.env);
+  let remove!: () => unknown;
+  const f = await fakePi({ after: fn => { remove = fn; } }, initial); useEnvironment(t, f.env);
+  let app: Awaited<ReturnType<typeof startServer>> | undefined;
+  // Hooks run in registration order. Stop background metadata/settings writers before removing their directory.
+  t.after(async () => { await app?.close(); await remove(); });
   const data = join(f.directory, 'data'); await mkdir(data); await writeFile(join(data, 'settings.json'), JSON.stringify(saved));
-  const app = await startServer({ directory: data, port: 0, recognizer: null, drafts: null, quick: null, heavy: null,
+  app = await startServer({ directory: data, port: 0, recognizer: null, drafts: null, quick: null, heavy: null,
     ai: { env: f.env }, setup: { scan: { home: f.directory, envModelPath: null, hfHome: null }, ffmpeg: async () => ({ found: true }) } });
-  t.after(() => app.close());
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
-  const request = (path: string, method = 'GET', value?: unknown, headers = {}) => fetch(`${app.url}${path}`, { method, headers: { Cookie: cookie, Origin: app.url, 'Content-Type': 'application/json', ...headers }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
+  const request = (path: string, method = 'GET', value?: unknown, headers = {}) => fetch(`${app!.url}${path}`, { method, headers: { Cookie: cookie, Origin: app!.url, 'Content-Type': 'application/json', ...headers }, ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
   const row = async () => (await (await request('/api/setup')).json()).rows.find((r: any) => r.id === 'ai');
   return { ...f, app, data, request, row };
 }

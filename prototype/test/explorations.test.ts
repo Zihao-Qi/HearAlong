@@ -68,23 +68,37 @@ test('a Pi task with a process folder: Pi is recorded before it starts and waits
   } finally { await s.close(); }
 });
 
-test('Cancel and the time limit end Pi\'s whole group and every recorded script group', async () => {
+test('Cancel and the time limit end Pi\'s whole group and every recorded script group', async t => {
   for (const how of ['cancel', 'timeout'] as const) {
     const s = await scratch();
+    const controller = new AbortController();
+    let task: ReturnType<typeof runPiTask> | undefined;
+    let expire: (() => void) | undefined;
+    const realTimeout = globalThis.setTimeout;
+    const timerMock = how === 'timeout' ? t.mock.method(globalThis, 'setTimeout', (callback: (...args: any[]) => void, ms?: number, ...args: any[]) => {
+      if (ms === 3000 && !expire) {
+        expire = () => callback(...args);
+        return realTimeout(callback, 60_000, ...args);
+      }
+      return realTimeout(callback, ms, ...args);
+    }) : undefined;
     try {
       const processDir = join(s.directory, 'processes', 'task');
-      const controller = new AbortController();
-      const task = runPiTask('x', { ...fakePi('python', s.out), cwd: s.directory, processDir, signal: controller.signal, timeoutMs: how === 'timeout' ? 3000 : 60_000 });
-      await until(() => existsSync(s.out), 'the fake Pi to start its script');
+      task = runPiTask('x', { ...fakePi('python', s.out), cwd: s.directory, processDir, signal: controller.signal, timeoutMs: how === 'timeout' ? 3000 : 60_000 });
+      await until(() => existsSync(s.out), 'the fake Pi to start its script', 30_000);
       const pids = await readJson(s.out) as Pids;
       for (const pid of [pids.pi, pids.python, pids.helper]) assert.ok(await alive(pid));
       assert.ok(existsSync(join(processDir, `python-${pids.python}.json`)), 'the script was recorded');
       if (how === 'cancel') controller.abort();
+      else { assert.ok(expire); expire(); } // Expire only after all three processes are demonstrably alive.
       const error = await task.then(() => null, e => e as PiTaskError);
       assert.equal(error?.reason, how === 'cancel' ? 'cancelled' : 'timeout');
       await until(() => gone(pids), `${how}: Pi, its helper and its script to end`);
       assert.equal(existsSync(processDir), false);
-    } finally { await s.close(); }
+    } finally {
+      controller.abort(); await task?.catch(() => {});
+      timerMock?.mock.restore(); await s.close();
+    }
   }
 });
 
@@ -377,11 +391,17 @@ test('a server killed while Pi runs a Python script: the next server start ends 
     server.stderr!.on('data', part => { stderr += part; });
     await until(() => existsSync(s.out), `the fake server's Pi to start its script (${stderr})`, 20_000);
     const pids = await readJson(s.out) as Pids;
+    const [meeting] = await readdir(join(s.directory, 'explorations'));
+    const [run] = await readdir(join(s.directory, 'explorations', meeting));
+    // The child's PID file precedes the parent's asynchronous stream writes. Crash only after
+    // the text and tool event that recovery must preserve have actually reached disk.
+    await until(async () => {
+      const saved = await StreamLog.read(join(s.directory, 'explorations', meeting, run));
+      return saved.text === 'recorded=true\n\nand more' && saved.events.length === 1;
+    }, 'the pre-crash stream to be durable');
     server.kill('SIGKILL');
     await once(server, 'exit');
-    await sleep(200);
     assert.ok(await alive(pids.pi) && await alive(pids.python) && await alive(pids.helper), 'a crash leaves them running on their own');
-    const [meeting] = await readdir(join(s.directory, 'explorations'));
     const app = await startServer({ directory: s.directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null });
     try {
       await until(() => gone(pids), 'Pi, its helper and its script to end');
