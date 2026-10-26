@@ -14,11 +14,8 @@ import type { SetupOptions } from '../src/setup/service.ts';
 import { model, gguf } from './helpers/gguf.ts';
 
 const workerScript = new URL('./fixtures/switch-worker.ts', import.meta.url);
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-async function until(condition: () => boolean | Promise<boolean>, ms = 8000) {
-  const deadline = Date.now() + ms;
-  while (!await condition()) { if (Date.now() > deadline) throw new Error('Condition did not settle'); await sleep(10); }
-}
+import { setTimeout as sleep } from 'node:timers/promises';
+import { until } from './helpers/until.ts';
 async function directory(t: TestContext) {
   const path = await realpath(await mkdtemp(join(tmpdir(), 'setup-live-')));
   t.after(() => rm(path, { recursive: true, force: true })); return path;
@@ -55,10 +52,12 @@ test('switch waits between chunks, reuses preflight worker, and startup does not
   const path = await directory(t), old = join(path, 'old.gguf'), next = join(path, 'next.gguf');
   const r = new SwitchableRecognizer(old, { workerScript }); t.after(() => r.close());
   assert.deepEqual(await pids(old), []);
-  const first = r.transcribe(chunk(.5)); await until(async () => (await pids(old)).length === 1);
+  const gate = join(path, 'first.gate');
+  const first = r.transcribe({ ...chunk(), path: gate }); await until(async () => (await pids(old)).length === 1);
   const change = r.switchTo(next);
-  await until(async () => (await pids(next)).length === 1); await sleep(80);
+  await until(() => Boolean((r as unknown as { barrier?: Promise<boolean> }).barrier)); // preflight ready, swap waiting
   assert.equal(r.modelPath, old);
+  await writeFile(gate, 'release');
   assert.match((await first).text, /^old.gguf:/);
   const second = r.transcribe(chunk());
   assert.equal(await change, true); assert.match((await second).text, /^next.gguf:/);
@@ -68,9 +67,17 @@ test('switch waits between chunks, reuses preflight worker, and startup does not
 
 for (const name of ['broken.gguf', 'never.gguf']) test(`failed preflight ${name} preserves old worker and kills test child`, async t => {
   const path = await directory(t), old = join(path, 'old.gguf'), bad = join(path, name);
-  const r = new SwitchableRecognizer(old, { workerScript, loadMs: 300 }); t.after(() => r.close());
+  const never = name.startsWith('never');
+  const r = new SwitchableRecognizer(old, { workerScript, loadMs: never ? 300 : 60_000 }); t.after(() => r.close());
   await r.transcribe(chunk());
-  await assert.rejects(r.switchTo(bad), name.startsWith('never') ? /timed out/ : /Could not load/);
+  if (never) t.mock.timers.enable({ apis: ['setTimeout'] });
+  const failed = assert.rejects(r.switchTo(bad), never ? /timed out/ : /Could not load/);
+  if (never) {
+    await until(async () => (await pids(bad)).length === 1);
+    t.mock.timers.tick(300);
+  }
+  await failed;
+  if (never) t.mock.timers.reset();
   await until(async () => (await pids(bad)).every(gone));
   assert.equal((await pids(bad)).length, 1);
   assert.match((await r.transcribe(chunk())).text, /^old.gguf:/);
@@ -88,10 +95,15 @@ test('latest switch supersedes and kills the older loading process', async t => 
 test('a preflight worker exiting after ready cannot replace the old worker or fail the next queued chunk', async t => {
   const path = await directory(t), old = join(path, 'old.gguf'), fragile = join(path, 'fragile.gguf');
   const r = new SwitchableRecognizer(old, { workerScript }); t.after(() => r.close());
-  const first = r.transcribe(chunk(.6));
+  const gate = join(path, 'first.gate');
+  const first = r.transcribe({ ...chunk(), path: gate });
   const failed = assert.rejects(r.switchTo(fragile), /exited before the switch/);
-  await sleep(300);
+  // The candidate must be ready (and the swap waiting on the held chunk), then exit.
+  await until(() => Boolean((r as unknown as { barrier?: Promise<boolean> }).barrier));
+  await writeFile(`${fragile}.exit`, 'exit');
+  await until(async () => { const ids = await pids(fragile); return ids.length === 1 && ids.every(gone); });
   const second = r.transcribe(chunk());
+  await writeFile(gate, 'release');
   await first; await failed;
   assert.match((await second).text, /^old.gguf:/);
 });
@@ -177,6 +189,7 @@ test('failed switch restores null when the running model was auto-chosen', async
   const pickerPath = join(f.path, 'models/broken.gguf');
   await model(pickerPath, { name: 'Example broken' }); await f.post('/api/setup/recheck');
   await f.use('Example broken'); await until(async () => Boolean((await f.get()).rows[0].switchError));
+  await until(async () => (await f.get('/api/settings')).speechModelPath === null);
   assert.equal((await f.get('/api/settings')).speechModelPath, null);
 });
 

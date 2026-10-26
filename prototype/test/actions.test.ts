@@ -161,7 +161,8 @@ function scripted() {
   };
   return { runner, calls };
 }
-const until = async (check: () => boolean) => { for (let i = 0; i < 400 && !check(); i++) await new Promise(r => setTimeout(r, 5)); assert.ok(check()); };
+// Job completion includes asynchronous evidence checks and durable writes.
+import { until } from './helpers/until.ts';
 
 test('action jobs: two at a time, merged duplicates, bounded queue, cancel, checks, failure keeps the draft', async () => {
   const f = await fixture();

@@ -14,7 +14,7 @@ import { model, gguf } from './helpers/gguf.ts';
 
 const workerScript = new URL('./fixtures/switch-worker.ts', import.meta.url);
 const streamScript = new URL('./fixtures/switch-stream-worker.ts', import.meta.url);
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+import { setTimeout as sleep } from 'node:timers/promises';
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { resolve, promise }; }
 async function until(condition: () => boolean | Promise<boolean>) {
   const end = Date.now() + 8000;
@@ -186,15 +186,18 @@ test('fix 7: close joins the timeout cancellation promise, not just the cleared 
     await original.call(this);
     if (first) { entered.resolve(); await release.promise; }
   });
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const r = new SwitchableRecognizer(null, { workerScript, loadMs: 500 });
   const switching = assert.rejects(r.switchTo(path), /timed out/);
   let closed = false;
   try {
     await until(async () => (await pids(path)).length === 1);
+    t.mock.timers.tick(500); // Loading times out only once the fake child has actually started.
     await entered.promise;
+    t.mock.timers.reset();
     const closing = r.close().then(() => { closed = true; });
     await sleep(30); assert.equal(closed, false, 'close must await the original timeout cancellation');
     release.resolve(); await switching; await closing;
     assert.ok((await pids(path)).every(gone));
-  } finally { release.resolve(); await switching; await r.close(); }
+  } finally { t.mock.timers.reset(); release.resolve(); await switching; await r.close(); }
 });

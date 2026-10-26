@@ -1,6 +1,7 @@
 // Test-only stand-in for `pi --mode rpc`: speaks the JSONL protocol, never calls a model.
 let input = '';
 let emptyOnce = true;
+let abandoned = false;
 let resetMode: 'ok' | 'fail' | 'silent' = 'ok';
 const out = (record: unknown) => process.stdout.write(`${JSON.stringify(record)}\n`);
 const answer = (text: string) => {
@@ -16,7 +17,12 @@ process.stdin.on('data', (part: string) => {
     input = input.slice(i + 1);
     if (command.type === 'extension_ui_response') { answer(`dialog ${command.cancelled ? 'cancelled' : 'answered'}`); continue; }
     if (command.type === 'new_session' && resetMode === 'silent') continue;
-    if (command.type === 'prompt' && command.message === 'no-ack') { setTimeout(() => answer('answer to FIRST'), 400); continue; }
+    if (command.type === 'prompt' && abandoned) { abandoned = false; answer('answer to FIRST'); }
+    if (command.type === 'prompt' && command.message === 'no-ack') {
+      abandoned = true; // Deliver the late answer on the next prompt if this child is incorrectly reused.
+      out({ type: 'extension_ui_request', method: 'notify', message: 'no-ack received' });
+      continue;
+    }
     if (command.type === 'new_session' && resetMode === 'fail') { out({ type: 'response', id: command.id, command: 'new_session', success: false, error: 'cancelled by extension' }); continue; }
     out({ type: 'response', id: command.id, command: command.type, success: true, data: command.type === 'prompt' ? { disposition: 'started' } : {} });
     if (command.type !== 'prompt') continue;

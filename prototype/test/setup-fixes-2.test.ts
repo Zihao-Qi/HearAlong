@@ -147,33 +147,47 @@ test('round 2 item 4: teardown restores decoder ownership before a second server
 });
 
 test('round 2 item 5: Node closes a real directory after its timed-out pending read settles', async () => {
-  // One occupied libuv thread makes the real directory read stay pending past the scan deadline.
+  // A blocked FIFO open occupies the sole libuv thread without CPU work. Expire the controlled
+  // scan deadline only after the real directory read has queued behind it.
   const { stdout } = await run(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', `
     import assert from 'node:assert/strict'; import fs from 'node:fs/promises'; import { tmpdir } from 'node:os'; import { join } from 'node:path';
-    import { pbkdf2 } from 'node:crypto'; import { promisify } from 'node:util'; import { syncBuiltinESMExports } from 'node:module';
+    import { openSync, closeSync } from 'node:fs'; import { execFileSync } from 'node:child_process';
+    import { mock } from 'node:test'; import { syncBuiltinESMExports } from 'node:module';
     import { SpeechModels } from ${source('setup/speech-models.ts')};
     const directory = await fs.mkdtemp(join(tmpdir(), 'setup-pending-read-')); await fs.mkdir(join(directory, 'models'));
-    const dir = await fs.opendir(join(directory, 'models')), close = dir.close.bind(dir);
+    const fifo = join(directory, 'gate'); execFileSync('mkfifo', [fifo]);
+    const dir = await fs.opendir(join(directory, 'models')), close = dir.close.bind(dir), read = dir.read.bind(dir);
     const originalStat = fs.stat, originalOpendir = fs.opendir;
     let closeStarted = false, closed = false, closing;
     dir.close = (callback) => {
       closeStarted = true;
       if (callback) return close((...args) => { closed = true; callback(...args); });
-      closing = close().then(() => { closed = true; }); return closing;
+      closing = close().then(() => { closed = true; });
+      queueMicrotask(() => mock.timers.tick(0)); // The expired close deadline must not wait for the blocked read.
+      return closing;
     };
     fs.stat = async () => { throw Object.assign(new Error('No optional settings'), { code: 'ENOENT' }); };
     fs.opendir = async () => dir; syncBuiltinESMExports();
-    const busy = promisify(pbkdf2)('example', 'example', 1000000, 32, 'sha512');
+    let now = 0, released = false;
+    mock.method(performance, 'now', () => now);
+    mock.timers.enable({ apis: ['setTimeout'] });
+    const blocked = fs.open(fifo, 'r');
+    dir.read = () => {
+      const pending = read();
+      queueMicrotask(() => { now = 30; mock.timers.tick(30); });
+      return pending;
+    };
+    const release = async () => { if (!released) { released = true; closeSync(openSync(fifo, 'w')); await (await blocked).close(); } };
     try {
       const started = performance.now();
       const scan = await new SpeechModels().scan({ directory, home: join(directory, 'home'), envModelPath: null, hfHome: null, maxScanMs: 30 });
       const elapsed = performance.now() - started;
       assert.equal(scan.truncated, true); assert.ok(elapsed < 250); assert.equal(closeStarted, true); assert.equal(closed, false);
       assert.throws(() => dir.readSync(), { code: 'ERR_DIR_CONCURRENT_OPERATION' });
-      await busy; await closing; assert.equal(closed, true); await assert.rejects(dir.read(), { code: 'ERR_DIR_CLOSED' });
+      await release(); await closing; assert.equal(closed, true); await assert.rejects(read(), { code: 'ERR_DIR_CLOSED' });
       console.log(JSON.stringify({ truncated: scan.truncated, closeQueuedDuringRead: closeStarted, closed, elapsed }));
     } finally {
-      await busy; if (!closed) await close().catch(() => {});
+      mock.timers.reset(); mock.restoreAll(); await release(); if (!closed) await close().catch(() => {});
       fs.stat = originalStat; fs.opendir = originalOpendir; syncBuiltinESMExports(); await fs.rm(directory, { recursive: true, force: true });
     }
   `], { timeout: 10_000, env: { ...process.env, UV_THREADPOOL_SIZE: '1' } });

@@ -157,7 +157,7 @@ test('FIX1.6 a newer Save aborts and reaps the older tiny process', async t => {
   const pid = (await f.calls()).find(c => c.args.includes('json'))!.pid;
   try {
     await f.configure({}); await f.ai.use({ main: chosen.quickModel, quick: chosen.mainModel });
-    await pause(150);
+    await until(() => !alive(pid));
     assert.equal(alive(pid), false, 'superseded tiny child is still running');
     await until(() => f.ai.status().state === 'ready');
   } finally { if (alive(pid)) process.kill(pid, 'SIGKILL'); }
