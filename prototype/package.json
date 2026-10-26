@@ -12,6 +12,7 @@
     "rehearse": "node --experimental-strip-types scripts/rehearse.ts",
     "check": "tsc --noEmit",
     "checks": "sh scripts/run-checks.sh",
+    "land": "node --experimental-strip-types scripts/land.ts",
     "delete-meetings": "node --experimental-strip-types scripts/delete-meetings.ts",
     "guard:install": "cd .. && common=$(git rev-parse --path-format=absolute --git-common-dir) && git config core.hooksPath \"${common%/*}/.githooks\"",
     "test": "node --experimental-strip-types --import ./scripts/check-isolation.ts --test test/*.test.ts",
