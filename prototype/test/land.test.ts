@@ -569,8 +569,11 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   });
 }
 
+// Shared machine accounts (CI runners, servers) whose names are ordinary words in the sources, not personal identifiers.
+const GENERIC_ACCOUNTS = new Set(['runner', 'root', 'admin', 'user', 'ubuntu', 'ec2-user']);
 test('R3 public land sources and both READMEs contain no personal home identifiers', () => {
-  const forbidden = [['', 'Users', ''].join('/'), basename(userInfo().homedir)];
+  const home = userInfo().homedir, account = basename(home);
+  const forbidden = [['', 'Users', ''].join('/'), home, ...GENERIC_ACCOUNTS.has(account) ? [] : [account]];
   for (const path of ['../scripts/land.ts', './land.test.ts', '../../README.md', '../README.md']) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8');
     for (const value of forbidden) assert.ok(!source.includes(value), `${path}: personal home identifier found`);
