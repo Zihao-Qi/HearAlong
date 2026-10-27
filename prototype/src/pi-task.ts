@@ -56,6 +56,8 @@ export type PiTaskOptions = {
   onLocalWait?: (ms: number) => void;
   /** Thinking level for this task only (`--thinking low`); omitted: Pi's own setting. */
   thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Notes-only Ollama opt-in; independent of Pi's capability-clamped thinking level. */
+  localNotesThinking?: boolean;
   /** `false` turns the user's skills off for this task (`--no-skills`); omitted: Pi's default, skills on. */
   skills?: boolean;
   /** Environment for this task's Pi on top of the server's (e.g. RUN_PYTHON_MAX_RUNS for its run_python). */
@@ -136,6 +138,7 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
   catch (error) { return Promise.reject(error); }
   const processDir = options.processDir;
   const env = piLaunch([], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) } }).env;
+  if (options.localNotesThinking && options.model.startsWith('ollama/')) env.MEETING_LOCAL_NOTES_THINKING = '1';
   return new Promise((resolve, reject) => {
     let child: ChildProcess | undefined;
     // With a process folder: Pi's own group, known once its record is saved.

@@ -455,7 +455,7 @@ export function piNotesRunner(model: TaskModel): NotesRunner {
         if (tokenCount(listed.context) > 1) assertLocalContext(id, tokenCount(listed.context), tokenCount(listed.maxOut), instructions + await readFile(inputPath, 'utf8'));
       } finally { await reader.close(); }
     }
-    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, onEvent, onLocalWait }));
+    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, localNotesThinking: thinking === 'medium', onEvent, onLocalWait }));
   };
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {

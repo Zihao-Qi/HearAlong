@@ -1,18 +1,19 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { Model, Provider } from '@earendil-works/pi-ai';
-import { openAICompletionsApi } from '@earendil-works/pi-ai/compat';
+import type { AssistantMessageEventStream, Model, Provider } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, openAICompletionsApi } from '@earendil-works/pi-ai/compat';
 import { localFetch, loopbackBase } from './local-transport.ts';
 import { loadedContexts, type LocalKind } from './local-context.ts';
-import { assertLocalContext } from '../src/local-ai.ts';
+import { assertLocalContext, localAnswerRoom } from '../src/local-ai.ts';
 export { loopbackBase } from './local-transport.ts';
 
 export const LOCAL_BASES = { ollama: 'http://127.0.0.1:11434/v1', lmstudio: 'http://127.0.0.1:1234/v1' } as const;
-export function localProvider(kind: LocalKind, base: string = LOCAL_BASES[kind]): Provider<'openai-completions'> {
+type LocalRequest = { thinking: boolean; allowance: number };
+export function localProvider(kind: LocalKind, base: string = LOCAL_BASES[kind], notesThinking = false): Provider<'openai-completions'> {
   const url = loopbackBase(base), contexts = loadedContexts(kind, url);
   let models: Model<'openai-completions'>[] = [];
   const api = openAICompletionsApi();
   const checkModel = (model: Model<'openai-completions'>) => { loopbackBase(model.baseUrl); if (new URL(model.baseUrl).origin !== url.origin) throw new Error('Local model endpoint overrides are not allowed.'); return model; };
-  const inferenceFetch = (model: Model<'openai-completions'>): typeof fetch => async (input, init) => {
+  const inferenceFetch = (model: Model<'openai-completions'>, record: (value: LocalRequest) => void): typeof fetch => async (input, init) => {
     const request = new Request(input, init);
     loopbackBase(request.url);
     if (new URL(request.url).origin !== url.origin) throw new Error('Local model endpoint overrides are not allowed.');
@@ -23,15 +24,32 @@ export function localProvider(kind: LocalKind, base: string = LOCAL_BASES[kind])
       const requested = payload.max_tokens ?? payload.max_completion_tokens;
       // Pi clamps against the catalog context (pi-ai api/simple-options). Its unknown sentinel yields 1,
       // not an intentional output limit. Only a measured catalog context can supply a lower allowance.
-      const output = Math.min(model.contextWindow > 1 && Number.isSafeInteger(requested) && requested > 0 ? requested : 4096, 4096, Math.floor(size / 4));
-      assertLocalContext(`${kind}/${model.id}`, size, output, JSON.stringify({ messages: payload.messages, tools: payload.tools }));
+      const text = JSON.stringify({ messages: payload.messages, tools: payload.tools });
+      const room = Math.min(16384, localAnswerRoom(size, text));
+      const thinking = kind === 'ollama' && notesThinking && room >= 6144;
+      const output = thinking ? room : Math.min(model.contextWindow > 1 && Number.isSafeInteger(requested) && requested > 0 ? requested : 4096, 4096, Math.floor(size / 4));
+      assertLocalContext(`${kind}/${model.id}`, size, output, text);
       delete payload.max_completion_tokens;
       payload.max_tokens = output;
-      if (kind === 'ollama') payload.reasoning_effort = 'none';
+      if (kind === 'ollama') payload.reasoning_effort = thinking ? 'medium' : 'none';
+      record({ thinking, allowance: output });
       return localFetch(request.url, { method: request.method, headers: request.headers, body: JSON.stringify(payload), signal: request.signal });
     } catch (error) {
       return new Response(JSON.stringify({ error: { message: (error as Error).message } }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
+  };
+  const measuredStream = (model: Model<'openai-completions'>, run: (fetch: typeof globalThis.fetch) => AssistantMessageEventStream) => {
+    let decision: LocalRequest | undefined;
+    const inner = run(inferenceFetch(model, value => { decision = value; })), stream = createAssistantMessageEventStream();
+    void (async () => {
+      for await (const event of inner) {
+        const message = 'partial' in event ? event.partial : event.type === 'done' ? event.message : event.error;
+        if (decision) Object.assign(message, { localRequest: decision });
+        stream.push(event);
+      }
+      stream.end();
+    })();
+    return stream;
   };
   return {
     id: kind, name: kind === 'ollama' ? 'Ollama' : 'LM Studio', baseUrl: url.href,
@@ -61,8 +79,8 @@ export function localProvider(kind: LocalKind, base: string = LOCAL_BASES[kind])
       } catch { /* A stopped local server has no live catalog. */ }
       await context.publish({ update: () => { models = found; } });
     },
-    stream: (model, context, options) => api.stream(checkModel(model), context, { ...options, fetch: inferenceFetch(model) }),
-    streamSimple: (model, context, options) => api.streamSimple(checkModel(model), context, { ...options, fetch: inferenceFetch(model) }),
+    stream: (model, context, options) => measuredStream(checkModel(model), fetch => api.stream(model, context, { ...options, fetch })),
+    streamSimple: (model, context, options) => measuredStream(checkModel(model), fetch => api.streamSimple(model, context, { ...options, fetch })),
   };
 }
 
@@ -70,7 +88,7 @@ export default async function (pi: ExtensionAPI) {
   pi.on('session_before_compact', async () => ({ cancel: true }));
   await Promise.all((Object.keys(LOCAL_BASES) as LocalKind[]).map(async kind => {
     const base = process.env[kind === 'ollama' ? 'MEETING_OLLAMA_BASE' : 'MEETING_LMSTUDIO_BASE'] ?? LOCAL_BASES[kind];
-    const provider = localProvider(kind, base);
+    const provider = localProvider(kind, base, process.env.MEETING_LOCAL_NOTES_THINKING === '1');
     await provider.refreshModels!({ allowNetwork: false, signal: AbortSignal.timeout(5000), publish: async publication => { publication.update?.(); return true; } });
     pi.registerProvider(provider);
   }));

@@ -9,6 +9,7 @@ import { NotesJobs, piNotesRunner } from '../src/notes.ts';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { localProvider } from '../pi-extensions/local-models.ts';
 import { runPiTask } from '../src/pi-task.ts';
+import { PiRpc } from '../src/pi-rpc.ts';
 import { DurationHistory } from '../src/progress.ts';
 import { MeetingStore } from '../src/store.ts';
 import { until } from './helpers/setup-pi.ts';
@@ -24,12 +25,12 @@ async function fixture(t: any) {
   return { directory, store, meeting, history: async () => JSON.parse(await readFile(join(directory, 'job-durations.json'), 'utf8')) };
 }
 
-async function coldOllama(t: any, directory: string) {
+async function coldOllama(t: any, directory: string, context = 16384) {
   let loaded = false, failNext = false;
   const bodies: any[] = [];
   const http = createServer(async (req, res) => {
     if (req.url === '/api/tags') return res.end('{"models":[{"name":"fictional:4b"}]}');
-    if (req.url === '/api/ps') return res.end(JSON.stringify({ models: loaded ? [{ name: 'fictional:4b', context_length: 16384 }] : [] }));
+    if (req.url === '/api/ps') return res.end(JSON.stringify({ models: loaded ? [{ name: 'fictional:4b', context_length: context }] : [] }));
     if (req.url === '/v1/models') return res.end('{"data":[]}');
     if (req.url === '/api/v1/models') return res.end('{"models":[]}');
     if (req.url !== '/v1/chat/completions') { res.statusCode = 404; return res.end('{}'); }
@@ -76,7 +77,13 @@ test('cold Ollama: notes finish and retain per-part usage, stop reason and lane 
   assert.equal(status.job, null, status.job?.error);
   assert.ok(status.notes);
   assert.equal(server.bodies.filter(b => b.stream !== false).length, 3);
-  assert.ok(server.bodies.filter(b => b.stream !== false).every(b => b.max_tokens === 4096));
+  for (const body of server.bodies.filter(b => b.stream !== false)) {
+    const input = JSON.stringify({ messages: body.messages, tools: body.tools });
+    const allowance = Math.min(16384, 16384 - Math.ceil(Array.from(input).length / 3 * 1.25) - 512);
+    assert.equal(body.reasoning_effort, 'medium');
+    assert.equal(body.max_tokens, allowance);
+  }
+  console.log('16k fictional notes allowances', server.bodies.filter(b => b.stream !== false).map(b => b.max_tokens));
   const rows = (await f.history()).notesParts;
   assert.equal(rows.length, 1);
   for (const part of Object.values(rows[0].parts) as any[]) {
@@ -166,4 +173,55 @@ test('notes diagnostics survive timeout before headers and queued sibling cancel
     assert.ok(parts[name].waitMs >= 300);
     assert.ok(parts[name].wallMs >= parts[name].waitMs);
   }
+});
+
+test('local thinking: production notes at 32k send medium and 16384 through Pi despite its thinking clamp', async t => {
+  const f = await fixture(t), server = await coldOllama(t, f.directory, 32768);
+  const jobs = new NotesJobs({ ...f, clock: Date.now, glossaryFor: async () => null, runner: piNotesRunner('ollama/fictional:4b') });
+  t.after(() => jobs.close());
+  await jobs.start(f.meeting.id);
+  await until(() => !jobs.busy(f.meeting.id), 45_000);
+  assert.equal((await jobs.status(f.meeting.id)).job, null);
+  const bodies = server.bodies.filter(b => b.stream !== false);
+  assert.equal(bodies.length, 3);
+  for (const body of bodies) { assert.equal(body.reasoning_effort, 'medium'); assert.equal(body.max_tokens, 16384); }
+  assert.equal(server.bodies[0].reasoning_effort, 'none', 'Warm-up never thinks');
+  for (const part of Object.values((await f.history()).notesParts[0].parts) as any[]) {
+    assert.equal(part.requests.length, 1);
+    assert.equal(part.requests[0].thinking, true); assert.equal(part.requests[0].allowance, 16384);
+  }
+});
+
+test('local thinking: RPC low and an ordinary medium task stay off, ignoring an inherited notes opt-in', async t => {
+  const f = await fixture(t), server = await coldOllama(t, f.directory);
+  const rpc = new PiRpc({ model: 'ollama/fictional:4b', cwd: f.directory, command: server.command,
+    env: { ...process.env, MEETING_LOCAL_NOTES_THINKING: '1' } });
+  t.after(() => rpc.close());
+  assert.equal((await rpc.ask('Correct this fictional lantern sentence.')).stopReason, 'stop');
+  assert.equal((await runPiTask('A fictional non-notes task.', { model: 'ollama/fictional:4b', cwd: f.directory,
+    command: server.command, tools: null, thinking: 'medium', env: { MEETING_LOCAL_NOTES_THINKING: '1' }, timeoutMs: 30_000 })).stopReason, 'stop');
+  assert.equal(server.bodies.filter(b => b.stream !== false).length, 2);
+  for (const body of server.bodies.filter(b => b.stream !== false)) {
+    assert.equal(body.reasoning_effort, 'none'); assert.equal(body.max_tokens, 4096);
+  }
+});
+
+test('local thinking: notes diagnostics retain the effective flag and allowance for every retry and reload', async t => {
+  const f = await fixture(t), server = await coldOllama(t, f.directory);
+  const agent = join(f.directory, 'scratch', 'notes', f.meeting.id, '.pi-local');
+  await mkdir(agent, { recursive: true });
+  await writeFile(join(agent, 'settings.json'), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } }));
+  server.fail();
+  const jobs = new NotesJobs({ ...f, clock: Date.now, glossaryFor: async () => null, runner: piNotesRunner('ollama/fictional:4b') });
+  t.after(() => jobs.close());
+  await jobs.start(f.meeting.id);
+  await until(() => !jobs.busy(f.meeting.id), 45_000);
+  assert.equal((await jobs.status(f.meeting.id)).job, null);
+  const rows = (await f.history()).notesParts;
+  const requests = Object.values(rows[0].parts).flatMap((part: any) => part.requests) as any[];
+  assert.equal(requests.length, 4);
+  assert.deepEqual(requests.map(r => r.allowance).sort(), server.bodies.filter(b => b.stream !== false).map(b => b.max_tokens).sort());
+  assert.ok(requests.every(r => r.thinking === true && Number.isInteger(r.allowance) && r.allowance >= 6144));
+  await new DurationHistory(f.directory).record('plans', 2000);
+  assert.deepEqual((await f.history()).notesParts, rows);
 });
