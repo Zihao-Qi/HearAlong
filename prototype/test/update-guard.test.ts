@@ -12,7 +12,8 @@ import { until } from './helpers/until.ts';
 
 async function fixture(t: { after(fn: () => unknown): void }, helper = false, extra: Parameters<typeof startServer>[0] = {}, prepare = async (_root: string) => {}) {
   const root = await mkdtemp(join(tmpdir(), 'hearalong-update-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  let close = async () => {};
+  t.after(async () => { await close(); await rm(root, { recursive: true, force: true }); });
   await cp(new URL('../public', import.meta.url), join(root, 'public'), { recursive: true });
   await writeFile(join(root, 'public', 'app.js'), '// fictional startup bytes');
   await mkdir(join(root, 'src'));
@@ -26,7 +27,10 @@ async function fixture(t: { after(fn: () => unknown): void }, helper = false, ex
   const app = await startServer({ directory, port: 0, setup, recognizer: null, drafts: null, quick: null, heavy: null,
     codeRoot: root, publicRoot: join(root, 'public'), clock: () => now,
     idleMs: helper ? 600_000 : undefined, exit: code => { exited = code; }, ...extra });
-  t.after(() => app.close());
+  const shutdowns: Promise<void>[] = [], shutdown = app.shutdown.bind(app);
+  app.shutdown = (...args) => { const done = shutdown(...args); shutdowns.push(done); return done; };
+  // An accepted restart owns a graceful shutdown; closing directly would bypass its grace period.
+  close = async () => { await Promise.all(shutdowns); await app.close(); };
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
   const call = (path: string, method = 'GET', body?: string) => fetch(app.url + path, { method, body, headers: { Cookie: cookie, Origin: app.url } });
   return { root, app, call, cookie, advance: () => { now += 30_000; }, exited: () => exited };
@@ -41,10 +45,12 @@ test('static files are the startup snapshot, including errors deferred until a r
 });
 
 test('a missing startup file stays missing without preventing startup', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'hearalong-missing-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), 'hearalong-missing-'));
+  let close = async () => {};
+  t.after(async () => { await close(); await rm(root, { recursive: true, force: true }); });
   const app = await startServer({ directory: join(root, 'data'), publicRoot: root, codeRoot: root, port: 0,
     setup: { scan: { home: root, envModelPath: null, hfHome: null } }, recognizer: null, drafts: null, quick: null, heavy: null });
-  t.after(() => app.close());
+  close = () => app.close();
   await writeFile(join(root, 'app.js'), 'created after startup');
   const response = await fetch(app.url + '/app.js');
   assert.equal(await response.text(), '', 'same request-time empty response as a failed asset read');
@@ -140,6 +146,30 @@ test('two accepted restarts call shutdown exactly once, without its hurry path',
   assert.equal((await f.call('/api/restart', 'POST')).status, 202);
   assert.equal((await f.call('/api/restart', 'POST')).status, 202);
   assert.equal(calls, 1);
+});
+
+test('fixture cleanup waits for accepted restart shutdown before removing its files', async () => {
+  const hooks: (() => unknown)[] = [];
+  const f = await fixture({ after: fn => { hooks.push(fn); } }, true);
+  const close = f.app.close.bind(f.app), shutdown = f.app.shutdown.bind(f.app);
+  let pending: Promise<void> | undefined;
+  f.app.shutdown = (...args) => { pending = shutdown(...args); return pending; };
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const closing = new Promise<void>(resolve => { entered = resolve; });
+  f.app.close = async () => { entered(); await gate; await close(); };
+  let cleanup: Promise<void> | undefined;
+  try {
+    assert.equal((await f.call('/api/restart', 'POST')).status, 202);
+    cleanup = (async () => { for (const hook of hooks) await hook(); })();
+    await Promise.race([closing, cleanup]);
+    // Hold shutdown at close: cleanup must not remove files while their owner is still running.
+    assert.equal(JSON.parse(await readFile(join(f.app.directory, 'settings.json'), 'utf8')).setupSeen, true);
+  } finally {
+    release();
+    try { await pending; await cleanup; }
+    finally { await close(); await rm(f.root, { recursive: true, force: true }); }
+  }
 });
 
 async function pendingBody(f: Awaited<ReturnType<typeof fixture>>, path: string, payload: string) {
