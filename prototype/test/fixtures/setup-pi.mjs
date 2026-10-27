@@ -6,7 +6,7 @@ const state = process.env.FAKE_PI_STATE ? JSON.parse(readFileSync(process.env.FA
 const args = process.argv.slice(2);
 const model = args[args.indexOf('--model') + 1];
 // The variables HearAlong sets for Pi (fictional keys only), so tests can see what each spawn path received.
-const env = Object.fromEntries(['GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'PI_TELEMETRY', 'PI_SKIP_VERSION_CHECK'].filter(name => name in process.env).map(name => [name, process.env[name]]));
+const env = Object.fromEntries(['GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'PI_TELEMETRY', 'PI_SKIP_VERSION_CHECK', 'PI_OFFLINE'].filter(name => name in process.env).map(name => [name, process.env[name]]));
 if (state.log) appendFileSync(state.log, `${JSON.stringify({ args, pid: process.pid, model, cwd: process.cwd(), env })}\n`);
 // A provider is signed in through Pi (`stored`, like auth.json) or has its key in the environment; either lists its `keyRows`.
 const VARS = { google: 'GEMINI_API_KEY', openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };

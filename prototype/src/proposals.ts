@@ -247,7 +247,7 @@ export class Proposals {
   /** Starts a run for a meeting's latest notes; resolves once it is under way. Sources handled before are skipped (§4.1). */
   async start(meetingId: string): Promise<{ run: string }> {
     const runner = this.options.runner;
-    if (!runner) throw fail(400, 'Cloud models are disabled (MEETING_CLOUD=0).');
+    if (!runner) throw fail(400, 'AI models are disabled (MEETING_CLOUD=0).');
     if (this.running.has(meetingId)) throw fail(409, 'Memory is already being updated from this meeting.');
     if (this.running.size >= 2) throw fail(409, 'Two memory updates are running; try again when one has finished.');
     const project = this.options.projectOf(meetingId);

@@ -58,3 +58,17 @@ dialog.setup-ui::backdrop{background:rgba(24,33,47,.45)}
 .su-key-note{font-size:13px;line-height:1.45;color:#5A6577}.su-key-other{font-size:14px;padding:0 14px}
 .setup-ui .su-key-form .su-link{align-self:flex-start;min-height:44px;padding:0 4px}
 .su-keys-list{display:flex;flex-direction:column;gap:8px}.su-key-status:not(:empty){margin-top:8px}
+.su-ai-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));padding:4px;gap:4px;background:#F0F2F6;border-radius:10px}
+.setup-ui .su-ai-modes button{flex:1;min-width:0;min-height:44px;padding:0 8px;border:0;border-radius:8px;background:transparent;font-size:14px;color:#3B4657}
+.setup-ui .su-ai-modes [aria-checked=true]{background:#FFF;color:#18212F;box-shadow:0 1px 3px #18212F24;font-weight:600}
+.su-ai-body>div.su-ai-body{display:flex;flex-direction:column;gap:14px;min-width:0}
+.su-consent{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #DDE2EA;border-radius:10px;font-size:14px;line-height:1.5}
+.su-consent>.su-button{align-self:flex-start}
+.su-consent p{margin:0}.su-consent label{display:flex;align-items:center;gap:10px;min-height:44px;cursor:pointer}
+.setup-ui .su-consent input[type=checkbox]{width:18px;min-height:18px;height:18px;flex:none;padding:0}
+.su-ai-grey{margin:0;background:#F4F6F9;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.5;color:#3B4657}
+.su-field select{width:100%;min-width:0;min-height:44px;border:1px solid #C9D0DB;border-radius:8px;padding:0 10px;font:inherit;background:#FFF}
+.setup-ui select:focus-visible{outline:2px solid #2F56C6;outline-offset:2px}
+.ai-cloud-notice{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid #DDE2EA;background:#EEF2FD;color:#1F3E99;font-size:14px}
+.ai-cloud-notice>span{flex:1 1 280px}.ai-cloud-notice button{min-height:44px}
+.ai-cloud-notice #ai-notice-keep{border:0;background:transparent;color:inherit;box-shadow:none;font-weight:600;text-decoration:none}

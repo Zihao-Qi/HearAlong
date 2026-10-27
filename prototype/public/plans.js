@@ -672,7 +672,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
 
   function idlePanel(run) {
     const box = el('div', undefined, 'plans-idle');
-    if (!v.data.enabled) { box.append(el('span', 'Planning needs the cloud models, which are off (see Settings).')); return box; }
+    if (!v.data.enabled) { box.append(el('span', 'Planning needs the AI models, which are off (see Settings).')); return box; }
     const counts = hooks.noteCounts?.();
     const topics = counts ? [counts.questions ? plural(counts.questions, 'open question') : '', counts.actions ? plural(counts.actions, 'action') : ''].filter(Boolean).join(' and ') : '';
     box.append(el('span', `Answers and next steps for ${topics ? `the ${topics}` : 'the open questions and actions'} in the notes. About 2 minutes.`));

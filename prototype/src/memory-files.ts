@@ -357,7 +357,7 @@ export class MemoryFiles {
           const { plans: interpreted } = await this.proposals.interpretNotes(project.id, added.map(l => ({ text: `${l.text} (a line added to ${file})`, source: { ...source, lines: [l.raw.trim()] } })), this.options.interpreter);
           for (const p of interpreted) plans.push({ ...p, lane: 'ok', flags: [...p.flags, 'no source given'] });
         } catch (error) { problems.push(`new lines not read: ${(error as Error).message}`); }
-      } else if (added.length) problems.push(`${added.length} new line(s) not read (cloud models are off)`);
+      } else if (added.length) problems.push(`${added.length} new line(s) not read (AI models are off)`);
     }
     await this.suggestSources(project, plans);
     transaction(this.store.db, () => {
@@ -462,7 +462,7 @@ export class MemoryFiles {
   async finishedWork(projectId: string): Promise<{ proposed: number; commits: number; more: boolean }> {
     const project = this.options.project(projectId);
     if (!project.repoPath) throw fail(400, 'This project has no repo folder.');
-    if (!this.options.guesser) throw fail(400, 'Cloud models are disabled (MEETING_CLOUD=0).');
+    if (!this.options.guesser) throw fail(400, 'AI models are disabled (MEETING_CLOUD=0).');
     const last = (this.store.db.prepare('SELECT lastHead FROM memory_repo WHERE project=?').get(projectId) as { lastHead: string | null } | undefined)?.lastHead ?? null;
     // From the last check on; if that commit is gone (a rebase), the latest ones.
     const commits = await recentCommits(project.repoPath, 51, last).catch(() => recentCommits(project.repoPath!, 51));

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { piCommand, piEnv, piKeysVersion } from './pi-command.ts';
+import { AiDeferred } from './ai-deferral.ts';
+import { piCommand, piLaunch, piKeysVersion, watchPiRun, type AiMode } from './pi-command.ts';
 
 export type PiAnswer = {
   text: string; provider?: string; model?: string; usage?: unknown; ms: number; attempts: number;
@@ -11,6 +12,9 @@ export type PiAnswer = {
 export type PiRpcOptions = {
   /** Model as Pi names it, e.g. openai-codex/gpt-6-luna. */
   model: string;
+  aiMode?: AiMode;
+  env?: NodeJS.ProcessEnv;
+  unavailable?: () => string | null;
   cwd: string;
   command?: string;
   /** Extra CLI arguments before the defaults are applied (tests use this for a fake child). */
@@ -28,6 +32,7 @@ export class ModelRpc {
   private current?: PiRpc;
   private keys = piKeysVersion();
   private retiring = new Set<Promise<void>>();
+  private lanes = new Set<PiRpc>();
   private closed = false;
   private model: () => Promise<string>;
   private options: Omit<PiRpcOptions, 'model'>;
@@ -40,18 +45,21 @@ export class ModelRpc {
       this.keys = piKeysVersion();
       const old = this.current;
       this.current = new PiRpc({ ...this.options, model });
+      this.lanes.add(this.current);
       if (old) {
-        const retiring = old.drain().then(() => old.close()).finally(() => this.retiring.delete(retiring));
+        const retiring = old.drain().then(() => old.close()).finally(() => { this.retiring.delete(retiring); this.lanes.delete(old); });
         this.retiring.add(retiring);
       }
     }
     return this.current.ask(message);
   }
+  interrupt() { for (const lane of this.lanes) lane.interrupt(); }
   async close() {
     this.closed = true;
     await this.current?.drain();
     await this.current?.close();
     await Promise.allSettled([...this.retiring]);
+    this.lanes.clear();
   }
 }
 
@@ -89,6 +97,9 @@ export class PiRpc {
 
   private async askOnce(message: string, timeoutMs: number): Promise<PiAnswer> {
     if (this.closing) throw new Error('Pi quick lane has stopped.');
+    const unavailable = this.options.unavailable?.();
+    if (unavailable) throw new AiDeferred(unavailable);
+    piLaunch([], { mode: this.options.aiMode, model: this.options.model, env: this.options.env });
     const started = performance.now();
     const usages: unknown[] = [];
     // An account failover can end a run with an empty answer; retry once on the next account.
@@ -130,7 +141,7 @@ export class PiRpc {
       const onEvent = (event: any) => {
         if (event.type === 'message_end' && event.message?.role === 'assistant') final = event.message;
         else if (event.type === 'agent_settled') { aborted = Boolean(event.aborted); done(); }
-        else if (event.type === 'exit') done(new Error('Pi exited during a request.'));
+        else if (event.type === 'exit') done(event.error ?? new Error('Pi exited during a request.'));
       };
       const timer = setTimeout(() => {
         done(new Error(`Pi did not answer within ${Math.round(timeoutMs / 1000)} s.`));
@@ -162,12 +173,18 @@ export class PiRpc {
   }
 
   private ensureStarted(): ChildProcess {
+    const unavailable = this.options.unavailable?.();
+    if (unavailable) throw new AiDeferred(unavailable);
+    piLaunch([], { mode: this.options.aiMode, model: this.options.model, env: this.options.env });
     if (this.child) return this.child;
     if (this.closing) throw new Error('Pi quick lane has stopped.');
     const args = this.options.args ?? ['--mode', 'rpc', '--no-session', '--no-tools', '--no-context-files', '--model', this.options.model, '--thinking', 'low',
       ...(this.options.systemPrompt ? ['--system-prompt', this.options.systemPrompt] : [])];
-    const child = spawn(piCommand(this.options.command), args, { cwd: this.options.cwd, env: piEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const launch = piLaunch(args, { mode: this.options.aiMode, model: this.options.model, cwd: this.options.cwd, env: this.options.env });
+    const child = spawn(piCommand(this.options.command, this.options.env), launch.args, { cwd: this.options.cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
+    const unwatch = watchPiRun(() => this.restart());
+    child.once('close', unwatch);
     this.buffer = '';
     child.stdout!.setEncoding('utf8');
     // Output from a replaced (timed-out) process must never reach the current one's requests.
@@ -216,15 +233,17 @@ export class PiRpc {
     this.child = undefined;
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
-    for (const listener of [...this.listeners]) listener({ type: 'exit' });
+    for (const listener of [...this.listeners]) listener({ type: 'exit', error });
   }
 
-  private restart() {
+  private restart(error: Error = new Error('Pi was restarted.')) {
     const child = this.child;
     if (!child) return;
-    this.onExit(child, new Error('Pi was restarted.'));
+    this.onExit(child, error);
     child.kill('SIGKILL');
   }
+
+  interrupt() { this.restart(new AiDeferred()); }
 
   /** Resolves once every request already admitted has finished (used before retiring this process). */
   drain(): Promise<void> { return this.queue.then(() => {}, () => {}); }

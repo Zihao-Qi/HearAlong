@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Edit, MeetingStore, Segment } from './store.ts';
 import { extractJson } from './pi-task.ts';
+import { isAiDeferred } from './ai-deferral.ts';
 
 /** `heard`: how the local recognizer actually rendered the term (voice probe), as opposed to guessed `spokenVariants`. */
 export type GlossaryTerm = { term: string; spokenVariants: string[]; heard?: string[]; note?: string };
@@ -385,6 +386,7 @@ export class Corrector {
         if (Array.isArray(edits)) proposed = edits.slice(0, 50);
         else malformed = answer;
       } catch (error) {
+        if (isAiDeferred(error)) return 'skipped'; // No failure/backoff, last-call advance, or checked speech for a scheduling pause.
         stats.failed++;
         lastError = (error as Error).message;
       }

@@ -150,6 +150,7 @@ async function main() {
     ['plans', [...node, '--import', './scripts/check-env.ts', 'scripts/plans-check.ts', join(out, 'plans')]],
     ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
     ['api-keys', check('api-keys-check', join(out, 'api-keys'))],
+    ['ai-mode', check('ai-mode-check', join(out, 'ai-mode'))],
   ];
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {

@@ -19,6 +19,7 @@ async function setup(config: any = {}, observe?: (options: PiTaskOptions, finish
   const directory = await mkdtemp(join(tmpdir(), 'split-server-'));
   const material = join(directory, 'materials', 'guide.md'); await mkdir(join(directory, 'materials'));
   await writeFile(material, 'The guide was approved during the workshop on Monday morning.\nThe paper lanterns stay on the lower shelf until parade day.\nThe painted crates must remain beside the workshop door until Friday.');
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['fiction'], time: 1 } }));
   const configPath = join(directory, 'config.json'); await writeFile(configPath, JSON.stringify({ ...config, material }));
   const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, actions: null, board: null,
     ai: { env: { ...process.env, MEETING_HEAVY_MODEL: 'fiction/model' } },

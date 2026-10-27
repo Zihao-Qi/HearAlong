@@ -418,6 +418,7 @@ test('a server killed while Pi runs a Python script: the next server start ends 
 test('the server: a plan run counts in busy() (a move waits), the idle stop waits for it, and a quit stops it keeping what was saved', async () => {
   const s = await scratch();
   let idleAt = 0;
+  await writeFile(join(s.directory, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['fake'], time: 1 } }));
   const app = await startServer({ directory: s.directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null, idleMs: 300, onIdle: () => { idleAt = Date.now(); } });
   let closed = false;
   try {

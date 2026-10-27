@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { clock, contains, tokens } from './notes.ts';
 import { extractJson } from './pi-task.ts';
+import { isAiDeferred } from './ai-deferral.ts';
 import type { PiAnswer } from './pi-rpc.ts';
 import { ROLE_LABEL, compareSegments, speakerPrefix, type Speakers } from './speakers.ts';
 import type { MeetingStore, Segment } from './store.ts';
@@ -368,6 +369,7 @@ export class Boards {
       log.raw = parsed.kept.length + parsed.dropped.length;
       log.dropped = parsed.dropped;
     } catch (error) {
+      if (isAiDeferred(error)) return; // The window remains pending, with its genuine failure budget unchanged.
       log.error = (error as Error).message.slice(0, 300);
       // A failed call still counts (its usage may be unknown); a refusal before calling the model counts none.
       const telemetry = error as { usages?: unknown[]; attempts?: number; beforeCall?: boolean };
@@ -459,7 +461,7 @@ export class Boards {
 
   /** The user's Investigate on a card: the action matrix, the card's evidence as the selection, every attempt kept. */
   async investigate(meetingId: string, cardId: string) {
-    if (!this.options.actions) throw Object.assign(new Error('Cloud models are disabled (MEETING_CLOUD=0).'), { status: 400 });
+    if (!this.options.actions) throw Object.assign(new Error('AI models are disabled (MEETING_CLOUD=0).'), { status: 400 });
     const board = await this.load(meetingId);
     const card = board.cards.find(c => c.id === cardId);
     if (!card) throw Object.assign(new Error('No such card.'), { status: 404 });

@@ -9,7 +9,7 @@ Requirements:
 - Google Chrome for the app. Browser checks and rehearsals require `MEETING_TEST_CHROME` pointing to a disposable Chromium executable; they never default to the user's browser.
 - FFmpeg and ffprobe on PATH for audio import and recognition.
 - A compatible speech model for `transcribe-cpp`; the setup page finds installed models or downloads Parakeet.
-- Optional AI: Pi signed in to your model subscription. A pinned Pi is included; a Pi on PATH is preferred. Calculations also need `uv`; the app prepares a pinned Python environment. Web lookup needs Pi's `pi-web-access` package enabled.
+- Optional AI: Ollama or LM Studio on this Mac, or explicit consent to cloud models through Pi. A pinned Pi is included; a Pi on PATH is preferred. Calculations also need `uv`; the app prepares a pinned Python environment. Web lookup needs Pi's `pi-web-access` package enabled.
 
 ```sh
 git clone https://github.com/Zihao-Qi/HearAlong.git
@@ -20,7 +20,7 @@ npm start
 
 The setup page finds or downloads a speech model, checks FFmpeg, and offers optional AI and microphone setup.
 
-Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and origin). Starting the server does not start recording. Use the microphone button only with everyone's consent; Ctrl+C stops the server. The root-level `Start Prototype.command` starts the same server and opens Chrome; set `MEETING_CLOUD=0` in its environment if you want local-only operation.
+Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and origin). Starting the server does not start recording. Use the microphone button only with everyone's consent; Ctrl+C stops the server. The root-level `Start Prototype.command` starts the same server and opens Chrome; set `MEETING_CLOUD=0` in its environment to force AI Off for that start.
 
 If a speech model or FFmpeg goes missing later, existing meetings remain readable; use Settings › This Mac › Setup to restore speech. Advanced options: `MEETING_MODEL_PATH=/path/to/model.gguf` overrides the saved speech choice; Pi Voice settings are also discovered read-only. The unit tests and `app-check` below need neither speech weights nor a cloud account.
 
@@ -34,9 +34,15 @@ If a speech model or FFmpeg goes missing later, existing meetings remain readabl
 
 ## Privacy and optional AI
 
-**Cloud AI is enabled by default unless `MEETING_CLOUD=0`.** With it enabled, Pi may send transcript excerpts, selected text, project-memory snapshots, attached-material excerpts, and tool inputs/results to your configured provider. Web tools contact external services. Calculations execute generated Python in a scratch environment; review sensitive inputs before enabling them.
+Choose **On this Mac**, **Cloud** or **Off** in Settings › AI (also in Setup). Main and Quick choices are saved separately for local and cloud AI. Audio and speech recognition always stay local.
 
-Audio recognition stays local. Do not treat that as a guarantee that all app data stays local when optional AI is on. When Pi lists them, setup defaults to `openai-codex/gpt-6.1-sol` (main/correction) and `openai-codex/gpt-6-luna` (quick). Choose any listed pair in Settings › Setup. Advanced overrides: `MEETING_HEAVY_MODEL`, `MEETING_CORRECTION_MODEL`, and `MEETING_QUICK_MODEL`.
+- **On this Mac:** a bundled Pi extension discovers Ollama (`127.0.0.1:11434`) and LM Studio (`127.0.0.1:1234`). No model client is added to the server. Transcript text, materials, memory and tool results stay on this Mac. Pi runs offline, without user extensions, skills or provider keys in its environment, using an app-owned agent directory rather than user endpoint overrides or credential commands. Web lookups are unavailable. While any recording is in progress, the Board and glossary corrections wait; other AI jobs remain available. Discovery and both inference methods use direct, loopback-only transport, without environment proxies or redirects. Notes and inference check the model's measured loaded context, not its trained maximum; an unloaded model gets a one-word, one-token local warm-up before measurement, never meeting text. Unknown context gives configuration guidance; over-limit input is refused rather than sliced. See [context admission and its fake-only verification limits](../docs/local-ai-context.md). Plans and tool-using actions need a tool-capable model.
+- **Cloud:** after explicit consent to the chosen provider set, glossary correction sends glossary terms and recent final lines. Board scans send title, glossary, open cards, memory and recent speech. Notes send the entire final transcript (corrected and as heard). Actions send selected lines, nearby transcript, materials read by tools and a read-only memory snapshot; Compute sends locally generated Python output. Glossary builds send attached materials as read. Memory work sends memory items, cited meeting outcomes, memory-file additions and recent commit subjects/paths. Plans send notes, their cited transcript lines, memory and materials read by tools. Web queries and addresses go to Pi's web services; fetched page text goes to the model. Pi may refresh its model catalog and provider credentials, and user-enabled extensions may contact external services.
+- **Off:** no AI jobs or model calls. Recording, transcription, listening and exports work as usual. `MEETING_CLOUD=0` forces Off for this start without replacing a saved mode. Metadata discovery is performed during initial setup or when explicitly choosing/rechecking a model mode, not as an AI job.
+
+New installs start with local models if available, otherwise Off; cloud is never silently selected. An existing install that finished setup and still lists cloud models keeps cloud access with legacy consent and a one-time Change…/Keep cloud notice. New providers require fresh consent; changes to the consented provider set cancel all active/warm cloud work. Recording pauses preserve Board/correction pending work without consuming failure retries. Pi telemetry and its version check are disabled in all modes; Pi makes no automatic internet requests in local mode. Downloads for speech models, local models or software dependencies are separate setup operations. Calculations run generated Python in a network-blocked scratch sandbox. The [architecture data table](../docs/architecture.md#what-each-feature-sends) gives precise feature bounds.
+
+When listed, cloud defaults remain `openai-codex/gpt-6.1-sol` (Main/correction) and `openai-codex/gpt-6-luna` (Quick), but do not authorize cloud use on their own. Advanced overrides `MEETING_HEAVY_MODEL`, `MEETING_CORRECTION_MODEL`, `MEETING_QUICK_MODEL`, `PLAN_MODEL` and `EXPLORE_MODEL` cannot bypass the active mode or cloud consent.
 
 Runtime data lives in `data/`, or `MEETING_DATA_DIR`: SQLite records, audio, imports, notes, project memory, tool scratch files, and AI session logs. These can contain sensitive content and are Git-ignored. Audio retention defaults to one day after completed processing; settings also offer a week, a month, or always. Transcripts and notes are retained. Do not publish runtime folders or logs.
 

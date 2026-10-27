@@ -10,7 +10,8 @@ import { downloadDisposition } from './download.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
-import { isKeyProvider, resolvePi, type KeyProvider } from './pi-command.ts';
+import type { ModeSettings } from './setup/ai-settings.ts';
+import { isKeyProvider, RECOMMENDED_LOCAL_MODEL, resolvePi, setPiAdmission, stopPiRuns, type KeyProvider } from './pi-command.ts';
 import { ApiKeys, Keychain } from './setup/api-keys.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { serveMeetingAudio } from './listen.ts';
@@ -124,6 +125,7 @@ export async function startServer(options: {
   let drafts: LiveDrafts | null = null;
   let setup: SpeechSetup | undefined;
   let aiSetup: AiSetup | undefined;
+  let releasePiAdmission: (() => void) | undefined;
   let apiKeys: ApiKeys | undefined;
   try {
     const publicRoot = options.publicRoot ?? join(options.codeRoot ?? ROOT, 'public');
@@ -177,7 +179,7 @@ export async function startServer(options: {
     const settingsPath = join(directory, 'settings.json');
     type BoardModel = 'quick' | 'main';
     const isBoardModel = (v: unknown): v is BoardModel => v === 'quick' || v === 'main';
-    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null;
+    let settings: ModeSettings & { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null;
       /** Providers with a key in the Keychain, and those whose key a failed change may have altered: names only, never a key. */
       apiKeys: KeyProvider[]; apiKeysUnconfirmed: KeyProvider[] } = {
       boardModel: 'quick', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false, mainModel: null, quickModel: null, apiKeys: [], apiKeysUnconfirmed: [],
@@ -192,6 +194,10 @@ export async function startServer(options: {
       if (typeof saved.miniOpensItself === 'boolean') settings.miniOpensItself = saved.miniOpensItself;
       if (typeof saved.speechModelPath === 'string' && saved.speechModelPath.trim()) settings.speechModelPath = saved.speechModelPath;
       if (typeof saved.setupSeen === 'boolean') settings.setupSeen = saved.setupSeen;
+      if (['local', 'cloud', 'off'].includes(saved.aiMode)) settings.aiMode = saved.aiMode;
+      for (const key of ['localMainModel', 'localQuickModel', 'cloudMainModel', 'cloudQuickModel'] as const) if (typeof saved[key] === 'string') settings[key] = saved[key];
+      if (Array.isArray(saved.cloudConsent?.providers) && saved.cloudConsent.providers.every((p: unknown) => typeof p === 'string') && Number.isFinite(saved.cloudConsent.time)) settings.cloudConsent = saved.cloudConsent;
+      if (typeof saved.cloudNotice === 'boolean') settings.cloudNotice = saved.cloudNotice;
       for (const key of ['apiKeys', 'apiKeysUnconfirmed'] as const) if (Array.isArray(saved[key])) settings[key] = [...new Set((saved[key] as unknown[]).filter(isKeyProvider))];
     } catch { /* defaults */ }
     let settingsWrite: Promise<unknown> = Promise.resolve();
@@ -264,13 +270,22 @@ export async function startServer(options: {
     const scratchRoot = join(directory, 'scratch');
     await mkdir(scratchRoot, { recursive: true, mode: 0o700 });
     let keysLoaded = Promise.resolve();
-    const ai = new AiSetup(() => settings, saveSettings, { ...options.ai, cwd: scratchRoot, cloud, keysReady: () => keysLoaded });
+    const ai = new AiSetup(() => settings, async change => {
+      const previous = settings.aiMode;
+      const providers = JSON.stringify([...(settings.cloudConsent?.providers ?? [])].sort());
+      await saveSettings(Object.fromEntries(Object.entries(change).filter(([key]) =>
+        ['aiMode', 'mainModel', 'quickModel', 'localMainModel', 'localQuickModel', 'cloudMainModel', 'cloudQuickModel', 'cloudConsent', 'cloudNotice'].includes(key))));
+      if (previous && (previous !== settings.aiMode || (previous === 'cloud' && providers !== JSON.stringify([...(settings.cloudConsent?.providers ?? [])].sort())))) stopPiRuns();
+    }, { ...options.ai, cwd: scratchRoot, cloud, keysReady: () => keysLoaded });
     aiSetup = ai;
+    releasePiAdmission = setPiAdmission(model => { ai.allow(model); return ai.mode(); });
     // Saved API keys reach every Pi child through its environment (pi-command.ts); with cloud models off nothing is read.
     const keys = new ApiKeys({ saved: () => settings, persist: change => saveSettings(change), reader: ai.reader,
       keychain: options.keys?.keychain, fetch: options.keys?.fetch, env: options.ai?.env, log: message => console.warn(message) });
     apiKeys = keys;
-    if (cloud) keysLoaded = keys.load();
+    let keysStarted = false;
+    const loadCloudKeys = () => { if (!keysStarted) { keysStarted = true; keysLoaded = keys.load(); } return keysLoaded; };
+    if (cloud && (settings.aiMode === 'cloud' || (!settings.aiMode && settings.setupSeen))) void loadCloudKeys();
     ai.start(); // Discovery, package detection and auth must never delay startup.
     // Exclude the bundled fallback when deciding whether a bare `pi` works in the user's terminal.
     const signInEnv = options.ai?.env ?? process.env;
@@ -278,7 +293,7 @@ export async function startServer(options: {
       : `cd '${ROOT.replace(/'/g, `'\\''`)}' && npx pi`;
     const setupStatus = () => { const status = speechSetup.status(); return { ...status, rows: [...status.rows, { ...ai.status(), signInCommand }] }; };
     const quick: Quick | null = options.quick !== undefined ? options.quick
-      : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
+      : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, unavailable: () => localLiveUnavailable(), systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
     const heavy: Heavy | null = options.heavy !== undefined ? options.heavy
       : cloud ? async (prompt, o) => runPiTask(prompt, { model: await ai.require('main'), cwd: o.cwd, sessionDir: o.sessionDir, signal: o.signal, tools: 'read,grep,find,ls', timeoutMs: 600_000 }) : null;
     // Notes: one no-tools call on sol; the transcript goes in as a file. Any tool use or non-normal stop is a failure.
@@ -332,10 +347,8 @@ export async function startServer(options: {
     // Select-text actions (M3): sol with per-action tools; an explicit `heavy: null` disables them unless a runner is injected.
     const actionRunner: ActionRunner | null = options.actions !== undefined ? options.actions
       : cloud && options.heavy !== null ? piActionRunner(() => ai.require('main')) : null;
-    // Compute's pinned Python environment is prepared once in the background; Compute jobs wait for it (not counted
-    // against their limits) and fail clearly if it cannot be prepared.
+    // Prepare Compute's pinned Python environment on demand, not while AI is Off. Jobs wait outside their time limit.
     const realRunner = Boolean(actionRunner) && options.actions === undefined;
-    if (realRunner) void ensurePython().catch(error => console.warn((error as Error).message));
     // Memory for actions (§7): a snapshot made from the database (never the repo files, which may hold unresolved edits),
     // with the notes of the project's other meetings, in a read-only folder per action so its citations stay checkable.
     const snapshotRoot = join(directory, 'scratch', 'memory-snapshots');
@@ -372,14 +385,15 @@ export async function startServer(options: {
         return projectId && existsSync(path) ? { id: rootId, scope: `project:${projectId}`, path: realpathSync(path), kind: 'folder' as const, label: 'project memory (snapshot)' } : null;
       },
     };
+    const webUnavailable = () => ai.mode() === 'local' ? 'Web lookups are unavailable in On this Mac mode.' : null;
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
-      rootsFor, webAvailable: () => ai.web, pdfText, cooldowns,
+      rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns,
       computeReady: realRunner ? () => ensurePython() : undefined });
     await actionJobs.load();
     // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
     const gate = boardGates ? new ModelRpc(() => ai.require(settings.boardModel), {
-      cwd: scratchRoot, timeoutMs: 90_000, log: message => console.log(`[pi board] ${message}`),
+      cwd: scratchRoot, unavailable: () => localLiveUnavailable(), timeoutMs: 90_000, log: message => console.log(`[pi board] ${message}`),
     }) : null;
     // The scan cadence follows the meeting's own time: the replay position during a replay (60 s of meeting, not of wall time).
     const boardStore = store;
@@ -411,6 +425,7 @@ export async function startServer(options: {
     // A recording counts from its first frame's arrival: the server's claim (made before the frame is saved, as for moves) as well
     // as the capture's own view, which starts only once that frame is saved.
     const recordingAnywhere = () => capture.recording() || [...recording.keys()].some(id => isRecording(id));
+    const localLiveUnavailable = () => ai.mode() === 'local' && recordingAnywhere() ? 'The local Board and corrections wait until recording stops.' : null;
     // The plans' Pi: the real one with cloud models on (an explicit `heavy: null` turns it off, as for notes), or a test's.
     const planPi = options.plans !== undefined ? options.plans : cloud && options.heavy !== null ? runPiTask : null;
     const explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => ai.web, onEnd: job => planJobs.ended(job),
@@ -424,8 +439,8 @@ export async function startServer(options: {
     // The plans of a meeting (M7b §2b): published versions in data/plans, their to-dos and automatic attempts in the database.
     const planJobs = new PlanJobs({ store, directory, clock, explorations, cooldowns, memory, projects, notes: notesJobs, pdfText,
       versions: new PlanVersions(directory, clock), todos: new PlanTodos(store, memory, clock), auto: new AutoPlanning(store, clock),
-      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython() : undefined, web: () => ai.web,
-      models: kind => planModel(kind, () => ai.require('main')),
+      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython() : undefined, web: () => ai.web, webUnavailable,
+      models: async kind => ai.allow(await planModel(kind, () => ai.require('main'))),
       materialEvidence: (path, blocks) => files.evidenceAllowed(path, blocks),
       final: id => !stillComing(id), stale: id => notesJobs.status(id).then(s => s.stale), changed: id => changed(id) });
     /** What is running for a meeting, in words; a move waits for all of it (§8.2). Synchronous, so the caller can move right after. */
@@ -458,6 +473,7 @@ export async function startServer(options: {
     retentionLoop = setInterval(() => { void audioRetention.run(); }, 60 * 60_000);
     retentionLoop.unref();
     const correctionLoop = corrector ? setInterval(() => {
+      if ((options.quick === undefined && ai.mode() === 'off') || (ai.mode() === 'local' && recordingAnywhere())) return;
       for (const meeting of appStoreRef.meetings()) {
         const calls = corrector.state(meeting.id).stats.calls;
         corrector.tick(meeting.id, finished(meeting.id)).then(() => {
@@ -485,6 +501,7 @@ export async function startServer(options: {
     };
     const boardLoop = setInterval(() => {
       pruneDeletedMeetingState();
+      if ((options.board === undefined && ai.mode() === 'off') || (ai.mode() === 'local' && recordingAnywhere())) return;
       for (const meetingId of boardActive) {
         const replay = appStoreRef.replay(meetingId);
         // Saved live audio not yet in a window keeps a live meeting open.
@@ -673,10 +690,17 @@ export async function startServer(options: {
           res.writeHead(204).end(); return;
         }
         if (req.method === 'GET' && url.pathname === '/api/setup') { send(res, 200, setupStatus()); return; }
-        if (req.method === 'GET' && url.pathname === '/api/setup/ai/models') { send(res, 200, await ai.models(url.searchParams.get('refresh') === '1')); return; }
-        if (req.method === 'PUT' && url.pathname === '/api/setup/ai') { await ai.use(await json(req)); send(res, 200, setupStatus()); return; }
+        if (req.method === 'GET' && url.pathname === '/api/setup/ai/models') {
+          const mode = url.searchParams.get('mode');
+          if (mode !== null && mode !== 'local' && mode !== 'cloud' && mode !== 'off') throw new HttpError(400, 'Choose a valid AI mode.');
+          if (cloud && mode === 'cloud') await loadCloudKeys();
+          send(res, 200, { ...await ai.models(url.searchParams.get('refresh') === '1', mode ?? undefined), settings: { localMainModel: settings.localMainModel, localQuickModel: settings.localQuickModel, cloudMainModel: settings.cloudMainModel ?? settings.mainModel, cloudQuickModel: settings.cloudQuickModel ?? settings.quickModel }, recommended: RECOMMENDED_LOCAL_MODEL }); return;
+        }
+        if (req.method === 'POST' && url.pathname === '/api/setup/ai/notice') { await saveSettings({ cloudNotice: false }); send(res, 200, setupStatus()); return; }
+        if (req.method === 'PUT' && url.pathname === '/api/setup/ai') { const value = await json(req); if (cloud && value?.mode === 'cloud') await loadCloudKeys(); await ai.use(value); send(res, 200, setupStatus()); return; }
         if (url.pathname === '/api/setup/ai/keys' || url.pathname.startsWith('/api/setup/ai/keys/')) {
           if (!cloud) throw new HttpError(409, 'AI is off for this start.');
+          await loadCloudKeys();
           if (req.method === 'GET' && url.pathname === '/api/setup/ai/keys') { send(res, 200, { keys: await keys.list(url.searchParams.get('fresh') === '1') }); return; }
           const provider = decodeURIComponent(url.pathname.slice('/api/setup/ai/keys/'.length));
           if (!isKeyProvider(provider)) throw new HttpError(404, 'Not found.');
@@ -689,7 +713,7 @@ export async function startServer(options: {
             reset = await ai.resetProvider(provider);
           } else throw new HttpError(405, 'Use PUT or DELETE.');
           // The new list goes back at once, so the dialog can offer the new models (or stop offering the removed ones).
-          const models = await ai.models(true);
+          const models = await ai.models(true, 'cloud');
           send(res, 200, { keys: await keys.list(), models, reset }); return;
         }
         if (req.method === 'GET' && url.pathname === '/api/setup/speech-models') { send(res, 200, speechSetup.models()); return; }
@@ -740,7 +764,7 @@ export async function startServer(options: {
             await saveSettings(change);
             void audioRetention.run();
           } else if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
-          send(res, 200, { ...settings, boardModels: (['quick', 'main'] as const).map(id => ({ id, model: ai.current(id) })), boardEnabled: boardGates || options.board != null }); return;
+          send(res, 200, { ...settings, boardModels: (['quick', 'main'] as const).map(id => ({ id, model: ai.current(id) })), aiMode: ai.mode(), aiForcedOff: !cloud, boardEnabled: ai.mode() === 'cloud' && (boardGates || options.board != null) }); return;
         }
         if (url.pathname === '/api/audio-retention') {
           if (req.method === 'POST') {
@@ -788,7 +812,8 @@ export async function startServer(options: {
           const ready = fingerprint.ready();
           send(res, 200, { update: { ready, canRestart }, working: working(), config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), recordingAnywhere: recordingAnywhere(), shuttingDown, audioRetentionNotice: audioRetention.notice,
             queued: appStore.queuedCount(), sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
-            capabilities: { microphone: true, systemAudio: false, cloudModels: Boolean(quick), mainModel: ai.current('main'), correctionModel: quick ? ai.currentCorrection() : null, notesModel: notesRunner ? ai.current('main') : null, actionModel: actionRunner ? ai.current('main') : null, quickModel: quick ? ai.current('quick') : null, heavyModel: heavy ? ai.current('main') : null, participationScheduler: false, pdfExtraction: false },
+            ai: ai.status(),
+            capabilities: { microphone: true, systemAudio: false, cloudModels: ai.mode() !== 'off' && Boolean(quick), mainModel: ai.current('main'), correctionModel: quick ? ai.currentCorrection() : null, notesModel: notesRunner ? ai.current('main') : null, actionModel: actionRunner ? ai.current('main') : null, quickModel: quick ? ai.current('quick') : null, heavyModel: heavy ? ai.current('main') : null, participationScheduler: false, pdfExtraction: false },
           }); return;
         }
         if (req.method === 'POST' && url.pathname === '/api/meetings') {
@@ -904,7 +929,7 @@ export async function startServer(options: {
             send(res, 200, { proposal: proposals.get(projectId, proposalId) }); return;
           }
           if (req.method === 'POST' && part === 'tell') {
-            if (!tellRunner) throw new HttpError(400, 'Cloud models are disabled (MEETING_CLOUD=0).');
+            if (!tellRunner) throw new HttpError(400, 'AI models are disabled (MEETING_CLOUD=0).');
             const value = await json(req);
             send(res, 200, await proposals.interpret(projectId, value.text, tellRunner)); return;
           }
@@ -995,6 +1020,8 @@ export async function startServer(options: {
           const replay = appStore.replay(meetingId);
           const now = clock();
           const glossary = projects.glossaryFor(meetingId);
+          // Preserve the base segments wire response; the current UI translates its legacy disabled-runner hint to AI.
+          const canBuild = options.heavy === undefined && ai.mode() === 'off' ? 'AI is off. Change it in AI settings.' : !heavy ? 'Needs cloud models (they are off).' : !rootsFor(meetingId).length ? 'Attach materials first.' : null;
           send(res, 200, {
             meetingId,
             captureGaps: appStore.captureGaps(meetingId),
@@ -1017,11 +1044,12 @@ export async function startServer(options: {
             // Online meetings: speaker per line ("Me"/"Them", or null for unlabelled audio) and per draft source, in one fixed order.
             labelled,
             ...delta,
-            correction: { enabled: Boolean(corrector), canBuild: !heavy ? 'Needs cloud models (they are off).' : !rootsFor(meetingId).length ? 'Attach materials first.' : null, glossary: glossary ? { version: glossary.version, origin: glossary.origin, terms: glossary.terms.length } : null,
+            correction: { enabled: Boolean(corrector) && (options.quick !== undefined || ai.mode() !== 'off'), canBuild, glossary: glossary ? { version: glossary.version, origin: glossary.origin, terms: glossary.terms.length } : null,
               building: building.get(projects.scope(meetingId).glossaryScope) ?? null, state: corrector?.state(meetingId) ?? null },
           }); return;
         }
         if (req.method === 'POST' && action === 'notes') {
+          if (options.notes === undefined && ai.mode() === 'off') throw new HttpError(409, 'AI is off. Change it in AI settings.');
           try { await notesJobs.start(meetingId); }
           catch (error) { throw new HttpError((error as { status?: number }).status ?? 500, (error as Error).message); }
           send(res, 202, { started: true }); return;
@@ -1031,7 +1059,7 @@ export async function startServer(options: {
           send(res, 200, await notesJobs.cancel(meetingId, value?.jobId)); return;
         }
         if (req.method === 'GET' && action === 'notes') {
-          send(res, 200, { ...(await notesJobs.status(meetingId)), enabled: notesJobs.enabled }); return;
+          send(res, 200, { ...(await notesJobs.status(meetingId)), enabled: notesJobs.enabled && (options.notes !== undefined || ai.mode() !== 'off') }); return;
         }
         if (req.method === 'GET' && action === 'notes.md') {
           const status = await notesJobs.status(meetingId);
@@ -1043,10 +1071,11 @@ export async function startServer(options: {
           res.end(notesMarkdown(status.notes, status.stale, status.coverage)); return;
         }
         if (req.method === 'GET' && action === 'actions') {
-          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled, pausedUntil: actionJobs.paused(), web: ai.web, python: pythonStatus(),
+          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled && (options.actions !== undefined || ai.mode() !== 'off'), pausedUntil: actionJobs.paused(), web: ai.web, python: pythonStatus(),
             materials: rootsFor(meetingId).length > 0 }); return;
         }
         if (req.method === 'POST' && action === 'actions') {
+          if (options.actions === undefined && ai.mode() === 'off') throw new HttpError(409, 'AI is off. Change it in AI settings.');
           const value = await json(req);
           // "Ask about this" / "Look into it" on a board card bind the job to that card (M4 decision 7).
           const bound = typeof value.cardId === 'string' && await boards.hasCard(meetingId, value.cardId) ? { origin: 'card' as const, cardId: value.cardId } : { origin: 'user' as const, cardId: undefined };
@@ -1063,9 +1092,10 @@ export async function startServer(options: {
           return;
         }
         // Plans (M7b): the page's view, Plan / Plan again, Cancel, Add to to-dos and its Undo, and Explore further.
-        if (req.method === 'GET' && action === 'plans') { send(res, 200, await planJobs.page(meetingId)); return; }
+        if (req.method === 'GET' && action === 'plans') { const page = await planJobs.page(meetingId); send(res, 200, { ...page, enabled: page.enabled && (options.plans !== undefined || ai.mode() !== 'off') }); return; }
         if (req.method === 'GET' && action === 'plans/runs') { send(res, 200, planJobs.submission(meetingId, url.searchParams.get('opId'))); return; }
         if (req.method === 'POST' && action === 'plans/runs') {
+          if (options.plans === undefined && ai.mode() === 'off') throw new HttpError(409, 'AI is off. Change it in AI settings.');
           const started = await planJobs.start(meetingId, await json(req));
           send(res, started.replayed ? 200 : 202, started); return;
         }
@@ -1078,9 +1108,11 @@ export async function startServer(options: {
           if (plan) { const started = await planJobs.explore(meetingId, Number(version), plan, value); send(res, started.replayed ? 200 : 202, started); return; }
           send(res, 200, verb === 'todo' ? await planJobs.add(meetingId, Number(version), step, value) : await planJobs.undo(meetingId, Number(version), step, value)); return;
         }
-        if (req.method === 'GET' && action === 'board') { send(res, 200, await boards.status(meetingId)); return; }
+        if (req.method === 'GET' && action === 'board') { const board = await boards.status(meetingId); send(res, 200, { ...board, enabled: board.enabled && (options.board !== undefined || ai.mode() !== 'off') }); return; }
         if (req.method === 'POST' && action === 'board/scan') {
-          if (!boards.enabled) throw new HttpError(400, 'Cloud models are disabled (MEETING_CLOUD=0).');
+          if (options.board === undefined && ai.mode() === 'off') throw new HttpError(409, 'AI is off. Change it in AI settings.');
+          if (!boards.enabled) throw new HttpError(400, 'AI models are disabled (MEETING_CLOUD=0).');
+          if (ai.mode() === 'local' && recordingAnywhere()) throw new HttpError(409, 'The local Board waits until recording stops.');
           try { await boards.scanAll(meetingId); }
           catch (error) { throw new HttpError((error as { status?: number }).status ?? 500, (error as Error).message); }
           boardActive.add(meetingId); // keeps scanning until the backlog is covered
@@ -1122,7 +1154,8 @@ export async function startServer(options: {
           send(res, 200, projects.saveGlossary(projects.scope(meetingId).glossaryScope, cleanGlossary(value), 'user')); return;
         }
         if (req.method === 'POST' && action === 'glossary/build') {
-          if (!heavy) throw new HttpError(400, 'Cloud models are disabled (MEETING_CLOUD=0).');
+          if (options.heavy === undefined && ai.mode() === 'off') throw new HttpError(409, 'AI is off. Change it in AI settings.');
+          if (!heavy) throw new HttpError(400, 'AI models are disabled (MEETING_CLOUD=0).');
           if (!rootsFor(meetingId).length) throw new HttpError(400, 'Attach materials before building a glossary.');
           const scope = projects.scope(meetingId).glossaryScope;
           if (building.get(scope) && !building.get(scope)!.error) throw new HttpError(409, 'A glossary build is already running.');
@@ -1173,6 +1206,7 @@ export async function startServer(options: {
           appStore.claimRecording(meetingId, source, typeof pageId === 'string' && pageId.length <= 64 ? pageId : null);
           lastPcmAt.set(meetingId, clock());
           recording.set(meetingId, (recording.get(meetingId) ?? new Set()).add(source));
+          if (ai.mode() === 'local') { if (quick instanceof ModelRpc) quick.interrupt(); gate?.interrupt(); }
           const pcm = await body(req, 4 * 16000);
           if (!pcm.length || pcm.length % 4) throw new HttpError(400, 'A live frame holds at most 1 second of float32 audio.');
           for (let index = 0; index < pcm.length; index += 4) {
@@ -1348,6 +1382,7 @@ export async function startServer(options: {
       await settingsWrite.catch(error => console.warn(`Could not save settings: ${(error as Error).message}`));
       audioRetention.observe(true); // persist completed meetings' stop time, without scheduling any deletion
       appStore.close();
+      releasePiAdmission?.();
       await release();
     }
     void audioRetention.run();
@@ -1365,6 +1400,7 @@ export async function startServer(options: {
     await jobs?.close();
     await setup?.close().catch(error => console.warn(`Could not close speech setup: ${(error as Error).message}`));
     store?.close();
+    releasePiAdmission?.();
     await release();
     throw error;
   }

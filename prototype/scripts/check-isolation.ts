@@ -20,7 +20,7 @@ process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
 export function piPackages(web = false) {
   writeFileSync(process.env.MEETING_PI!, `#!/bin/sh
 case "$*" in
-  '--no-context-files --list-models') printf 'No models available. Use /login to log into a provider.\\n' ;;
+  *'--no-context-files --list-models') printf 'No models available. Use /login to log into a provider.\\n' ;;
   list) printf '${web ? 'User packages:\\n  npm:pi-web-access\\n    /fictional/web\\n' : 'No packages installed.\\n'}' ;;
   *) echo 'Unexpected Pi model call in check: inject a scripted runner.' >&2; exit 95 ;;
 esac

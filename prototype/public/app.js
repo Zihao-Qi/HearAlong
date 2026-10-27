@@ -5,7 +5,7 @@ import { createListenPlayer } from '/listen.js';
 import { createSegmentsPoll } from '/segments-poll.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
-import { SetupUI, setupRequest, copyCommand } from '/setup-ui.js';
+import { SetupUI, setupRequest, copyCommand, aiDialog } from '/setup-ui.js';
 import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
 
 const $ = id => document.getElementById(id);
@@ -234,7 +234,7 @@ function renderLive(snapshot) {
   } else { chip.hidden = true; chip.textContent = ''; }
   const c = snapshot?.correction;
   let text = '';
-  if (c && !c.enabled) text = 'Corrections off (cloud models disabled)';
+  if (c && !c.enabled) text = 'Corrections off (AI models disabled)';
   else if (c?.building && !c.building.error) text = 'Building glossary…';
   else if (c?.building?.error) text = `Glossary build failed: ${c.building.error}`;
   else if (c?.glossary) {
@@ -247,7 +247,7 @@ function renderLive(snapshot) {
   $('glossary-status').textContent = c?.glossary ? `Version ${c.glossary.version} (${c.glossary.origin === 'user' ? 'edited by you' : 'generated'}), ${c.glossary.terms} terms.` : text;
   // A build that cannot run is not offered as if it could; the reason sits beside it.
   $('build-glossary').disabled = Boolean(c?.canBuild);
-  $('build-glossary-note').textContent = c?.canBuild ?? '';
+  $('build-glossary-note').textContent = c?.canBuild === 'Needs cloud models (they are off).' ? 'Needs AI models (they are off).' : c?.canBuild ?? '';
 }
 
 /** The launcher's Quit (or SIGTERM): a recording stops as if Stop were clicked, then the page says the app has quit. */
@@ -364,9 +364,12 @@ async function refreshStatus() {
     if (generation === selectionGeneration && !capture && !requestingMic && !status.meetings.some(m => m.id === meetingId)) selectMeeting(status.meetings[0]?.id ?? null);
     renderMeetingMenu();
     const caps = status.capabilities;
-    $('cloud').textContent = caps.cloudModels
-      ? `On, through Pi. Glossary: ${caps.heavyModel}. Corrections: ${caps.correctionModel}. Transcript text and material excerpts are sent to your chosen model provider; audio stays on this Mac.`
-      : 'Off (MEETING_CLOUD=0). Nothing leaves this Mac.';
+    const ai = fresh.ai;
+    $('settings-ai-change').hidden = !!ai?.forcedOff;
+    $('cloud').textContent = ai?.forcedOff ? 'Off for this start (MEETING_CLOUD=0).' : ai?.mode === 'local' ? 'On this Mac · nothing leaves it.' : ai?.mode === 'off' ? 'Off · transcription only.' : `Cloud · ${ai?.main?.id?.split('/')[0] ?? 'through Pi'}`;
+    $('board-model').closest('label').hidden = ai?.mode !== undefined && ai.mode !== 'cloud';
+    $('ai-cloud-notice').hidden = !ai?.cloudNotice || ai.mode !== 'cloud';
+    if (ai?.cloudNotice) $('ai-cloud-notice-text').textContent = `AI still runs in the cloud with ${ai.cloudConsent?.providers.join(', ') ?? 'your provider'}, as before. You can now keep it on this Mac instead.`;
     renderStatusDot();
   } catch (error) {
     if (quitView.seen) { $('quit-text').textContent = 'HearAlong has quit. You can close this window.'; return; }
@@ -767,7 +770,7 @@ function renderNotes(data, owner) {
   $('export-notes-panel').setAttribute('aria-disabled', String(!record));
   $('export-notes-panel').title = record ? 'Download the notes' : 'Write notes first';
   let statusText = '';
-  $('write-notes').title = data.enabled ? '' : 'Writing notes needs cloud models, which are off (see Settings).';
+  $('write-notes').title = data.enabled ? '' : 'Writing notes needs AI models, which are off (see Settings).';
   $('rewrite-notes').title = running ? 'Notes are being written.' : $('write-notes').title;
   const progressHost = $('notes-progress');
   progressHost.hidden = !running;
@@ -1627,7 +1630,7 @@ function renderBoard(owner) {
   $('board-empty').replaceChildren(...(data.enabled ? [
     (() => { const p = el('p'); p.append(el('strong', 'While you listen,'), ' the quick model reads the transcript about once a minute and adds cards: questions, claims to check, decisions and actions, anchored to the moment they were said.'); return p; })(),
     el('p', 'Select words in the transcript to ask, explain, compute or look something up yourself.', 'muted'),
-  ] : [el('p', 'Cards need cloud models, which are off. The transcript and your notes stay on this Mac.', 'muted')]));
+  ] : [el('p', 'Cards need AI models, which are off. The transcript and your notes stay on this Mac.', 'muted')]));
   $('scan-board').disabled = !data.enabled;
   $('scan-board').hidden = !data.enabled;
   // The filters and order only matter once there are cards.
@@ -1743,6 +1746,8 @@ async function loadSettings() {
     $('audio-retention').value = settings.audioRetention;
     $('board-model').value = settings.boardModel;
     $('board-model').disabled = !settings.boardEnabled;
+    $('settings-ai-change').hidden = !!settings.aiForcedOff;
+    $('board-model').closest('label').hidden = settings.aiMode !== undefined && settings.aiMode !== 'cloud';
     $('mini-by-itself').checked = mini.byItself = settings.miniOpensItself;
   } catch (error) { log(error.message, true); }
 }
@@ -1899,12 +1904,24 @@ let setupSnapshot;
 function setupStatusChanged(snapshot) {
   setupSnapshot = snapshot;
   const ai = snapshot.rows.find(row => row.id === 'ai');
-  $('setup-web').hidden = ai.web !== false;
-  if (!$('setup-web').firstChild) $('setup-web').append('Web search is not installed. ', copyCommand('pi install npm:pi-web-access'));
+  $('settings-ai-change').hidden = !!ai.forcedOff;
+  $('setup-web').hidden = ai.mode === 'off' || ai.web !== false;
+  if (ai.mode === 'local') $('setup-web').replaceChildren('Web lookups are unavailable in On this Mac mode.');
+  else $('setup-web').replaceChildren('Web search is not installed. ', copyCommand('pi install npm:pi-web-access'));
   renderStatusDot();
 }
 const setupUi = new SetupUI($('setup-settings'), { details: true, onStatus: setupStatusChanged,
+  onSaved: () => Promise.all([refreshStatus(), loadSettings()]),
   onError(error) { $('setup-settings-error').hidden = !error; $('setup-settings-error').textContent = error?.message.replace(/'/g, '’') ?? ''; },
+});
+$('settings-ai-change').onclick = guarded(async () => {
+  const snapshot = await setupUi.refresh({ background: true });
+  if (await aiDialog(snapshot.rows.find(r => r.id === 'ai'), options => setupUi.refresh({ ...options, background: true }))) await Promise.all([refreshStatus(), loadSettings()]);
+});
+for (const [id, change] of [['ai-notice-change', true], ['ai-notice-keep', false]]) $(id).onclick = guarded(async () => {
+  const snapshot = await setupRequest('/api/setup/ai/notice', 'POST'); $('ai-cloud-notice').hidden = true;
+  $('open-system').focus(); // The disappearing notice cannot be a dialog's return-focus target.
+  if (change && await aiDialog(snapshot.rows.find(r => r.id === 'ai'), options => setupUi.refresh({ ...options, background: true }))) await Promise.all([refreshStatus(), loadSettings()]);
 });
 window.addEventListener('pagehide', () => setupUi.stop({ dispose: true }));
 // The same sequence guard owns initial, action and foreground reads. No idle setup polling.
@@ -1991,7 +2008,7 @@ function renderStatusDot() {
     : failed ? ['warn', `${failed} failed`, `${failed} piece(s) of audio failed to transcribe`]
     // A queue is normal (each 16–24 s piece passes through it; a replay queues its whole file): only a live backlog is a problem.
     : capture && status.queued > 3 ? ['warn', `${status.queued} waiting`, `Transcription is falling behind: ${status.queued} pieces of audio waiting`]
-    : !status.capabilities.cloudModels ? ['local', '', 'Ready; cloud models are off, nothing leaves this Mac']
+    : !status.capabilities.cloudModels ? ['local', '', 'Ready; AI models are off, nothing leaves this Mac']
     : ['ok', '', 'Ready'];
   // Nothing to show when all is well: the dot appears only for a problem (amber, red); local-only mode is just the word "Local".
   $('status-dot').className = `status-dot ${kind}`;

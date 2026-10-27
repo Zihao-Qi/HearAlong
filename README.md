@@ -36,7 +36,7 @@ Speech recognition runs entirely on your Mac. You follow the conversation as it 
 - **Evidence-checked AI.** Notes, cards and plans must cite transcript lines. The server verifies each quote against what the agent actually saw, and plans are versioned so that a stale run can never overwrite a newer one.
 - **Agents run as isolated processes.** The language-model agent ([Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)) runs as separate processes, each in its own process group, with time limits, clean cancel and crash recovery. A crash or hang there can never stop a recording. The live board uses one warm process.
 - **Decisions backed by experiments.** One example: sealing audio earlier would have cut the final-text delay from about 15 s to 6.5 s. An offline experiment on real recordings showed it made 2–8 percentage points more recognition errors and lost some technical terms, so it was not shipped.
-- **Tested like a product.** 390 unit and integration tests, plus browser checks in headless Chrome: layouts at 11 window sizes, the mini window, the plans view, an end-to-end smoke test with real local speech recognition, and a *rehearsal* tool that replays a recording as a live microphone.
+- **Tested like a product.** 978 unit and integration tests, plus browser checks in headless Chrome: layouts at 11 window sizes, the mini window, the plans view, and an end-to-end smoke test with scripted speech recognition. Real local recognition is checked separately by `npm run smoke:stt`. A *rehearsal* tool replays a supplied recording as a live microphone.
 
 How these work, with links to the code: [Architecture](docs/architecture.md).
 
@@ -61,7 +61,7 @@ HearAlong was built by one person directing a small team of AI agents, each with
 
 ## Getting started
 
-Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI features are optional and need the Pi agent signed in to your own model subscription. Without them, recording and transcription still work fully on the Mac.
+Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI features are optional: use Ollama or LM Studio on this Mac, or explicitly opt in to a cloud provider through Pi. Without them, recording and transcription still work fully on the Mac.
 
 ```sh
 git clone https://github.com/Zihao-Qi/HearAlong.git
@@ -74,7 +74,15 @@ The setup page finds or downloads a speech model, checks FFmpeg, and offers opti
 
 ## Privacy
 
-Audio and speech recognition never leave the Mac. AI features are optional: when they are on, selected transcript excerpts and project materials go to the model provider you sign in with. Runtime data (recordings, transcripts, notes) is kept locally and is never part of this repository. All examples and test data in this repository are fictional.
+Audio and speech recognition stay on the Mac. Settings › AI offers three modes:
+
+- **On this Mac:** Pi uses models served by Ollama or LM Studio on loopback. Transcript text, materials, memory and Python results stay local. Pi's automatic internet traffic and user extensions/skills are disabled. Discovery and inference use direct loopback transport, ignore proxy settings and refuse redirects; web lookups are unavailable. The Board and corrections wait until recording stops.
+- **Cloud:** explicitly consent to the selected providers before AI can run. Corrections send glossary terms and recent final speech; Board scans also send title, open cards and project memory. Notes send the whole final transcript. Explain/actions send selected lines, nearby speech, materials read by tools and a memory snapshot; calculations send their local Python output. Glossary builds send attached materials as read. Memory updates send memory items, cited meeting outcomes, memory-file additions and recent commit subjects/paths. Plans send notes, cited transcript lines, memory and materials read by tools. Web queries/addresses go to search/page services, and page text goes to the model. Pi may refresh its model catalog and provider credentials; installed user extensions may contact their services.
+- **Off:** no AI jobs or model calls; recording, transcription, listening and exports remain available. `MEETING_CLOUD=0` forces Off for that start.
+
+New installs default to local AI if available, otherwise Off. Previously set-up installs with listed cloud models retain cloud access with a one-time notice offering a switch. Adding a new provider requires consent again; changing the consented provider set cancels old cloud work. Pi telemetry and version checks are disabled in every mode. See [the per-feature data table](docs/architecture.md#what-each-feature-sends) for bounds and details. Speech/model/software downloads are separate, explicit setup operations.
+
+Runtime data (recordings, transcripts, notes and AI session logs) is kept locally and is never part of this repository. All examples and test data here are fictional.
 
 ## Roadmap
 

@@ -127,7 +127,7 @@ async function keysServer(t: any, initial: Record<string, unknown> = {}, saved: 
   for (const name of ['log', 'warn', 'error'] as const) console[name] = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); };
   let app: Awaited<ReturnType<typeof startServer>> | undefined;
   t.after(async () => { await app?.close(); Object.assign(console, console_); await remove(); });
-  const data = join(f.directory, 'data'); await mkdir(data, { recursive: true }); await writeFile(join(data, 'settings.json'), JSON.stringify(saved));
+  const data = join(f.directory, 'data'); await mkdir(data, { recursive: true }); await writeFile(join(data, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['example', 'google'], time: 1, legacy: true }, ...saved }));
   const start = async () => {
     app = await startServer({ directory: data, port: 0, recognizer: null, drafts: null, quick: null, heavy: null,
       ai: { env: f.env }, setup: { scan: { home: f.directory, envModelPath: null, hfHome: null }, ffmpeg: async () => ({ found: true }) } });
