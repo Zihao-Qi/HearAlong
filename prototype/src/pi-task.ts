@@ -52,6 +52,8 @@ export type PiTaskOptions = {
   command?: string;
   args?: string[];
   onEvent?: (event: any) => void;
+  /** Local lane admission time (also reported if cancelled in the queue); zero for cloud tasks. */
+  onLocalWait?: (ms: number) => void;
   /** Thinking level for this task only (`--thinking low`); omitted: Pi's own setting. */
   thinking?: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** `false` turns the user's skills off for this task (`--no-skills`); omitted: Pi's default, skills on. */
@@ -107,8 +109,16 @@ async function cleanUp(dir: string): Promise<string | undefined> {
 }
 
 /** The heavy lane: one `pi --mode json` process per task, with a wall-clock limit. */
-export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {
-  return inLocalPiLane(options.model, () => runPiTaskOnce(prompt, options), options.signal);
+export async function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {
+  const queued = performance.now();
+  let admitted = false;
+  const report = () => options.onLocalWait?.(isLocalModel(options.model) ? performance.now() - queued : 0);
+  try {
+    return await inLocalPiLane(options.model, () => {
+      admitted = true; report();
+      return runPiTaskOnce(prompt, options);
+    }, options.signal);
+  } finally { if (!admitted) report(); }
 }
 
 function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {

@@ -21,7 +21,9 @@ export function localProvider(kind: LocalKind, base: string = LOCAL_BASES[kind])
       if (payload.model !== model.id) throw new Error('Local model overrides are not allowed.');
       const size = await contexts.require(model.id, request.signal);
       const requested = payload.max_tokens ?? payload.max_completion_tokens;
-      const output = Math.min(Number.isSafeInteger(requested) && requested > 0 ? requested : 4096, 4096, Math.floor(size / 4));
+      // Pi clamps against the catalog context (pi-ai api/simple-options). Its unknown sentinel yields 1,
+      // not an intentional output limit. Only a measured catalog context can supply a lower allowance.
+      const output = Math.min(model.contextWindow > 1 && Number.isSafeInteger(requested) && requested > 0 ? requested : 4096, 4096, Math.floor(size / 4));
       assertLocalContext(`${kind}/${model.id}`, size, output, JSON.stringify({ messages: payload.messages, tools: payload.tools }));
       delete payload.max_completion_tokens;
       payload.max_tokens = output;
