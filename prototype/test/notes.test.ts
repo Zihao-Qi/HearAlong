@@ -441,6 +441,9 @@ test('other matters: non-project items are recorded with kind, label and checked
     'Put the donated seeds in paper envelopes, not plastic tubs.',
     'Keep the striped waistcoats on rail B until the matinee ends.',
     'Did you hear the thunder last night?',
+    'The matinee crew will rehang the backdrop on Friday.',
+    'Rail C stays free for the evening costumes.',
+    'Label every rail before the dress rehearsal.',
   ]);
   try {
     const snapshot = takeSnapshot(f.store, f.meeting.id, Date.now(), null);

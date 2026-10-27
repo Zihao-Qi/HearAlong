@@ -234,6 +234,7 @@ const MAX_ENTRIES = 100;
 /**
  * Mechanical checks on untrusted model output against the snapshot. Nothing is clipped before it is checked: an
  * oversized item goes to Needs review or is dropped, and every citation it gave counts for the off-topic rule.
+ * Valid non-project ranges covering more than half the meeting's lines (overlaps counted once) are ignored together.
  */
 export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes; dropped: NotesRecord['dropped'] } {
   const byRef = new Map(snapshot.segments.map((s, index) => [s.ref, { ...s, index }]));
@@ -246,6 +247,15 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
     const label = typeof range?.label === 'string' ? range.label.trim().slice(0, 80) : '';
     if (!from || !to || from.index > to.index) { dropped.push({ section: 'otherTalk', text: JSON.stringify(range).slice(0, 200), reason: 'invalid range' }); continue; }
     otherTalk.push({ fromId: from.id, toId: to.id, startMs: from.startMs, endMs: to.endMs, label: label || 'non-project talk', smallTalk: range?.smallTalk === true, from: from.index, to: to.index });
+  }
+  let covered = 0, end = -1;
+  for (const r of [...otherTalk].sort((a, b) => a.from - b.from)) {
+    covered += Math.max(0, r.to - Math.max(end, r.from - 1)); end = Math.max(end, r.to);
+  }
+  if (covered > snapshot.segments.length / 2) {
+    dropped.push({ section: 'otherTalk', text: otherTalk.map(r => `${snapshot.segments[r.from].ref}–${snapshot.segments[r.to].ref}`).join(', ').slice(0, 200),
+      reason: 'marked more than half the meeting as non-project talk; ignored' });
+    otherTalk.length = 0;
   }
   const otherTalkAt = (index: number) => otherTalk.some(r => index >= r.from && index <= r.to);
   const notes: Notes = { suggestedTitle: null, summary: [], decisions: [], actions: [], openQuestions: [], otherMatters: [], needsReview: [],
