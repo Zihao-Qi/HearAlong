@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runPiTask, toolResultOf, type PiTaskError, type PiTaskOptions, type PiTaskResult, type ToolResult } from './pi-task.ts';
+import { inLocalPiJob } from './local-pi-lane.ts';
 import { endGroup, endRecorded, type ProcessRecord } from '../pi-extensions/process-groups.ts';
 import { RATE_LIMIT, clockTime, modelQuotaMessage, modelRateLimit, webRateLimited, type Cooldowns } from './quota.ts';
 
@@ -298,6 +299,8 @@ export class Explorations {
     runPi?: typeof runPiTask;
     /** Whether a run will have web tools; local-only work ignores a web-service cooldown. */
     usesWeb?: (job: ExplorationJob) => boolean;
+    /** Local plans wait for the shared model lane before starting either of their execution limits. */
+    local?: () => boolean;
     /** Told once a job has ended and its record is saved (a deferred automatic attempt may go then). */
     onEnd?: (job: Readonly<ExplorationJob>) => void;
   };
@@ -424,6 +427,23 @@ export class Explorations {
   }
 
   private async run(job: ExplorationJob, work: ExplorationWork, active: Active) {
+    let began = false;
+    const local = this.options.local?.() ?? false;
+    try {
+      return await inLocalPiJob(local, () => {
+        began = true;
+        if (local) job.startedAt = this.options.clock();
+        return this.runOnce(job, work, active);
+      }, active.controller.signal);
+    } catch (error) {
+      if (began) throw error;
+      // A cancelled queued plan still goes through the normal persistence/teardown path, but never runs its work.
+      if (!active.controller.signal.aborted) active.controller.abort('quit');
+      return this.runOnce(job, work, active);
+    }
+  }
+
+  private async runOnce(job: ExplorationJob, work: ExplorationWork, active: Active) {
     const { controller, log } = active;
     const directory = this.options.directory;
     const cwd = join(directory, 'scratch', 'explore', job.meetingId, job.id);
@@ -510,6 +530,7 @@ export class Explorations {
         active.committed = true;
         return value;
       };
+      controller.signal.throwIfAborted();
       const working = work({ job, signal: controller.signal, folder: this.folder(job), cwd, sessionDir, log, pi, wait, commit });
       try { result = await wait(working); }
       catch (error) {

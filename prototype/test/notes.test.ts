@@ -43,7 +43,7 @@ test('citations, quotes, owners and off-topic ranges are checked against the sna
         { text: 'Leave the waistcoats on rail B until the matinee ends.', cites: [S[1]], quote: 'Keep the striped waistcoats on rail B' },
         { text: 'Leave the waistcoats on rail B until the matinee ends.', cites: [S[1]], quote: 'Keep the striped waistcoats on rail B' }, // duplicate
         { text: 'The watering can belongs beside the yellow bench.', cites: [S[2], S[5]], quote: 'The watering can is beside the yellow bench' }, // rests on non-project talk
-        { text: 'Use a real but wrong citation.', cites: [S[3]], quote: 'Keep the striped waistcoats on rail B' }, // quote is not in S3
+        { text: 'Use a real but wrong citation.', cites: [S[6]], quote: 'Keep the striped waistcoats on rail B' }, // quote is outside S6's three-line window
         { text: 'Cite a line that does not exist.', cites: ['S99'], quote: 'x' },
       ],
       actions: [

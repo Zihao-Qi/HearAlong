@@ -50,7 +50,9 @@ try {
       await group.getByRole('radio', { name: 'On this Mac', exact: true }).click();
       await dialog.getByText('No model server found on this Mac', { exact: true }).waitFor();
       assert.equal(await dialog.getByRole('button', { name: 'Save', exact: true }).isDisabled(), true);
-      await dialog.getByRole('button', { name: 'Copy ollama pull qwen3:8b', exact: true }).waitFor();
+      await dialog.getByRole('button', { name: 'Copy ollama pull qwen3.5:4b', exact: true }).waitFor();
+      await dialog.getByText('About 4 GB. LM Studio works too.', { exact: true }).waitFor();
+      await dialog.getByText("In Ollama's settings, set the context length to 32k so a long meeting fits.", { exact: true }).waitFor();
       await shot(page, `${width}-local-not-found`);
       await pi.configure({ table: table(rows) });
       await dialog.getByRole('button', { name: 'Check again', exact: true }).click();

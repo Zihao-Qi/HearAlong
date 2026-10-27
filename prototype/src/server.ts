@@ -428,7 +428,7 @@ export async function startServer(options: {
     const localLiveUnavailable = () => ai.mode() === 'local' && recordingAnywhere() ? 'The local Board and corrections wait until recording stops.' : null;
     // The plans' Pi: the real one with cloud models on (an explicit `heavy: null` turns it off, as for notes), or a test's.
     const planPi = options.plans !== undefined ? options.plans : cloud && options.heavy !== null ? runPiTask : null;
-    const explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => ai.web, onEnd: job => planJobs.ended(job),
+    const explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => ai.web, local: () => ai.mode() === 'local', onEnd: job => planJobs.ended(job),
       recording: () => recordingAnywhere() ? 'the recording to end' : replaying() ? 'the replay to end' : null,
       meetingWork: () => {
         const meetings = appStoreRef.meetings();
@@ -1339,6 +1339,10 @@ export async function startServer(options: {
     let closed: Promise<void> | undefined;
     async function closeOnce() {
       closing = true;
+      // Local scans/corrections waiting behind another job must defer before shutdown waits for their callers.
+      const localRpcClosing = ai.mode() === 'local' ? Promise.all([quick instanceof ModelRpc ? quick.close() : undefined, gate?.close()]) : undefined;
+      localRpcClosing?.catch(() => {}); // Observe now; propagate below after the Board's callers have stopped.
+      if (localRpcClosing) { if (correctionLoop) clearInterval(correctionLoop); clearInterval(boardLoop); }
       keys.seal(); // A key request still arriving is refused; the keys leave the Pi environment once admitted ones have finished.
       const aiClosing = ai.close(); // Abort probes before waiting for HTTP handlers that may be awaiting those probes.
       speechSetup.stopSwitches();
@@ -1369,6 +1373,7 @@ export async function startServer(options: {
       await files.close();
       clearInterval(boardLoop);
       await boards.close();
+      await localRpcClosing;
       await gate?.close();
       await aiClosing;
       await keys.close(); // after the HTTP drain: an admitted key request has finished (a later one was refused)

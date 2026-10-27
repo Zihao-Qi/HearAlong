@@ -17,6 +17,7 @@ export function assertLocalContext(model: string, context: number, output: numbe
     throw new Error(`${model}: the transcript may exceed this model's context window (${context} tokens). Notes were not sent or truncated. Choose a model with a larger context window.`);
   }
 }
+export const localLengthMessage = (model: string) => `${model} ran out of room to write its answer. Try a shorter request or a model with more room for its answer.`;
 export function localFailure(model: string, message: string): string {
   return isLocalModel(model) && /(?:does not|doesn't|cannot|unsupported|not support).*(?:tools|function.call)|(?:tools|function.call).*(?:unsupported|not support)/i.test(message)
     ? `${model} cannot call tools. Choose a tool-capable model for plans and actions. ${message}` : message;

@@ -1,4 +1,4 @@
-// Post-meeting notes: a snapshot of the transcript, three parallel no-tools calls, and code checks on the merged answer.
+// Post-meeting notes: a snapshot of the transcript, three no-tools calls, and code checks on the merged answer.
 // The checks are mechanical (citations exist, quotes occur in the cited lines, off-topic ranges are respected);
 // they do not prove that a note means what the speakers meant, so notes are always presented as drafts.
 import { createHash, randomUUID } from 'node:crypto';
@@ -35,6 +35,8 @@ export type NoteItem = {
   owner?: string | null; ownerQuote?: string; section: Section;
   /** A name the model gave as owner that the code could not confirm; shown as unconfirmed so the task is not read as the listener's. */
   ownerProposed?: string;
+  /** The quote was found on exactly one nearby line, which was added to the citations. */
+  quoteCheck?: 'passed_after_nearby_line';
   /** Other matters only. */
   kind?: (typeof OTHER_KINDS)[number]; label?: (typeof OTHER_LABELS)[number];
   /** Set when the item was moved to Needs review. */
@@ -262,16 +264,26 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       const refs = Array.isArray(item.cites) ? [...new Set(item.cites.filter((c): c is string => typeof c === 'string'))] : [];
       const cited = refs.map(ref => byRef.get(ref)).filter(s => s !== undefined);
       if (!cited.length) { drop('no valid citation'); continue; }
+      const ownerLines = cited.flatMap(s => [s.text, s.originalText]);
+      const q = tokens(quote);
+      let quoteIn = cited.some(s => contains(tokens(s.text), q)) ? 'corrected' as const
+        : cited.some(s => contains(tokens(s.originalText), q)) ? 'original' as const : null;
+      let nearby = false;
+      if (!quoteIn && refs.length < MAX_CITES) {
+        const matches = [...byRef.values()].filter(s => cited.some(c => Math.abs(c.index - s.index) <= 3)
+          && (contains(tokens(s.text), q) || contains(tokens(s.originalText), q)));
+        if (matches.length === 1) {
+          cited.push(matches[0]); nearby = true;
+          quoteIn = contains(tokens(matches[0].text), q) ? 'corrected' : 'original';
+        }
+      }
       // A project item resting on non-project talk is probably mis-sorted: kept, but out of the project sections.
       const nonProject = section !== 'otherMatters' && cited.some(s => otherTalkAt(s.index));
-      const q = tokens(quote);
-      const quoteIn = cited.some(s => contains(tokens(s.text), q)) ? 'corrected' as const
-        : cited.some(s => contains(tokens(s.originalText), q)) ? 'original' as const : null;
       let owner: string | null = null, ownerQuote: string | undefined, ownerProposed: string | undefined;
       if (typeof item.owner === 'string' && item.owner.trim()) {
         const name = item.owner.trim().slice(0, 60);
         const stated = typeof item.ownerQuote === 'string' ? item.ownerQuote.trim().slice(0, 400) : '';
-        const sentence = ownerSentence(cited.flatMap(s => [s.text, s.originalText]), tokens(stated));
+        const sentence = ownerSentence(ownerLines, tokens(stated));
         if (sentence && assignsTo(stated, name) && assignsTo(sentence, name)) { owner = name; ownerQuote = sentence; }
         else {
           ownerProposed = name;
@@ -280,6 +292,7 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       }
       const note: NoteItem = {
         section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote, quoteIn,
+        ...(nearby ? { quoteCheck: 'passed_after_nearby_line' as const } : {}),
         ...(section === 'actions' || section === 'otherMatters' ? { owner, ...(ownerQuote ? { ownerQuote } : {}), ...(ownerProposed ? { ownerProposed } : {}) } : {}),
         ...(section === 'otherMatters' ? {
           kind: OTHER_KINDS.find(k => k === item.kind) ?? 'info', label: OTHER_LABELS.find(l => l === item.label) ?? 'other',

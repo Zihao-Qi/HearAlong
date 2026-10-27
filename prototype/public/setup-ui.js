@@ -443,7 +443,7 @@ export async function aiDialog(ai, changed) {
       if (!items.length) {
         const box = node('div', undefined, 'su-consent'), install = node('p');
         install.append('Install Ollama from ', link('ollama.com', 'https://ollama.com'), ', then download a model in Terminal:');
-        box.append(node('strong', 'No model server found on this Mac'), install, copyCommand(`ollama pull ${data.recommended}`), node('span', 'About 5 GB. LM Studio works too.', 'su-muted'), button('Check again', () => show('local', false, true)));
+        box.append(node('strong', 'No model server found on this Mac'), install, copyCommand(`ollama pull ${data.recommended}`), node('span', 'About 4 GB. LM Studio works too.', 'su-muted'), node('span', "In Ollama's settings, set the context length to 32k so a long meeting fits.", 'su-muted'), button('Check again', () => show('local', false, true)));
         target.append(box); save.disabled = true;
       } else {
         const servers = [...new Set(items.map(m => m.provider === 'ollama' ? 'Ollama' : 'LM Studio'))].join(' · ');

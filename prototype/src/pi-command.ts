@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { toolEnv } from '../pi-extensions/tool-sandbox.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const RECOMMENDED_LOCAL_MODEL = 'qwen3:8b';
+export const RECOMMENDED_LOCAL_MODEL = 'qwen3.5:4b';
 export const LOCAL_MODELS_EXTENSION = join(ROOT, 'pi-extensions', 'local-models.ts');
 export type AiMode = 'local' | 'cloud' | 'off';
 export const isLocalModel = (id: string) => /^(ollama|lmstudio)\/.+/.test(id);
