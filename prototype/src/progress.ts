@@ -2,6 +2,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { notesDiagnosticsRows, type NotesDiagnostics } from './notes-diagnostics.ts';
 
 /** Scan root-array objects in one pass across arbitrary deltas. Non-JSON preambles are
  * discarded; a fence or an invalid root candidate lets a subsequent payload start afresh.
@@ -95,24 +96,33 @@ const queues = new Map<string, Promise<void>>();
 export class DurationHistory {
   private path: string;
   constructor(directory: string) { this.path = join(directory, 'job-durations.json'); }
-  private async load(): Promise<Record<'notes' | 'plans', Duration[]>> {
+  private async load(): Promise<Record<'notes' | 'plans', Duration[]> & { notesParts: NotesDiagnostics[] }> {
     try {
       const raw: unknown = JSON.parse(await readFile(this.path, 'utf8'));
       const data = raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-      return { notes: durations(data.notes), plans: durations(data.plans) };
-    } catch { return { notes: [], plans: [] }; }
+      return { notes: durations(data.notes), plans: durations(data.plans), notesParts: notesDiagnosticsRows(data.notesParts) };
+    } catch { return { notes: [], plans: [], notesParts: [] }; }
   }
   async estimate(kind: 'notes' | 'plans', lines?: number): Promise<number | null> {
     try { return estimate((await this.load())[kind], lines); } catch { return null; }
   }
   async record(kind: 'notes' | 'plans', ms: number, lines?: number) {
     if (!durations([{ ms, lines }]).length) return;
+    await this.update(data => { data[kind] = [...data[kind], { ms, ...(lines === undefined ? {} : { lines }) }].slice(-10); });
+  }
+  /** Separate from successful duration samples: includes failed, cancelled and timed-out jobs. */
+  async recordNotesParts(row: NotesDiagnostics) {
+    const snapshot = notesDiagnosticsRows([row])[0];
+    await this.update(data => { data.notesParts = [...data.notesParts, snapshot].slice(-10); });
+  }
+  private async update(change: (data: Awaited<ReturnType<DurationHistory['load']>>) => void) {
     const pending = (queues.get(this.path) ?? Promise.resolve()).catch(() => {}).then(async () => {
       const data = await this.load();
-      data[kind] = [...data[kind], { ms, ...(lines === undefined ? {} : { lines }) }].slice(-10);
+      change(data);
       await mkdir(dirname(this.path), { recursive: true });
       const tmp = `${this.path}.${randomUUID()}.tmp`;
-      try { await writeFile(tmp, JSON.stringify(data), { mode: 0o600 }); await rename(tmp, this.path); }
+      const saved = { notes: data.notes, plans: data.plans, ...(data.notesParts.length ? { notesParts: data.notesParts } : {}) };
+      try { await writeFile(tmp, JSON.stringify(saved), { mode: 0o600 }); await rename(tmp, this.path); }
       finally { await rm(tmp, { force: true }).catch(() => {}); }
     });
     queues.set(this.path, pending);

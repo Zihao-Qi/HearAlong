@@ -15,6 +15,7 @@ import { ROLE_LABEL, compareSegments, speakerPrefix } from './speakers.ts';
 import { RATE_LIMIT, clockTime, type Cooldowns } from './quota.ts';
 import { DurationHistory, ItemScanner, textDelta, type NotesProgress } from './progress.ts';
 import { notesOutcomes, recordQuoteChecks } from './quote-metrics.ts';
+import { emptyPartDiagnostics, partDiagnosticEvent, type NotesDiagnostics } from './notes-diagnostics.ts';
 
 /** `source` and `speaker` are set only in a labelled (online) meeting; `speaker` is "Me"/"Them", frozen when the snapshot is taken. */
 export type SnapshotSegment = { ref: string; id: string; startMs: number; endMs: number; revision: number; text: string; originalText: string; source?: string; speaker?: string };
@@ -426,14 +427,14 @@ export function partInstructions(full: string, keys: readonly string[]): string 
   const schema = JSON.parse(full.slice(at + 'Answer with JSON only:'.length));
   return full.slice(0, at) + `This call writes only these parts of the notes: ${keys.join(', ')}. Separate calls write the other parts at the same time, so leave them out. Every rule above still applies (non-project talk never goes into the project sections).\n\nAnswer with JSON only:\n` + JSON.stringify(Object.fromEntries(keys.map(k => [k, schema[k]])));
 }
-export type NotesRunner = (input: { instructions: string; inputPath: string; cwd: string; sessionDir: string; signal: AbortSignal; thinking?: 'medium'; onEvent?: (event: any) => void }) =>
+export type NotesRunner = (input: { instructions: string; inputPath: string; cwd: string; sessionDir: string; signal: AbortSignal; thinking?: 'medium'; onEvent?: (event: any) => void; onLocalWait?: (ms: number) => void }) =>
   Promise<{ text: string; model?: string; provider?: string }>;
 /**
  * The production runner for each part: one no-tools Pi call. Only a complete run counts: clean exit, Pi settled and not aborted, a normal
  * stop and a non-empty answer. Any tool event is a failure.
  */
 export function piNotesRunner(model: TaskModel): NotesRunner {
-  return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent }) => {
+  return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent, onLocalWait }) => {
     const id = await taskModel(model);
     if (isLocalModel(id)) {
       const reader = new PiModels({ cwd, mode: 'local' });
@@ -444,7 +445,7 @@ export function piNotesRunner(model: TaskModel): NotesRunner {
         if (tokenCount(listed.context) > 1) assertLocalContext(id, tokenCount(listed.context), tokenCount(listed.maxOut), instructions + await readFile(inputPath, 'utf8'));
       } finally { await reader.close(); }
     }
-    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, onEvent }));
+    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, onEvent, onLocalWait }));
   };
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {
@@ -539,23 +540,32 @@ export class NotesJobs {
       prepared();
       const cwd = join(this.options.directory, 'scratch', 'notes', meetingId);
       const inputPath = join(cwd, `input-${randomUUID()}.md`);
+      const history = new DurationHistory(this.options.directory);
+      const diagnostics: NotesDiagnostics = { jobId: job.id, parts: { project: emptyPartDiagnostics(), tasks: emptyPartDiagnostics(), other: emptyPartDiagnostics() } };
       try {
         await this.writeJob(meetingId, { id: job.id, state: 'running', startedAt });
         await mkdir(cwd, { recursive: true, mode: 0o700 });
         await writeFile(inputPath, input, { mode: 0o600 });
         controller.signal.throwIfAborted();
-        const history = new DurationHistory(this.options.directory);
         progress.estimate = await history.estimate('notes', snapshot.segments.length).catch(() => null);
         let failed = false, firstError: unknown;
+        const partsBegan = performance.now();
         const tasks = Object.entries(NOTES_PARTS).map(async ([name, keys]) => {
           const part = name as keyof typeof NOTES_PARTS;
+          const timing = diagnostics.parts[part], began = performance.now();
           const scanner = new ItemScanner(keys.filter(k => k !== 'otherTalk'), (_section, item) => {
             if (!controller.signal.aborted && !job.ended) { progress.parts[part].count++; if (typeof item.text === 'string') progress.latest = item.text; }
           });
           try {
             const result = await runner({ instructions: partInstructions(instructions, keys), inputPath, cwd,
               sessionDir: join(this.options.directory, 'sessions', meetingId, part), signal: controller.signal, thinking: 'medium',
-              onEvent: event => { if (controller.signal.aborted || job.ended) return; const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); } } });
+              onLocalWait: ms => { if (!job.ended) timing.waitMs = ms; },
+              onEvent: event => {
+                if (job.ended) return;
+                partDiagnosticEvent(timing, event);
+                if (controller.signal.aborted) return;
+                const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); }
+              } });
             controller.signal.throwIfAborted();
             if (job.ended) throw new Error('The notes job has ended.');
             const raw = extractJson(result.text) as Record<string, unknown>;
@@ -566,9 +576,11 @@ export class NotesJobs {
             if (RATE_LIMIT.test(error instanceof Error ? error.message : String(error))) this.options.cooldowns?.hit('model', 'notes');
             if (!failed) { failed = true; firstError = error; }
             controller.abort(); throw error;
-          }
+          } finally { timing.wallMs = performance.now() - began; }
         });
         const settled = await settleParts(tasks, controller.signal, this.options.abortGraceMs ?? 10_000);
+        // A non-cooperating runner may outlive bounded teardown; record wall time through that bound.
+        for (const timing of Object.values(diagnostics.parts)) if (!timing.wallMs) timing.wallMs = performance.now() - partsBegan;
         if (failed) throw firstError;
         controller.signal.throwIfAborted();
         if (!settled) throw new Error('The notes parts did not stop.');
@@ -599,6 +611,7 @@ export class NotesJobs {
         if (job.stopped === 'cancel' || job.committed) await rm(this.jobPath(meetingId), { force: true }).catch(() => {});
         else await this.writeJob(meetingId, { id: job.id, state: job.stopped ? 'interrupted' : 'failed', startedAt, error: message.slice(0, 500) }).catch(() => {});
       } finally {
+        await history.recordNotesParts(diagnostics).catch(error => console.warn('Notes part diagnostics:', error));
         this.last.set(meetingId, { jobId: job.id, outcome: job.committed ? 'already-saved' : job.stopped === 'cancel' ? 'cancelled' : 'not-running' });
         await rm(inputPath, { force: true }).catch(() => {});
         release();
