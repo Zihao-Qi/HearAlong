@@ -6,6 +6,9 @@ import { renameSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { checkCompleted, extractJson, runPiTask, taskModel, type TaskModel, type PiTaskResult } from './pi-task.ts';
+import { isLocalModel } from './pi-command.ts';
+import { PiModels } from './setup/pi-models.ts';
+import { assertLocalContext, tokenCount } from './local-ai.ts';
 import type { MeetingStore } from './store.ts';
 import type { Glossary } from './correction.ts';
 import { ROLE_LABEL, compareSegments, speakerPrefix } from './speakers.ts';
@@ -417,8 +420,19 @@ export type NotesRunner = (input: { instructions: string; inputPath: string; cwd
  * stop and a non-empty answer. Any tool event is a failure.
  */
 export function piNotesRunner(model: TaskModel): NotesRunner {
-  return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent }) =>
-    checkNotesRun(await runPiTask(instructions, { model: await taskModel(model), cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, onEvent }));
+  return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent }) => {
+    const id = await taskModel(model);
+    if (isLocalModel(id)) {
+      const reader = new PiModels({ cwd, mode: 'local' });
+      try {
+        const listed = (await reader.read()).models.find(m => m.id === id);
+        if (!listed) throw new Error(`${id} is not available. Check that its model server is running on this Mac.`);
+        // Unloaded models are measured by the provider after a one-word warm-up, before any meeting prompt is sent.
+        if (tokenCount(listed.context) > 1) assertLocalContext(id, tokenCount(listed.context), tokenCount(listed.maxOut), instructions + await readFile(inputPath, 'utf8'));
+      } finally { await reader.close(); }
+    }
+    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, onEvent }));
+  };
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {
   if (result.toolEvents) throw new Error(`The notes task tried to use tools (${result.tools.map(t => t.name).join(', ') || 'unnamed'}).`);
@@ -483,7 +497,7 @@ export class NotesJobs {
    */
   async start(meetingId: string): Promise<void> {
     const runner = this.options.runner;
-    if (!runner) throw Object.assign(new Error('Cloud models are disabled (MEETING_CLOUD=0).'), { status: 400 });
+    if (!runner) throw Object.assign(new Error('AI models are disabled (MEETING_CLOUD=0).'), { status: 400 });
     if (this.running.has(meetingId)) throw Object.assign(new Error('Notes are already being written for this meeting.'), { status: 409 });
     const cooldown = this.options.cooldowns?.pausedUntil('model');
     if (cooldown) throw Object.assign(new Error(`The model hit its rate limit; notes can be written again from ${clockTime(cooldown)}.`), { status: 429 });

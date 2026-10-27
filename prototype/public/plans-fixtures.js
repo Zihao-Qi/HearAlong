@@ -69,7 +69,7 @@ export function fixturePlansApi(name, ctx = {}, options = {}) {
     for (const [version, doc] of versions) for (const plan of doc.plans) for (const step of plan.steps) step.todo = state(version, plan, step);
   }
   const ready = allowAuto => {
-    if (!page.enabled) throw httpError(400, 'cloud off', 'Planning needs the cloud models, which are off.');
+    if (!page.enabled) throw httpError(400, 'cloud off', 'Planning needs the AI models, which are off.');
     const run = active();
     if (run && !(allowAuto && run.state === 'waiting' && run.kind === 'plan' && run.origin === 'auto')) throw httpError(409, 'busy', 'Plans are being made for this meeting; try again when they are done.');
   };

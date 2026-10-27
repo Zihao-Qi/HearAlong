@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
-import { piCommand, piEnv } from './pi-command.ts';
+import { piCommand, piLaunch, watchPiRun, type AiMode } from './pi-command.ts';
+import { localFailure } from './local-ai.ts';
 import { endRecorded, signalGroup, spawnGated, type ProcessRecord } from '../pi-extensions/process-groups.ts';
 
 export type TaskModel = string | (() => string | Promise<string>);
@@ -32,6 +33,7 @@ export function toolResultOf(event: any, args: unknown): ToolResult {
 }
 export type PiTaskOptions = {
   model: string;
+  aiMode?: AiMode;
   /** Scratch folder for the task; never the user's materials. */
   cwd: string;
   /** Where Pi writes its session log: the provenance record for this task. */
@@ -72,7 +74,7 @@ const stopped = (message: string, reason: 'cancelled' | 'timeout'): PiTaskError 
 export const PI_TASK_LIMITS = { drainMs: 2000, cleanupTries: 3, cleanupRetryMs: 300 };
 
 export function piTaskArgs(prompt: string, options: PiTaskOptions): string[] {
-  return [
+  return piLaunch([
     '--mode', 'json', '--model', options.model, '--no-context-files',
     ...(options.thinking ? ['--thinking', options.thinking] : []),
     ...(options.extensions ?? []).flatMap(path => ['-e', path]),
@@ -80,7 +82,7 @@ export function piTaskArgs(prompt: string, options: PiTaskOptions): string[] {
     ...(options.skills === false && options.tools !== null ? ['--no-skills'] : []),
     ...(options.session ? ['--session', options.session] : options.sessionDir ? ['--session-dir', options.sessionDir] : ['--no-session']),
     '--', ...(options.files ?? []).map(file => `@${file}`), prompt,
-  ];
+  ], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } }).args;
 }
 
 /**
@@ -105,7 +107,11 @@ async function cleanUp(dir: string): Promise<string | undefined> {
 
 /** The heavy lane: one `pi --mode json` process per task, with a wall-clock limit. */
 export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {
-  const args = options.args ?? piTaskArgs(prompt, options);
+  let args: string[];
+  try {
+    const launch = piLaunch(options.args ?? [], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } });
+    args = options.args ? launch.args : piTaskArgs(prompt, options);
+  } catch (error) { return Promise.reject(error); }
   const started = performance.now();
   const limitMs = options.timeoutMs ?? 300_000;
   // Cancelled before it started: never spawn a (cloud-calling) process.
@@ -114,7 +120,7 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
   try { command = piCommand(options.command, { ...process.env, ...options.env }); }
   catch (error) { return Promise.reject(error); }
   const processDir = options.processDir;
-  const env = piEnv({ ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) });
+  const env = piLaunch([], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) } }).env;
   return new Promise((resolve, reject) => {
     let child: ChildProcess | undefined;
     // With a process folder: Pi's own group, known once its record is saved.
@@ -152,14 +158,16 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
       if (startError) return failed(startError);
       if (cancelled) return failed(stopped('Pi task was cancelled.', 'cancelled'));
       if (timedOut) return failed(stopped(`Pi task exceeded ${Math.round(limitMs / 1000)} s.`, 'timeout'));
-      if (code !== 0 && !final) return failed(new Error(`Pi task failed (exit ${code}): ${stderr.trim().slice(-500)}`));
+      if (code !== 0 && !final) return failed(new Error(`Pi task failed (exit ${code}): ${localFailure(options.model, stderr.trim().slice(-500))}`));
       const text = (final?.content ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('');
-      if (final?.stopReason === 'error' && !text) return failed(new Error(`Pi task error: ${final.errorMessage ?? 'unknown'}`));
+      if (final?.stopReason === 'error' && !text) return failed(new Error(`Pi task error: ${localFailure(options.model, final.errorMessage ?? 'unknown')}`));
       resolve({ text, provider: final?.provider, model: final?.model, usage: final?.usage, ms: performance.now() - started,
-        tools: tools.filter(t => t.args !== undefined), aborted: Boolean(settled?.aborted), stopReason: final?.stopReason, errorMessage: final?.errorMessage,
+        tools: tools.filter(t => t.args !== undefined), aborted: Boolean(settled?.aborted), stopReason: final?.stopReason, errorMessage: final?.errorMessage ? localFailure(options.model, final.errorMessage) : undefined,
         exitCode: code, exitSignal, settled: Boolean(settled), toolEvents, toolResults, ...(cleanupError ? { cleanupError } : {}) });
     };
     const attach = (child: ChildProcess) => {
+      const unwatch = watchPiRun(abort);
+      child.once('close', unwatch);
       child.stdout!.setEncoding('utf8');
       child.stdout!.on('data', (part: string) => {
         buffer += part;
@@ -231,6 +239,8 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
       // Stopped while its job saved it: a stop signalled it while it lived; an ended one is never released or signalled again.
       if (!live()) return;
       if (timedOut || cancelled) return stop();
+      try { piLaunch([], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } }); }
+      catch (error) { startError = error as Error; if (live()) signalGroup(group, 'SIGKILL'); return; }
       gated.release();
     })();
   });

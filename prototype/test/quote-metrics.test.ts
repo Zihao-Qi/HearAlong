@@ -371,6 +371,7 @@ test('plans record their checks under the plan model when a run is checked', asy
     await writeFile(join(options.sessionDir!, 'fake.jsonl'), JSON.stringify(result));
     return result;
   };
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['example'], time: 1 } }));
   const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, actions: null, board: null,
     ai: { env: { ...process.env, MEETING_HEAVY_MODEL: 'example/main' } }, notes: async () => ({ text: NOTES, model: 'scripted' }), plans });
   try {

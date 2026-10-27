@@ -12,6 +12,8 @@ import { model, gguf } from './helpers/gguf.ts';
 async function fixture(t: any, setup: SetupOptions = {}, prepare?: (directory: string) => Promise<void>) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'setup-api-')));
   await prepare?.(directory);
+  const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8').catch(() => '{}'));
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['example'], time: 1 }, ...saved }));
   const options = { directory, port: 0, quick: null, heavy: null, drafts: null,
     setup: { worker: { workerScript: new URL('./fixtures/switch-worker.ts', import.meta.url) }, ...setup, scan: { home: join(directory, 'home'), envModelPath: null, hfHome: null, ...setup.scan }, ffmpeg: setup.ffmpeg ?? (async () => ({ found: true, ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' })) } };
   const app = await startServer(options);

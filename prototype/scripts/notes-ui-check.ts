@@ -237,7 +237,7 @@ try {
             assert.match(await page.locator('#plans .plans-idle').innerText(), /3 open questions and 2 actions/);
             assert.equal(await page.locator('#plans .primary').innerText(), 'Plan');
           } else if (state === 'off-cloud') {
-            assert.match(await page.locator('#plans').innerText(), /cloud models, which are off/);
+            assert.match(await page.locator('#plans').innerText(), /AI models, which are off/);
             assert.equal(await page.locator('#plans button').count(), 0);
           } else if (state === 'running') {
             assert.match(await page.locator('#plans .job-progress').innerText(), /Making plans · .*Cancel/s);

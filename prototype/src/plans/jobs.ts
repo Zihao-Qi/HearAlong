@@ -58,6 +58,7 @@ export class PlanJobs {
     python?: () => Promise<void>;
     /** The web tools are installed (pi-web-access). */
     web: () => boolean;
+    webUnavailable?: () => string | null;
     /** Returned memory-file blocks qualify only when they match a recorded app-written export. */
     materialEvidence?: MaterialEligibility;
     /** The meeting's notes are final, not drafts while it is still recorded: automatic planning waits for those. */
@@ -179,7 +180,7 @@ export class PlanJobs {
   }
   /** A run may be asked for: cloud models on, and nothing else waiting or running for the meeting (but an automatic run that waits). */
   private ready(active: ListedJob | null, allowAuto: boolean) {
-    if (!this.options.enabled) throw fail(400, 'cloud off', 'Planning needs the cloud models, which are off.');
+    if (!this.options.enabled) throw fail(400, 'cloud off', 'Planning needs the AI models, which are off.');
     if (active && !(allowAuto && active.state === 'waiting' && active.kind === 'plan' && jobData(active).origin === 'auto')) {
       throw fail(409, 'busy', active.kind === 'explore' ? 'Explore further is running for this meeting; try again when it is done.' : 'Plans are being made for this meeting; try again when they are done.');
     }
@@ -299,7 +300,8 @@ export class PlanJobs {
   // ---------- The run ----------
 
   private async tools(kind: ExplorationKind, ctx: ExplorationContext) {
-    const warnings: string[] = [];
+    const webNotice = this.options.webUnavailable?.();
+    const warnings: string[] = webNotice ? [webNotice] : [];
     let python = true;
     if (this.options.python) {
       try { await ctx.wait(this.options.python()); }
@@ -339,7 +341,8 @@ export class PlanJobs {
           limit: INPUT_LIMIT - Buffer.byteLength(further), memory: project ? { brief: o.memory.brief(project)?.text ?? null, items: o.memory.items(project) } : null })));
         if ('refused' in built) throw new Error(`${built.refused}.`);
         const inputPath = join(ctx.folder, 'input.md');
-        await ctx.wait(writeFile(inputPath, `${built.text}${further}`, { mode: 0o600 }));
+        const webNotice = o.webUnavailable?.();
+        await ctx.wait(writeFile(inputPath, `${built.text}${further}${webNotice ? `\n${webNotice}\n` : ''}`, { mode: 0o600 }));
         const evidence = new EvidenceRecorder(ctx.folder, { cwd: ctx.cwd, locate: materialLocator({ roots: built.refs.roots, view, pdfs }), eligible: o.materialEvidence });
         const tools = await this.tools(kind, ctx);
         const model = typeof o.models === 'function' ? await o.models(kind) : o.models?.[kind];

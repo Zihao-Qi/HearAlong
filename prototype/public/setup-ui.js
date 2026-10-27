@@ -113,19 +113,22 @@ function modal(title, id) {
   head.append(h, close); const body = node('div', undefined, 'su-body'); d.append(head, body);
   const error = node('p', undefined, 'su-error'); error.setAttribute('role', 'alert'); error.hidden = true;
   const showError = e => { error.textContent = prose(e.message); error.hidden = false; };
+  let resolveClosed;
+  const closed = new Promise(resolve => { resolveClosed = resolve; });
   d.addEventListener('close', () => {
     d.remove();
-    if (opener?.isConnected) opener.focus();
+    if (opener?.isConnected && opener.getClientRects().length) opener.focus();
     else if (openerRow && openerContainer) {
       // Polling may have replaced the opener while this modal trapped focus.
       const buttons = [...document.getElementById(openerContainer).querySelectorAll(`[data-setup-row="${openerRow}"] button, [data-setup-row="${openerRow}"] a.su-button`)];
       (buttons.find(b => b.textContent === openerLabel) ?? buttons[0])?.focus();
-    }
+    } else document.getElementById('open-system')?.focus();
+    resolveClosed(d.returnValue);
   });
   d.addEventListener('click', event => { if (event.target === d) d.close(); });
   d.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
-    const focusable = [...d.querySelectorAll('button, input, a[href], [tabindex]')]
+    const focusable = [...d.querySelectorAll('button, input, select, a[href], [tabindex]')]
       .filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
     const first = focusable[0], last = focusable.at(-1);
     if ((event.shiftKey && document.activeElement === first) || (!event.shiftKey && document.activeElement === last)) {
@@ -133,7 +136,7 @@ function modal(title, id) {
     }
   });
   document.body.append(d); d.showModal();
-  return { d, body, error, showError };
+  return { d, body, error, showError, closed };
 }
 
 export async function speechDialog(changed, speech, selected = () => {}) {
@@ -305,12 +308,12 @@ function keySection(d, initial, applied) {
   return section;
 }
 
-export async function aiDialog(ai, changed) {
-  const { d, body, error, showError } = modal('AI models', 'su-ai-title'); body.classList.add('su-ai-body');
+async function cloudAiControls(ai, changed, { d, body, error, showError }) {
+  body.classList.add('su-ai-body');
   body.append(node('span', 'Reading Pi’s models…', 'su-count'), error);
   try {
     // Keys are optional: with AI off (or an older server) the dialog shows only the models.
-    const [first, keyData] = await Promise.all([setupRequest('/api/setup/ai/models?refresh=1'), setupRequest('/api/setup/ai/keys?fresh=1').catch(() => null)]);
+    const [first, keyData] = await Promise.all([setupRequest('/api/setup/ai/models?refresh=1&mode=cloud'), setupRequest('/api/setup/ai/keys?fresh=1').catch(() => null)]);
     let data = first;
     const snapshot = await changed();
     ai = snapshot?.rows.find(row => row.id === 'ai') ?? ai;
@@ -319,32 +322,46 @@ export async function aiDialog(ai, changed) {
     const datalist = node('datalist'); datalist.id = 'su-pi-models';
     const fillList = () => datalist.replaceChildren(...data.models.map(m => { const option = node('option'); option.value = m.id; return option; }));
     fillList();
+    const consentBox = node('div', undefined, 'su-consent'), consentTitle = node('strong'), consentLabel = node('label'), consentText = node('span');
+    const consent = node('input'); consent.type = 'checkbox'; consent.id = 'su-cloud-consent';
+    consentLabel.append(consent, consentText);
+    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board and notes. Lines you select and excerpts of your materials, for Explain and plans. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
+    let consentKey;
     const save = button('Save', async () => {
       save.disabled = true; error.hidden = true;
       try {
-        await setupRequest('/api/setup/ai', 'PUT', { main: fields.main.input.value.trim(), quick: fields.quick.input.value.trim() });
-        d.close(); await changed({ background: true });
+        await setupRequest('/api/setup/ai', 'PUT', { mode: 'cloud', main: fields.main.input.value.trim(), quick: fields.quick.input.value.trim(), consent: consent.checked });
+        await changed({ background: true }); d.close('saved');
       } catch (e) { showError(e); validate(); }
     }, false, true);
     const fields = {};
     const validate = () => {
       let valid = true;
       for (const f of Object.values(fields)) {
-        const value = f.input.value.trim(), bad = data.state === 'ok' && !!value && !known.has(value);
+        const value = f.input.value.trim(), bad = data.state === 'ok' && !known.has(value);
+        f.hint.textContent = value ? 'Pi doesn’t list this model' : 'Choose a model listed by Pi.';
         f.input.setAttribute('aria-invalid', String(bad)); f.hint.hidden = !bad;
         const descriptions = [bad ? f.hint.id : '', f.environment?.id].filter(Boolean);
         if (descriptions.length) f.input.setAttribute('aria-describedby', descriptions.join(' '));
         else f.input.removeAttribute('aria-describedby');
         valid &&= known.has(value);
       }
+      const providers = [...new Set(Object.values(fields).map(f => f.input.value.trim().split('/')[0]).filter(Boolean))].sort();
+      const key = providers.join(', '), stored = ai.cloudConsent;
+      if (consentKey !== key) {
+        consent.checked = !!stored && (stored.legacy ? providers.every(p => stored.providers.includes(p)) : JSON.stringify([...stored.providers].sort()) === JSON.stringify(providers));
+        consentKey = key;
+      }
+      consentTitle.textContent = `What goes to ${key || 'the provider'}`; consentText.textContent = `Send this to ${key || 'the provider'}`;
       // The API makes an environment override authoritative for the pair, not just its individual input.
-      save.disabled = !valid || ['main', 'quick'].some(role => ai[role]?.source === 'env');
+      save.disabled = !valid || !consent.checked || ['main', 'quick'].some(role => ai[role]?.source === 'env');
     };
+    consent.onchange = validate;
     const field = (role, title, use) => {
       const wrap = node('div', undefined, 'su-field'), label = node('label'); label.htmlFor = `su-ai-${role}`;
       label.append(node('strong', title), node('span', ` · ${use}`, 'su-muted'));
       const input = node('input'); input.id = label.htmlFor; input.type = 'text'; input.setAttribute('list', datalist.id);
-      input.autocomplete = 'off'; input.spellcheck = false; input.placeholder = 'Type to search'; input.value = ai[role]?.id ?? '';
+      input.autocomplete = 'off'; input.spellcheck = false; input.placeholder = 'Type to search'; input.value = ai[role]?.source === 'env' ? ai[role].id : data.settings?.[role === 'main' ? 'cloudMainModel' : 'cloudQuickModel'] ?? (ai.mode === 'local' || ai.mode === 'off' ? data.defaults?.[role] ?? '' : ai[role]?.id ?? data.defaults?.[role] ?? '');
       input.readOnly = ai[role]?.source === 'env';
       const hint = node('span', 'Pi doesn’t list this model', 'su-error'); hint.id = `${input.id}-error`;
       fields[role] = { input, hint }; input.oninput = validate;
@@ -368,7 +385,8 @@ export async function aiDialog(ai, changed) {
       const reset = new Set(result.reset ?? []);
       if (result.reset) for (const role of ['main', 'quick']) {
         if (fields[role].input.readOnly || !fields[role].input.value.trim().startsWith(`${provider}/`)) continue;
-        fields[role].input.value = ai[role]?.id ?? ''; reset.add(role);
+        const candidate = ai.mode === 'local' || ai.mode === 'off' ? data.defaults?.[role] : ai[role]?.id;
+        fields[role].input.value = candidate && known.has(candidate) ? candidate : data.defaults?.[role] ?? ''; reset.add(role);
       }
       validate();
       if (reset.size) keys.notify(`${reset.size === 2 ? 'Main and Quick models are' : reset.has('main') ? 'Main model is' : 'Quick model is'} back to the default${reset.size === 2 ? 's' : ''}.`);
@@ -378,17 +396,92 @@ export async function aiDialog(ai, changed) {
     applied.showError = showError;
     const keys = keyData ? keySection(d, keyData.keys, applied) : node('div');
     body.replaceChildren(count, datalist, keys,
-      field('main', 'Main model', 'notes, plans, Explain'), field('quick', 'Quick model', 'the live board'),
-      node('span', 'Tuned on gpt-6.1-sol and gpt-6-luna.', 'su-tuned'), error, footer);
+      field('main', 'Main model', 'notes, plans, Explain'), field('quick', 'Quick model', 'the Board, corrections'),
+      node('span', 'Tuned on gpt-6.1-sol and gpt-6-luna.', 'su-tuned'), consentBox, error, footer);
     validate();
     const detail = ai.detail ?? (data.state === 'off' ? 'AI is off for this start.' : 'Couldn’t read Pi’s models.');
-    if (data.state !== 'ok') showError(new Error(data.state === 'signed-out' && keyData ? detail.replace(/\.$/, ' — or add a key above.') : detail));
+    if (!data.count && ['ok', 'signed-out'].includes(data.state)) showError(new Error('Pi isn’t signed in. Run pi, then /login — or add a key above.'));
+    else if (data.state !== 'ok') showError(new Error(data.state === 'signed-out' && keyData ? detail.replace(/\.$/, ' — or add a key above.') : detail));
   } catch (e) { showError(e); }
 }
 
+export async function aiDialog(ai, changed) {
+  const context = modal('AI', 'su-ai-title'), { d, body } = context;
+  body.classList.add('su-ai-body');
+  let mode = ai.mode ?? 'cloud';
+  const group = node('div', undefined, 'su-ai-modes'); group.setAttribute('role', 'radiogroup'); group.setAttribute('aria-label', 'Where AI runs');
+  const blurb = node('p', undefined, 'su-muted');
+  const modes = [['local', 'On this Mac'], ['cloud', 'Cloud'], ['off', 'Off']];
+  let content;
+  const show = async (next, focus = false, retry = false) => {
+    mode = next;
+    for (const radio of group.children) { const selected = radio.dataset.mode === mode; radio.setAttribute('aria-checked', String(selected)); radio.tabIndex = selected ? 0 : -1; if (focus && selected) radio.focus(); }
+    blurb.textContent = { local: 'Models run on this Mac. Nothing leaves it.', cloud: 'Models run at the provider you choose. Transcript text is sent there.', off: 'Transcription only.' }[mode];
+    content?.remove(); content = node('div', undefined, 'su-ai-body'); body.append(content);
+    const target = content;
+    const error = node('p', undefined, 'su-error'); error.setAttribute('role', 'alert'); error.hidden = true;
+    const showError = e => { error.hidden = false; error.textContent = prose(e.message); };
+    if (mode === 'cloud') { await cloudAiControls(ai, changed, { d, body: target, error, showError }); return; }
+    const save = button('Save', async () => {
+      save.disabled = true;
+      try {
+        await setupRequest('/api/setup/ai', 'PUT', { mode: next, ...(next === 'local' ? { main: target.querySelector('#su-ai-main').value, quick: target.querySelector('#su-ai-quick').value } : {}) });
+        await changed({ background: true }); d.close('saved');
+      } catch (e) { showError(e); save.disabled = false; }
+    }, false, true);
+    const footer = node('div', undefined, 'su-save'); footer.append(save);
+    if (mode === 'off' || ai.forcedOff) {
+      target.append(node('p', ai.forcedOff ? 'Off for this start (MEETING_CLOUD=0).' : 'No AI. Recording, transcription, listening and exports work as usual; notes, the Board, Explain and plans are unavailable.', 'su-ai-grey'), error, footer);
+      save.disabled = !!ai.forcedOff; return;
+    }
+    target.append(node('p', 'Looking on this Mac…', 'su-muted'));
+    try {
+      const data = await setupRequest('/api/setup/ai/models?mode=local&refresh=1');
+      if (!d.open || !target.isConnected) return;
+      const items = data.models;
+      target.replaceChildren();
+      if (!items.length) {
+        const box = node('div', undefined, 'su-consent'), install = node('p');
+        install.append('Install Ollama from ', link('ollama.com', 'https://ollama.com'), ', then download a model in Terminal:');
+        box.append(node('strong', 'No model server found on this Mac'), install, copyCommand(`ollama pull ${data.recommended}`), node('span', 'About 5 GB. LM Studio works too.', 'su-muted'), button('Check again', () => show('local', false, true)));
+        target.append(box); save.disabled = true;
+      } else {
+        const servers = [...new Set(items.map(m => m.provider === 'ollama' ? 'Ollama' : 'LM Studio'))].join(' · ');
+        target.append(node('p', `✓ ${servers} · ${items.length} ${items.length === 1 ? 'model' : 'models'} on this Mac`, 'su-ai-grey'));
+        for (const role of ['main', 'quick']) {
+          const wrap = node('div', undefined, 'su-field'), label = node('label');
+          label.append(node('strong', role === 'main' ? 'Main model' : 'Quick model'), node('span', role === 'main' ? ' · notes, plans, Explain' : ' · the Board, corrections', 'su-muted'));
+          const select = node('select'); select.id = `su-ai-${role}`; label.htmlFor = select.id;
+          for (const item of items) { const option = node('option', item.id); option.value = item.id; select.append(option); }
+          select.value = data.settings?.[role === 'main' ? 'localMainModel' : 'localQuickModel'] ?? items[0].id;
+          if (!select.value) select.value = items[0].id;
+          wrap.append(label, select); target.append(wrap);
+        }
+        target.append(node('p', 'Nothing leaves this Mac. While you record, the live Board and corrections wait until you stop, so the Mac stays free for transcription.', 'su-muted'));
+      }
+      target.append(error, footer);
+      if (retry) (target.querySelector('select') ?? target.querySelector('.su-consent > button'))?.focus();
+    } catch (e) { target.replaceChildren(error); showError(e); }
+  };
+  for (const [id, label] of modes) {
+    const radio = button(label, () => show(id)); radio.dataset.mode = id; radio.setAttribute('role', 'radio');
+    radio.disabled = !!ai.forcedOff;
+    radio.onkeydown = event => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault(); const index = modes.findIndex(m => m[0] === mode);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (['ArrowLeft', 'ArrowUp'].includes(event.key) ? 2 : 1)) % 3;
+      void show(modes[next][0], true);
+    };
+    group.append(radio);
+  }
+  body.append(group, blurb);
+  void show(ai.forcedOff ? 'off' : mode);
+  return await context.closed === 'saved';
+}
+
 export class SetupUI {
-  constructor(container, { details = false, onStatus = () => {}, onError = () => {} } = {}) {
-    this.container = container; this.details = details; this.onStatus = onStatus; this.onError = onError;
+  constructor(container, { details = false, onStatus = () => {}, onError = () => {}, onSaved = () => {} } = {}) {
+    this.container = container; this.details = details; this.onStatus = onStatus; this.onError = onError; this.onSaved = onSaved;
     this.active = false; this.mic = 'prompt'; this.device = ''; this.level = 0; this.generation = 0;
     this.requestSequence = 0; this.failures = 0; this.micVersion = 0; this.pendingActions = new Set(); this.watchBusy = false;
     this.permissionChanged = () => {
@@ -468,7 +561,9 @@ export class SetupUI {
     };
   }
   changeSpeech = () => speechDialog(options => this.refresh(options), this.status.rows.find(row => row.id === 'speech'), name => this.recordChoice(name));
-  changeAi = () => aiDialog(this.status.rows.find(r => r.id === 'ai'), options => this.refresh(options));
+  changeAi = async () => {
+    if (await aiDialog(this.status.rows.find(r => r.id === 'ai'), options => this.refresh(options))) await this.onSaved();
+  };
   speech(r) {
     let kind = 'todo', detail = '', actions = [], extra = [];
     const download = text => button(text, this.action('speech/download', { use: true }), false, true);
@@ -516,17 +611,21 @@ export class SetupUI {
   ai(r) {
     const recheck = () => [button(this.checkingRow === 'ai' ? 'Checking…' : 'Check again', this.action('recheck', undefined, 'ai'))], change = () => [button('Change', this.changeAi, true)];
     const pair = [r.main?.id, r.quick?.id].filter(Boolean).map(id => this.details ? id : short(id)).join(', ');
+    if (r.mode === 'local' || r.mode === 'off') {
+      const warning = r.mode === 'local' && ['missing', 'no-access', 'unreadable', 'not-installed'].includes(r.state);
+      return row('AI', r.forcedOff ? 'Off for this start (MEETING_CLOUD=0).' : r.mode === 'off' ? 'Off · transcription only' : warning && r.detail ? prose(r.detail) : `On this Mac${pair ? ` · ${pair}` : ''}`, warning ? 'warn' : r.state === 'ready' ? 'ok' : 'todo', r.forcedOff ? [] : change());
+    }
     switch (r.state) {
-      case 'ready': return row('AI models', pair, 'ok', change());
-      case 'reading': return row('AI models', 'Reading Pi’s models…', 'busy');
-      case 'checking': return row('AI models', 'Checking access…', 'busy');
-      case 'choose': return row('AI models', 'Pi is signed in. Choose two models.', 'todo', [button('Choose models', this.changeAi)]);
-      case 'missing': return row('AI models', r.detail ? prose(r.detail) : 'A chosen model is no longer available.', 'warn', change());
-      case 'no-access': return row('AI models', `No access · ${prose(r.detail ?? pair)}`, 'warn', change());
-      case 'off': return row('AI models', 'Off for this start (MEETING_CLOUD=0).', 'todo');
-      case 'not-installed': return row('AI models', 'Pi is not installed. Run npm ci.', 'todo', recheck());
-      case 'unreadable': return row('AI models', 'Couldn’t read Pi’s models.', 'warn', recheck());
-      default: return row('AI models', 'Sign in with Pi in Terminal, then type /login — or add an API key with Choose models', 'todo', [...recheck(), button('Choose models', this.changeAi, true)], [copyCommand(r.signInCommand)]);
+      case 'ready': return row('AI', pair, 'ok', change());
+      case 'reading': return row('AI', 'Reading Pi’s models…', 'busy');
+      case 'checking': return row('AI', 'Checking access…', 'busy');
+      case 'choose': return row('AI', 'Pi is signed in. Choose two models.', 'todo', [button('Choose models', this.changeAi)]);
+      case 'missing': return row('AI', r.detail ? prose(r.detail) : 'A chosen model is no longer available.', 'warn', change());
+      case 'no-access': return row('AI', `No access · ${prose(r.detail ?? pair)}`, 'warn', change());
+      case 'off': return row('AI', 'Off for this start (MEETING_CLOUD=0).', 'todo');
+      case 'not-installed': return row('AI', 'Pi is not installed. Run npm ci.', 'todo', recheck());
+      case 'unreadable': return row('AI', 'Couldn’t read Pi’s models.', 'warn', recheck());
+      default: return row('AI', 'Sign in with Pi in Terminal, then type /login — or add an API key with Choose models', 'todo', [...recheck(), button('Choose models', this.changeAi, true)], [copyCommand(r.signInCommand)]);
     }
   }
   async allowMic() {

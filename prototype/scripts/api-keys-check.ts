@@ -23,7 +23,7 @@ const security = await fakeSecurity(owner), providers = await fakeProviders(owne
 Object.assign(pi.env, providers.env);
 Object.assign(process.env, pi.env, security.env);
 const directory = await mkdtemp(join(tmpdir(), 'api-keys-check-'));
-await writeFile(join(directory, 'settings.json'), JSON.stringify({ setupSeen: true }));
+await writeFile(join(directory, 'settings.json'), JSON.stringify({ setupSeen: true, aiMode: 'cloud' }));
 const logs: string[] = [];
 for (const name of ['log', 'warn', 'error'] as const) { const original = console[name]; console[name] = (...args: unknown[]) => { logs.push(args.map(String).join(' ')); original(...args); }; }
 const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, actions: null, board: null,
@@ -149,6 +149,7 @@ try {
     // Choose a Gemini model, then remove the key: the choice goes back to the default and the dialog says so for 5 s.
     await dialog.locator('#su-ai-main').fill('google/gemini-fictional-pro');
     if (width === 1280) await dialog.locator('#su-ai-quick').fill('google/gemini-fictional-flash');
+    await dialog.locator('#su-cloud-consent').check();
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
     await dialog.waitFor({ state: 'detached' });
     assert.equal((await settings()).mainModel, 'google/gemini-fictional-pro');

@@ -51,6 +51,8 @@ const board = async (message: string) => {
 };
 const noModels = process.env.MEETING_TEST_NO_MODELS === '1';
 const setup = await dashboardSetup(directory, noModels);
+const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
+await writeFile(join(directory, 'settings.json'), JSON.stringify({ ...saved, aiMode: 'cloud', cloudConsent: { providers: ['scripted'], time: 1 } }));
 const serve = () => startServer({ directory, port: 0, quick: null, heavy: null, notes, actions, board,
   ...(noModels ? { setup, recognizer: { async transcribe() { return { text: 'The workshop has thirty-six lanterns ready for the evening parade. Please check the repair cafe intake limit for Saturday.',
     backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {} },

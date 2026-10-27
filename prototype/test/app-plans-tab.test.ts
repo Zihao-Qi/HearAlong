@@ -75,7 +75,7 @@ test('Plans no-notes is exactly one calm line; idle is a primary card with real 
   assert.equal(f.host.querySelector('.primary')!.textContent, 'Plan');
   assert.equal(f.host.querySelector('.plans-head'), null);
   f.page.enabled = false; await f.view.refresh();
-  assert.match(words(f.host), /cloud models, which are off/);
+  assert.match(words(f.host), /AI models, which are off/);
   assert.equal(f.host.querySelector('button'), null);
   f.page.notes = null; await f.view.refresh();
   assert.equal(f.host.hidden, false);

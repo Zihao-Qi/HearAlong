@@ -2,7 +2,7 @@ import { execFile, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { piEnv, piKeysVersion, resolvePi, type KeyProvider } from '../pi-command.ts';
+import { piLaunch, piKeysVersion, resolvePi, watchPiRun, type AiMode, type KeyProvider } from '../pi-command.ts';
 
 export type PiModel = { id: string; provider: string; model: string; context: string; maxOut: string; thinking: boolean; images: boolean };
 export type ModelList = { state: 'ok' | 'signed-out' | 'unreadable' | 'not-installed'; models: PiModel[]; count: number; providers: string[] };
@@ -27,11 +27,12 @@ export function hasWebPackage(stdout: string): boolean {
   return /^ {2}npm:pi-web-access(?:@[^\s]+)?(?: \(filtered\))?\r?\n {4}\S[^\r\n]*$/m.test(plain(stdout));
 }
 
-export type PiModelsOptions = { cwd: string; env?: NodeJS.ProcessEnv; root?: string; clock?: () => number; timeoutMs?: number };
+export type PiModelsOptions = { cwd: string; mode?: AiMode; env?: NodeJS.ProcessEnv; root?: string; clock?: () => number; timeoutMs?: number };
 export class PiModels {
   last: ModelList | null = null;
   private readAt = -Infinity;
   private pending?: Promise<ModelList>;
+  private pendingAllowed: () => boolean = () => true;
   /** The saved keys' generation a listing started with: a listing from older keys is never current. */
   private pendingKeys = -1;
   private lastKeys = -1;
@@ -39,44 +40,50 @@ export class PiModels {
   private closed = false;
   readonly options: PiModelsOptions;
   constructor(options: PiModelsOptions) { this.options = options; }
-  private execute(args: string[], omit?: KeyProvider): Promise<{ code: number | null; stdout: string; missing?: boolean; failed: boolean }> {
-    if (this.closed) return Promise.resolve({ code: null, stdout: '', failed: true });
+  private execute(args: string[], omit?: KeyProvider, allowed: () => boolean = () => true): Promise<{ code: number | null; stdout: string; missing?: boolean; failed: boolean }> {
+    if (this.closed || !allowed()) return Promise.resolve({ code: null, stdout: '', failed: true });
     const env = this.options.env ?? process.env;
+    const launch = piLaunch(args, { env, mode: this.options.mode, cwd: this.options.cwd, listing: args.includes('--list-models'), omit });
     const command = resolvePi({ env, root: this.options.root });
     if (!command) return Promise.resolve({ code: null, stdout: '', missing: true, failed: true });
     return new Promise(resolve => {
-      const child = execFile(command, args, { cwd: this.options.cwd, env: piEnv(env, omit), timeout: this.options.timeoutMs ?? 10_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (!allowed()) { resolve({ code: null, stdout: '', failed: true }); return; }
+      const child = execFile(command, launch.args, { cwd: this.options.cwd, env: launch.env, timeout: this.options.timeoutMs ?? 10_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
         const code = !error ? 0 : typeof error.code === 'number' ? error.code : null;
         resolve({ code, stdout, missing: error?.code === 'ENOENT', failed: Boolean(error) });
       });
       this.children.add(child);
-      child.once('close', () => this.children.delete(child));
+      const unwatch = watchPiRun(() => { child.kill('SIGKILL'); });
+      child.once('close', () => { unwatch(); this.children.delete(child); });
     });
   }
   /** Runner-only retry policy. UI reads still never cache a non-ok result. */
   staleForRunner(): boolean {
     return !this.last || this.lastKeys !== piKeysVersion() || (this.options.clock ?? Date.now)() - this.readAt >= (this.last.state === 'ok' ? 5 * 60_000 : 30_000);
   }
-  read(refresh = false): Promise<ModelList> {
+  read(refresh = false, allowed: () => boolean = () => true): Promise<ModelList> {
+    if (!allowed()) return Promise.resolve(empty('unreadable'));
     const keys = piKeysVersion();
     if (this.pending) {
       // A forced refresh after a key change waits for the older listing, then lists again with the current keys.
-      if (refresh && this.pendingKeys !== keys) return this.pending.catch(() => {}).then(() => this.read(true));
+      if ((refresh && this.pendingKeys !== keys) || !this.pendingAllowed()) return this.pending.catch(() => {}).then(() => this.read(true, allowed));
       return this.pending;
     }
     if (this.closed) return Promise.resolve(this.last ?? empty('unreadable'));
     const clock = this.options.clock ?? Date.now;
     if (!refresh && this.last?.state === 'ok' && this.lastKeys === keys && clock() - this.readAt < 5 * 60_000) return Promise.resolve(this.last);
     this.pendingKeys = keys;
-    this.pending = this.execute(['--no-context-files', '--list-models']).then(result => {
+    this.pendingAllowed = allowed;
+    this.pending = this.execute(['--no-context-files', '--list-models'], undefined, allowed).then(result => {
+      if (!allowed()) return empty('unreadable');
       this.last = result.missing ? empty('not-installed') : result.failed ? empty('unreadable') : parseModels(result.stdout);
       this.readAt = clock(); this.lastKeys = keys;
       return this.last;
     }).finally(() => { this.pending = undefined; });
     return this.pending;
   }
-  async auth(id: string): Promise<Readiness> {
-    const result = await this.execute(['auth', 'check', '--model', id, '--json', '--no-refresh']);
+  async auth(id: string, allowed: () => boolean = () => true): Promise<Readiness> {
+    const result = await this.execute(['auth', 'check', '--model', id, '--json', '--no-refresh'], undefined, allowed);
     try {
       const value = JSON.parse(result.stdout);
       if (result.code === 0 && value?.status === 'ready') return { state: 'ready' };
@@ -97,8 +104,8 @@ export class PiModels {
     } catch { /* Unknown output, timeout and spawn errors decide nothing. */ }
     return 'unknown';
   }
-  async web(): Promise<boolean> {
-    const result = await this.execute(['list']);
+  async web(allowed: () => boolean = () => true): Promise<boolean> {
+    const result = await this.execute(['list'], undefined, allowed);
     if (result.failed || !hasWebPackage(result.stdout)) return false;
     const env = this.options.env ?? process.env;
     try {

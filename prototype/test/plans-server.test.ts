@@ -67,6 +67,7 @@ async function setup(meetings = 1, aiEnv: NodeJS.ProcessEnv = { ...process.env, 
     }
     store.close();
   }
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['example'], time: 1 } }));
   const scripts: Script[] = [];
   const calls: { prompt: string; options: PiTaskOptions; input: string }[] = [];
   let notesGate: Promise<unknown> | null = null;

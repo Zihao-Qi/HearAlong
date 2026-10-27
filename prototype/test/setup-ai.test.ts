@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, copyFile, chmod, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { resolvePi } from '../src/pi-command.ts';
+import { LOCAL_MODELS_EXTENSION, resolvePi } from '../src/pi-command.ts';
 import { PiModels, parseModels, hasWebPackage } from '../src/setup/pi-models.ts';
 import { AiSetup, modelChoices, CHOOSE_AI, type AiSettings } from '../src/setup/ai.ts';
 import { ModelRpc } from '../src/pi-rpc.ts';
@@ -38,7 +38,7 @@ test('stderr warnings do not affect a valid model table, and probes have app cwd
   const f = await fakePi(t, { stderr: 'Warning: No models match pattern example/*' });
   assert.equal((await new PiModels({ cwd: f.cwd, env: f.env }).read()).state, 'ok');
   const call = (await f.calls())[0]; assert.equal(call.cwd, f.cwd);
-  assert.deepEqual(call.args, ['--no-context-files', '--list-models']); assert.ok(!call.args.includes('--no-extensions'));
+  assert.deepEqual(call.args, ['-e', LOCAL_MODELS_EXTENSION, '--no-context-files', '--list-models']); assert.ok(!call.args.includes('--no-extensions'));
 });
 
 for (const [label, config, state] of [
@@ -219,7 +219,7 @@ async function serverFixture(t: any, initial: Record<string, unknown> = {}, save
   let app: Awaited<ReturnType<typeof startServer>> | undefined;
   // Hooks run in registration order. Stop background metadata/settings writers before removing their directory.
   t.after(async () => { await app?.close(); await remove(); });
-  const data = join(f.directory, 'data'); await mkdir(data); await writeFile(join(data, 'settings.json'), JSON.stringify(saved));
+  const data = join(f.directory, 'data'); await mkdir(data); await writeFile(join(data, 'settings.json'), JSON.stringify({ aiMode: 'cloud', cloudConsent: { providers: ['example'], time: 1 }, ...saved }));
   app = await startServer({ directory: data, port: 0, recognizer: null, drafts: null, quick: null, heavy: null,
     ai: { env: f.env }, setup: { scan: { home: f.directory, envModelPath: null, hfHome: null }, ffmpeg: async () => ({ found: true }) } });
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];

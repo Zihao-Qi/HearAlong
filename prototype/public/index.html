@@ -60,6 +60,11 @@
     </button>
   </div>
 </header>
+<div id="ai-cloud-notice" class="ai-cloud-notice" role="status" hidden>
+  <span id="ai-cloud-notice-text"></span>
+  <button id="ai-notice-change" type="button" class="button">Change…</button>
+  <button id="ai-notice-keep" type="button" class="button">Keep cloud</button>
+</div>
 <div id="update-bar" class="update-bar" role="status" hidden>
   <span id="update-text"></span>
   <button id="update-later" class="button update-later" type="button">Later</button>
@@ -228,7 +233,7 @@
         <button type="button" data-section="microphone">Microphone</button>
         <button type="button" data-section="mini">Mini window</button>
         <button type="button" data-section="speech">Speech</button>
-        <button type="button" data-section="cloud">Cloud models</button>
+        <button type="button" data-section="cloud">AI</button>
         <button type="button" data-section="activity">Activity</button>
     </nav>
     <div class="settings-content">
@@ -316,8 +321,9 @@
       <button id="retry" class="button" hidden>Retry failed pieces</button>
     </section>
     <section class="settings-section" data-section="cloud" hidden>
-      <h3>Cloud models</h3>
+      <h3>AI</h3>
       <p id="cloud" class="small"></p>
+      <button id="settings-ai-change" type="button" class="button">Change…</button>
       <div id="setup-web" class="setup-ui small" hidden></div>
       <label class="stack small" for="board-model">Live board model
         <select id="board-model">

@@ -106,9 +106,9 @@ test('FIX1.4 HTTP shutdown aborts a slow foreground models handler before the re
   // Do not let the HTTP client's idle keep-alive timeout dominate the probe shutdown measurement.
   const get = (path: string) => fetch(app.url + path, { headers: { Cookie: cookie, Connection: 'close' } });
   try {
-    await (await get('/api/setup/ai/models')).json();
+    await (await get('/api/setup/ai/models?mode=cloud')).json();
     await f.configure({ listDelay: 5000 }); const before = (await f.calls()).length;
-    const request = get('/api/setup/ai/models?refresh=1').then(response => response.json());
+    const request = get('/api/setup/ai/models?refresh=1&mode=cloud').then(response => response.json());
     await until(async () => (await f.calls()).slice(before).some(c => c.args.includes('--list-models')));
     const pid = (await f.calls()).slice(before).find(c => c.args.includes('--list-models'))!.pid;
     const at = performance.now(); await app.close();

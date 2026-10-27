@@ -580,6 +580,7 @@ export class ActionJobs {
     memory?: { prepare(meetingId: string): Promise<{ root: Material; pins: MemoryPins } | null>; root(meetingId: string, rootId: string): Material | null };
     /** Whether the web tools are available (checked at startup); actions that need them are refused when false. */
     webAvailable?: () => boolean;
+    webUnavailable?: () => string | null;
     /** Resolves when Compute's Python environment is ready (prepared once; not counted against a job's limits). */
     computeReady?: () => Promise<void>;
     /** The text of PDF materials, for Pi to read and for the quote checks; without it PDFs are not read. */
@@ -661,7 +662,7 @@ export class ActionJobs {
     return this.preparing.has(meetingId) || [...this.jobs.values()].some(j => j.meetingId === meetingId && (j.state === 'queued' || j.state === 'running'));
   }
   private async prepare(meetingId: string, request: SubmitRequest) {
-    if (!this.options.runner) throw fail(400, 'Cloud models are disabled (MEETING_CLOUD=0).');
+    if (!this.options.runner) throw fail(400, 'AI models are disabled (MEETING_CLOUD=0).');
     if (this.closing) throw fail(503, 'The server is closing.');
     const retry = typeof request.retryOf === 'string' ? this.jobs.get(request.retryOf) : undefined;
     if (request.retryOf !== undefined && (!retry || retry.meetingId !== meetingId)) throw fail(404, 'No such action to retry.');
@@ -675,7 +676,7 @@ export class ActionJobs {
     }
     const action = (retry?.action ?? parent?.action ?? request.action) as ActionKind;
     if (!ACTION_KINDS.includes(action)) throw fail(400, 'Unknown action.');
-    if (ACTIONS[action].needsWeb && this.options.webAvailable && !this.options.webAvailable()) throw fail(400, 'Web search is not available: the pi-web-access tools were not found.');
+    if (ACTIONS[action].needsWeb && this.options.webAvailable && !this.options.webAvailable()) throw fail(400, this.options.webUnavailable?.() ?? 'Web search is not available: the pi-web-access tools were not found.');
     const prompt = retry ? retry.prompt : typeof request.prompt === 'string' && request.prompt.trim() ? request.prompt.trim() : null;
     if (prompt && Buffer.byteLength(prompt) > LIMITS.prompt) throw fail(413, `The prompt is too long (limit ${LIMITS.prompt / 1000} KB).`);
     if ((action === 'other' || parent) && !prompt) throw fail(400, parent ? 'Type the follow-up question.' : 'Type what you want done with the selection.');
