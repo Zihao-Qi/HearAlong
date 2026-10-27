@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runSuite } from '../scripts/run-checks.ts';
+import { runSuite, suiteTimeoutMs } from '../scripts/run-checks.ts';
 
 const fixture = fileURLToPath(new URL('./fixtures/check-runner-process.mjs', import.meta.url));
 function alive(pid: number) {
@@ -67,4 +67,15 @@ test('timeout browser cleanup is confined to that suite temp dir, not a neighbou
   assert.equal(alive(browser), false, 'detached test browser survived timeout cleanup');
   assert.equal(alive(neighbour.pid!), true, 'cleanup killed a different suite browser');
   assert.equal(options.running.size, 0);
+});
+
+test('the per-suite timeout is 20 minutes unless MEETING_CHECK_TIMEOUT_S names whole seconds', () => {
+  assert.equal(suiteTimeoutMs({}), 1_200_000);
+  assert.equal(suiteTimeoutMs({ MEETING_CHECK_TIMEOUT_S: '' }), 1_200_000);
+  assert.equal(suiteTimeoutMs({ MEETING_CHECK_TIMEOUT_S: '1' }), 1000);
+  assert.equal(suiteTimeoutMs({ MEETING_CHECK_TIMEOUT_S: '1800' }), 1_800_000);
+  assert.equal(suiteTimeoutMs({ MEETING_CHECK_TIMEOUT_S: '2147483' }), 2_147_483_000);
+  for (const value of ['0', '-5', '1.5', '30m', ' 1800', '1800 ', '1800\n', '01', '1e3', 'Infinity', 'NaN', '2147484', '9007199254740993', '9'.repeat(400)]) {
+    assert.throws(() => suiteTimeoutMs({ MEETING_CHECK_TIMEOUT_S: value }), /whole number of seconds/);
+  }
 });
