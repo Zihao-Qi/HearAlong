@@ -8,8 +8,6 @@
 
 Speech recognition runs entirely on your Mac. You follow the conversation as it happens, select any line to have it explained, and get notes and evidence-backed next-step plans afterwards. The design is calm and focused, made for someone who mostly listens.
 
-> Designed and directed by **Zihao Qi**, and built with a team of AI agents that he orchestrated (see [How it was built](#how-it-was-built)).
-
 ![HearAlong: the transcript beside the meeting's notes](docs/screenshots/notes.png)
 
 *The transcript, with notes linked to the moment each point was said. Every example in this repository is fictional.*
@@ -40,24 +38,24 @@ Speech recognition runs entirely on your Mac. You follow the conversation as it 
 
 How these work, with links to the code: [Architecture](docs/architecture.md).
 
-## How it was built
+## Engineering process
 
-HearAlong was built by one person directing a small team of AI agents, each with a clear role:
+HearAlong is my project. I set its direction and requirements, made the product decisions and approved the major engineering ones, and tested it on real meetings and lectures. The code was written by AI agents, working within a process I set up and kept refining: written contracts, independent reviews and explicit acceptance checks.
 
 | Role | Who | Responsibility |
 |---|---|---|
-| Product owner | **Zihao Qi** | The product, the requirements and every decision; testing on real meetings and lectures |
-| Architect and lead | Claude (Anthropic) | Architecture and design notes, a written contract for each task, acceptance and final quality judgement |
-| Implementer | GPT (OpenAI), via the Pi agent | The code and routine debugging, each task on its own Git branch |
-| Reviewers | GPT and Gemini (Google), fresh sessions | An independent logic review of every change; hands-on UI review in a real browser |
+| Owner and decision-maker | **Zihao Qi** | Product and requirements; product decisions and approval of major engineering ones; the working process and its rules; testing on real meetings and lectures |
+| Architect and lead | Claude (Anthropic) | Architecture proposals, design notes, a written contract for each task, acceptance review |
+| Implementer | GPT (OpenAI), via the Pi agent | Code and routine debugging, each task on its own Git branch |
+| Reviewers | GPT and Gemini (Google), fresh sessions | Independent logic review of substantial changes; hands-on UI review in a real browser |
 
-**Every change follows the same loop:**
+**Each substantial change follows the same loop:**
 1. A design note, then a contract: what to build, the edge cases, the evidence required, and when to stop and ask.
 2. Implementation on its own branch.
-3. Two independent reviews, followed by bounded fixes.
+3. Independent review, followed by bounded fixes.
 4. Acceptance: the risky code is read line by line, not just the reports, and then the full checks run.
 
-**An example of the process at work:** an automated clean-up once rewrote a browser security header (`frame-ancestors` → `frame-channels`) together with its test. Every test still passed. The change was caught at acceptance, by reading the diff.
+**Review catches what tests miss.** An automated clean-up once rewrote a browser security header (`frame-ancestors` → `frame-channels`) together with its test, and every test still passed. It was caught at acceptance, by reading the diff.
 
 ## Getting started
 
@@ -96,3 +94,7 @@ TypeScript on Node.js (server), plain JavaScript (UI), SQLite, Swift (macOS help
 ## License
 
 MIT, see [LICENSE](LICENSE). Vendored libraries keep their own licenses: see [prototype/public/vendor/README.md](prototype/public/vendor/README.md) and [THIRD-PARTY-LICENSES/](THIRD-PARTY-LICENSES/).
+
+---
+
+Built by Zihao Qi with AI coding agents; see [Engineering process](#engineering-process).
