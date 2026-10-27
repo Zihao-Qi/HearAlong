@@ -100,8 +100,21 @@ export async function runSuite([name, command]: [string, string[]], options: Sui
   console.log(`${name} exit=${exit}`);
   return exit;
 }
+/** Per-suite limit: MEETING_CHECK_TIMEOUT_S (whole seconds) for a slower machine such as CI; unset keeps 20 minutes. */
+export function suiteTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
+  const value = env.MEETING_CHECK_TIMEOUT_S;
+  if (value === undefined || value === '') return 1_200_000;
+  const seconds = Number(value);
+  // Node clamps overflowing setTimeout delays to 1 ms instead of the requested limit.
+  const maxSeconds = Math.floor(2_147_483_647 / 1000);
+  if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(seconds) || seconds > maxSeconds) {
+    throw new Error(`MEETING_CHECK_TIMEOUT_S must be a whole number of seconds from 1 to ${maxSeconds}, not ${JSON.stringify(value)}.`);
+  }
+  return seconds * 1000;
+}
 async function main() {
   if (process.argv.length !== 3) throw new Error('Usage: scripts/run-checks.sh <new-output-dir> (requires MEETING_TEST_CHROME)');
+  const timeoutMs = suiteTimeoutMs();
   const chrome = testBrowser();
   await access(chrome);
   const out = resolve(process.argv[2]);
@@ -148,7 +161,7 @@ async function main() {
     for (;;) {
       const task = tasks[next++];
       if (!task) return;
-      if (await runSuite(task, { out, env, summary, running }) !== 0) failed = true;
+      if (await runSuite(task, { out, env, summary, running, timeoutMs }) !== 0) failed = true;
     }
   }
   await Promise.all([worker(), worker()]);

@@ -118,22 +118,35 @@ try {
       await page.locator('#listen-speed').click(); assert.equal(await page.locator('audio').evaluate(a => (a as HTMLAudioElement).playbackRate), rate);
       assert.equal(await page.locator('#listen-speed').getAttribute('aria-label'), `Speed ${rate}×. Change speed`);
     }
-    await page.locator('#listen-position').evaluate(n => { (n as HTMLInputElement).value = '12'; n.dispatchEvent(new Event('input', { bubbles: true })); });
+    await page.locator('#listen-position').evaluate(n => new Promise<void>(resolve => {
+      document.querySelector('audio')!.addEventListener('seeked', () => resolve(), { once: true });
+      (n as HTMLInputElement).value = '12'; n.dispatchEvent(new Event('input', { bubbles: true }));
+    }));
     await page.waitForFunction(() => document.querySelector('audio')!.currentTime === 12);
     await page.waitForFunction(() => document.querySelector('.para.heard .listen-time')?.textContent === '00:12');
     await shot(page, 'seek-wide');
     // Existing M9a selection guard: seeking must not move selected text.
     await page.locator('#transcript').evaluate(box => { const n = box.querySelector('.para p')!; const r = document.createRange(); r.selectNodeContents(n); getSelection()!.removeAllRanges(); getSelection()!.addRange(r); });
     const selectedTop = await page.locator('#transcript').evaluate(n => n.scrollTop);
-    await page.locator('audio').evaluate(a => { (a as HTMLAudioElement).currentTime = 60; });
-    await page.waitForTimeout(300); assert.equal(await page.locator('#transcript').evaluate(n => n.scrollTop), selectedTop);
-    await page.evaluate(() => getSelection()!.removeAllRanges());
-    await page.locator('#transcript').evaluate(box => { box.scrollTop = 20; });
-    await page.waitForTimeout(50);
-    await page.locator('audio').evaluate(a => { (a as HTMLAudioElement).currentTime = 64; });
-    await page.waitForTimeout(300); assert.equal(await page.locator('#transcript').evaluate(n => n.scrollTop), 20);
+    // Observe completion after the player's own seeked handler, not an arbitrary delay.
+    const seek = (seconds: number) => page.locator('audio').evaluate((a, seconds) => new Promise<void>(resolve => {
+      a.addEventListener('seeked', () => resolve(), { once: true }); (a as HTMLAudioElement).currentTime = seconds;
+    }), seconds);
+    await seek(60);
+    assert.equal(await page.locator('#transcript').evaluate(n => n.scrollTop), selectedTop);
+    // Clearing the selection also renders: finish that before simulating the user's scroll.
+    await page.evaluate(() => new Promise<void>(resolve => {
+      document.addEventListener('selectionchange', () => resolve(), { once: true }); getSelection()!.removeAllRanges();
+    }));
+    // scrollTop changes synchronously, but its scroll event need not arrive within 50 ms on a displayless runner.
+    await page.locator('#transcript').evaluate(box => new Promise<void>(resolve => {
+      box.addEventListener('scroll', () => resolve(), { once: true }); box.scrollTop = 20;
+    }));
+    await seek(64);
+    assert.equal(await page.locator('#transcript').evaluate(n => n.scrollTop), 20);
     assert.equal(await page.locator('audio').evaluate(a => (a as HTMLAudioElement).preservesPitch), true);
-    await page.locator('audio').evaluate(a => { const audio = a as HTMLAudioElement; audio.currentTime = audio.duration - .15; void audio.play(); });
+    await seek(await page.locator('audio').evaluate(a => (a as HTMLAudioElement).duration - .15));
+    await page.locator('audio').evaluate(a => (a as HTMLAudioElement).play());
     await page.waitForFunction(() => document.querySelector('audio')!.ended);
     assert.equal(await page.locator('#listen-toggle').getAttribute('aria-label'), 'Play');
     await page.locator('#listen-toggle').click(); await page.waitForFunction(() => document.querySelector('audio')!.currentTime < 1);
