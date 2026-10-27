@@ -7,7 +7,7 @@
 // no console errors.
 // Usage: node --experimental-strip-types scripts/plans-check.ts [outDir] (PLANS_CHECK_STATES=plans,refused for a focused rerun)
 // The browser is Playwright's own Chromium (MEETING_TEST_CHROME, else the newest headless shell in the Playwright cache).
-import { chromium, type Browser, type Page } from 'playwright-core';
+import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -431,16 +431,35 @@ async function clickEverything(page: Page, t: string, counts: () => { downloads:
     const before = await signature();
     const target = page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).filter({ hasText: next.label.slice(0, 40) }).first();
     // A run that publishes while the walk goes on replaces the rows (their keys name the version): a control gone is skipped.
-    try { await (await target.count() ? target : page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).first()).click({ timeout: 3000 }); }
+    try { await clickSettled(page, await target.count() ? target : page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).first()); }
     catch { if (await page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).count()) silent.push(`${next.label} (could not be clicked)`); continue; }
     clicked++;
-    let changed = false;
+    let changed = await signature() !== before;
     for (let i = 0; i < 15 && !changed; i++) { await page.waitForTimeout(100); changed = await signature() !== before; }
     if (!changed) silent.push(next.label);
     // "Show in the transcript" opens the transcript (compact: its tab); come back to the notes.
     if (!(await page.locator('#plans').isVisible())) await page.locator(await page.locator('#ctab-plans').isVisible() ? '#ctab-plans' : '#tab-plans').click();
   }
   check(`${t}: every control responds (${clicked} clicked)`, silent.length === 0 && guard < 600, guard >= 600 ? 'the walk did not finish' : silent.join(', '));
+}
+
+/** An action's busy flag stays on its original control even when closing the menu detaches it. */
+async function clickSettled(page: Page, target: Locator) {
+  const action = await page.evaluateHandle(() => {
+    const state = { control: null as Element | null };
+    const clicked = (event: Event) => { state.control = (event.target as Element).closest('[data-focus]'); };
+    document.addEventListener('click', clicked, { capture: true, once: true });
+    return { state, clicked };
+  });
+  try {
+    await target.click({ timeout: 3000 });
+    await page.waitForFunction(({ state }) => state.control?.getAttribute('aria-busy') !== 'true', action);
+    // Add replaces its control immediately; its replacement carries the busy flag until the reply.
+    await page.waitForFunction(() => !document.querySelector(':is(#plans, #plans-options-slot) [aria-busy="true"]'));
+  } finally {
+    await action.evaluate(({ clicked }) => document.removeEventListener('click', clicked, true));
+    await action.dispose();
+  }
 }
 
 async function shoot(page: Page, name: string) {

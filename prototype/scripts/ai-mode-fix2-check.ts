@@ -130,8 +130,9 @@ export async function checkFix2(browser: Browser, out: string) {
     }, {}, true);
     await run('5-missing-local-warning', { localMainModel: 'ollama/vanished' }, async (page, _pi, app) => {
       await page.goto(app.url + '/setup'); const row = page.locator('[data-setup-row="ai"]'); await row.getByRole('button', { name: 'Change', exact: true }).waitFor();
+      await row.getByText(/no longer listed/).waitFor();
       assert.match(await row.innerText(), /no longer listed/); assert.equal(await row.locator('.su-icon circle').first().getAttribute('fill'), '#B45309');
-    });
+    }, { listDelay: 1500 });
     await run('6-glossary-ai-wording', {}, async (page, _pi, app) => {
       await page.goto(app.url);
       await until(async () => (await page.locator('#build-glossary-note').textContent())?.includes('models') ?? false, 2000);

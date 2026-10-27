@@ -422,7 +422,8 @@ try {
   const atLatest = await select();
   const whileSelected = await newLines();
   await pip.waitForTimeout(1200);
-  check('following: a selection is kept and does not move while new lines arrive', whileSelected && await mf.evaluate(() => getSelection()!.toString()) === atLatest.text && Math.abs(await rowY(atLatest.key) - atLatest.y) < 0.5 && !(await scrollState()).back);
+  check('following: a selection is kept and does not move while new lines arrive', whileSelected && await mf.evaluate(() => getSelection()!.toString()) === atLatest.text && Math.abs(await rowY(atLatest.key) - atLatest.y) < 0.5 && !(await scrollState()).back,
+    JSON.stringify({ whileSelected, before: atLatest, text: await mf.evaluate(() => getSelection()!.toString()), moved: await rowY(atLatest.key) - atLatest.y, state: await scrollState() }));
   await mf.evaluate(() => getSelection()!.removeAllRanges());
   await mf.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.scrollHeight - s.scrollTop - s.clientHeight < 2; }, null, { timeout: 3000 }).catch(() => {});
   check('following: once the selection is gone, the view is at the newest line again', (await scrollState()).gap < 2);
