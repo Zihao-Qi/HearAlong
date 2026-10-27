@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
-import { piCommand, piLaunch, watchPiRun, type AiMode } from './pi-command.ts';
-import { localFailure } from './local-ai.ts';
+import { isLocalModel, piCommand, piLaunch, watchPiRun, type AiMode } from './pi-command.ts';
+import { localFailure, localLengthMessage } from './local-ai.ts';
+import { inLocalPiLane } from './local-pi-lane.ts';
 import { endRecorded, signalGroup, spawnGated, type ProcessRecord } from '../pi-extensions/process-groups.ts';
 
 export type TaskModel = string | (() => string | Promise<string>);
@@ -107,6 +108,10 @@ async function cleanUp(dir: string): Promise<string | undefined> {
 
 /** The heavy lane: one `pi --mode json` process per task, with a wall-clock limit. */
 export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {
+  return inLocalPiLane(options.model, () => runPiTaskOnce(prompt, options), options.signal);
+}
+
+function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {
   let args: string[];
   try {
     const launch = piLaunch(options.args ?? [], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } });
@@ -160,6 +165,7 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
       if (timedOut) return failed(stopped(`Pi task exceeded ${Math.round(limitMs / 1000)} s.`, 'timeout'));
       if (code !== 0 && !final) return failed(new Error(`Pi task failed (exit ${code}): ${localFailure(options.model, stderr.trim().slice(-500))}`));
       const text = (final?.content ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text).join('');
+      if (final?.stopReason === 'length' && isLocalModel(options.model)) return failed(new Error(localLengthMessage(options.model)));
       if (final?.stopReason === 'error' && !text) return failed(new Error(`Pi task error: ${localFailure(options.model, final.errorMessage ?? 'unknown')}`));
       resolve({ text, provider: final?.provider, model: final?.model, usage: final?.usage, ms: performance.now() - started,
         tools: tools.filter(t => t.args !== undefined), aborted: Boolean(settled?.aborted), stopReason: final?.stopReason, errorMessage: final?.errorMessage ? localFailure(options.model, final.errorMessage) : undefined,
@@ -248,6 +254,8 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
 
 /** A run counts only when complete: clean exit, Pi settled and not aborted, a normal stop and a non-empty answer. */
 export function checkCompleted(result: PiTaskResult, what = 'The task'): PiTaskResult {
+  const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? '';
+  if (result.stopReason === 'length' && isLocalModel(model)) throw new Error(localLengthMessage(model));
   if (result.exitCode !== 0 || result.exitSignal || !result.settled || result.aborted || result.stopReason !== 'stop' || !result.text.trim()) {
     throw new Error(`${what} did not finish normally (exit ${result.exitSignal ?? result.exitCode}, ${result.settled ? 'settled' : 'not settled'}, ${result.stopReason ?? 'no answer'})${result.errorMessage ? `: ${result.errorMessage}` : ''}.`);
   }

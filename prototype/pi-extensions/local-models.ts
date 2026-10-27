@@ -25,6 +25,7 @@ export function localProvider(kind: LocalKind, base: string = LOCAL_BASES[kind])
       assertLocalContext(`${kind}/${model.id}`, size, output, JSON.stringify({ messages: payload.messages, tools: payload.tools }));
       delete payload.max_completion_tokens;
       payload.max_tokens = output;
+      if (kind === 'ollama') payload.reasoning_effort = 'none';
       return localFetch(request.url, { method: request.method, headers: request.headers, body: JSON.stringify(payload), signal: request.signal });
     } catch (error) {
       return new Response(JSON.stringify({ error: { message: (error as Error).message } }), { status: 400, headers: { 'Content-Type': 'application/json' } });

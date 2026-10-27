@@ -1,6 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { AiDeferred } from './ai-deferral.ts';
-import { piCommand, piLaunch, piKeysVersion, watchPiRun, type AiMode } from './pi-command.ts';
+import { isLocalModel, piCommand, piLaunch, piKeysVersion, watchPiRun, type AiMode } from './pi-command.ts';
+import { inLocalPiLane, LocalPiCancelled } from './local-pi-lane.ts';
+import { localLengthMessage } from './local-ai.ts';
 
 export type PiAnswer = {
   text: string; provider?: string; model?: string; usage?: unknown; ms: number; attempts: number;
@@ -39,7 +41,7 @@ export class ModelRpc {
   constructor(model: () => Promise<string>, options: Omit<PiRpcOptions, 'model'>) { this.model = model; this.options = options; }
   async ask(message: string): Promise<PiAnswer> {
     const model = await this.model();
-    if (this.closed) throw new Error('Pi quick lane has stopped.');
+    if (this.closed) throw isLocalModel(model) ? new AiDeferred('The local model lane has stopped.') : new Error('Pi quick lane has stopped.');
     // A changed saved key also needs a new process: Pi reads its environment once, at start.
     if (this.current?.options.model !== model || this.keys !== piKeysVersion()) {
       this.keys = piKeysVersion();
@@ -56,6 +58,7 @@ export class ModelRpc {
   interrupt() { for (const lane of this.lanes) lane.interrupt(); }
   async close() {
     this.closed = true;
+    await Promise.all([...this.lanes].filter(lane => isLocalModel(lane.options.model)).map(lane => lane.close()));
     await this.current?.drain();
     await this.current?.close();
     await Promise.allSettled([...this.retiring]);
@@ -68,6 +71,7 @@ const DIALOGS = new Set(['select', 'confirm', 'input', 'editor']);
 const ACK_MS = 10_000;
 const MAX_BUFFER = 8 * 1024 * 1024;
 const MAX_QUEUED = 20;
+export const PI_RPC_LIMITS = { localTimeoutMs: 600_000 };
 
 /**
  * The quick lane: one warm `pi --mode rpc` process, one request at a time, and a fresh
@@ -84,13 +88,32 @@ export class PiRpc {
   private closing = false;
   private queued = 0;
   private notices = new Set<string>();
+  private localChildren = new Set<Promise<void>>();
+  private waiting?: AbortController;
   constructor(options: PiRpcOptions) { this.options = options; }
 
   /** Serialized: a caller waits for earlier requests instead of interleaving events. */
   ask(message: string, timeoutMs = this.options.timeoutMs ?? 30_000): Promise<PiAnswer> {
+    if (this.closing && isLocalModel(this.options.model)) return Promise.reject(new AiDeferred('The local model lane has stopped.'));
     if (this.queued >= MAX_QUEUED) return Promise.reject(new Error('Pi quick lane is overloaded; request dropped.'));
     this.queued++;
-    const run = this.queue.catch(() => {}).then(() => this.askOnce(message, timeoutMs)).finally(() => { this.queued--; });
+    const run = this.queue.catch(() => {}).then(async () => {
+      if (this.closing && isLocalModel(this.options.model)) throw new AiDeferred('The local model lane has stopped.');
+      const controller = this.waiting = new AbortController();
+      try {
+        return await inLocalPiLane(this.options.model, async () => {
+          // Local cold loading and prefill can exceed the cloud Quick/Board limits. Count only after lane admission.
+          try { return await this.askOnce(message, isLocalModel(this.options.model) ? PI_RPC_LIMITS.localTimeoutMs : timeoutMs); }
+          finally {
+            // Local RPC cannot keep a second model process warm while another job owns the global lane.
+            if (isLocalModel(this.options.model)) { this.restart(); await Promise.all([...this.localChildren]); }
+          }
+        }, controller.signal);
+      } catch (error) {
+        if (controller.signal.aborted || error instanceof LocalPiCancelled) throw new AiDeferred('Local AI work was deferred because its lane was stopped.');
+        throw error;
+      } finally { if (this.waiting === controller) this.waiting = undefined; }
+    }).finally(() => { this.queued--; });
     this.queue = run;
     return run;
   }
@@ -120,6 +143,7 @@ export class PiRpc {
       }
       const text = (final?.content ?? []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('');
       if (final?.usage) usages.push(final.usage);
+      if (final?.stopReason === 'length' && isLocalModel(this.options.model)) throw Object.assign(new Error(localLengthMessage(this.options.model)), { usages, attempts: attempt });
       if (text.trim() || attempt === 2) {
         if (final?.stopReason === 'error' && !text.trim()) throw Object.assign(new Error(`Pi answered with an error: ${final.errorMessage ?? 'unknown'}`), { usages, attempts: attempt });
         return { text, provider: final?.provider, model: final?.model, usage: final?.usage, ms: performance.now() - started, attempts: attempt,
@@ -183,7 +207,11 @@ export class PiRpc {
     const launch = piLaunch(args, { mode: this.options.aiMode, model: this.options.model, cwd: this.options.cwd, env: this.options.env });
     const child = spawn(piCommand(this.options.command, this.options.env), launch.args, { cwd: this.options.cwd, env: launch.env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
-    const unwatch = watchPiRun(() => this.restart());
+    if (isLocalModel(this.options.model)) {
+      const ended = new Promise<void>(resolve => { child.once('close', () => { this.localChildren.delete(ended); resolve(); }); });
+      this.localChildren.add(ended);
+    }
+    const unwatch = watchPiRun(() => { if (isLocalModel(this.options.model)) this.interrupt(); else this.restart(); });
     child.once('close', unwatch);
     this.buffer = '';
     child.stdout!.setEncoding('utf8');
@@ -243,12 +271,18 @@ export class PiRpc {
     child.kill('SIGKILL');
   }
 
-  interrupt() { this.restart(new AiDeferred()); }
+  interrupt() { this.waiting?.abort(); this.restart(new AiDeferred()); }
 
   /** Resolves once every request already admitted has finished (used before retiring this process). */
   drain(): Promise<void> { return this.queue.then(() => {}, () => {}); }
   async close() {
     this.closing = true;
+    if (isLocalModel(this.options.model)) {
+      this.interrupt();
+      await this.drain();
+      await Promise.all([...this.localChildren]);
+      return;
+    }
     const child = this.child;
     if (!child) return;
     await new Promise<void>(resolve => {

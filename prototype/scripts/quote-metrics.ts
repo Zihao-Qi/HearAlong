@@ -32,4 +32,5 @@ else {
   for (const row of table) console.log(row.map((cell, i) => i === row.length - 1 ? cell : i < 2 ? cell.padEnd(width[i]) : cell.padStart(width[i])).join('  '));
   console.log(`\nCounts only, from ${path}. failed: everything not passed, i.e. dropped (board; notes duplicates and items over a limit), sent to Needs review (notes, plans), or shown with a failed check (actions).`);
   console.log('quote/cite: the quote was missing, the wrong length or not found, or its citation was invalid or never read.');
+  for (const row of summary.rows) if (row.reasons.passed_after_nearby_line) console.log(`${row.feature} ${row.model}: passed_after_nearby_line ${row.reasons.passed_after_nearby_line} (counted as passed).`);
 }

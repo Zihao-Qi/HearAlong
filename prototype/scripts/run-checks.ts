@@ -112,9 +112,16 @@ export function suiteTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
   }
   return seconds * 1000;
 }
+/** Shared machines can request a single suite slot without changing the normal two-slot check run. */
+export function suiteConcurrency(env: NodeJS.ProcessEnv = process.env) {
+  const value = env.MEETING_CHECK_CONCURRENCY ?? '2';
+  if (value !== '1' && value !== '2') throw new Error('MEETING_CHECK_CONCURRENCY must be 1 or 2.');
+  return Number(value);
+}
 async function main() {
   if (process.argv.length !== 3) throw new Error('Usage: scripts/run-checks.sh <new-output-dir> (requires MEETING_TEST_CHROME)');
   const timeoutMs = suiteTimeoutMs();
+  const concurrency = suiteConcurrency();
   const chrome = testBrowser();
   await access(chrome);
   const out = resolve(process.argv[2]);
@@ -165,7 +172,7 @@ async function main() {
       if (await runSuite(task, { out, env, summary, running, timeoutMs }) !== 0) failed = true;
     }
   }
-  await Promise.all([worker(), worker()]);
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
   const browsers = await new Promise<string>(resolve => execFile('pgrep', ['-f', '[p]laywright_chromiumdev_profile|[m]eeting-app-profile-'], (_error, stdout) => resolve(stdout.trim())));
   const count = browsers ? browsers.split('\n').length : 0;
   await writeFile(join(out, 'leftover-browsers.txt'), browsers ? browsers + '\n' : '');
