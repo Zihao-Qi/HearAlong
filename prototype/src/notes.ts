@@ -232,8 +232,11 @@ function ownerSentence(lines: string[], quote: string[]): string | null {
 const MAX_CITES = 8;
 const MAX_ENTRIES = 100;
 
-type QuoteLine = SnapshotSegment & { index: number; corrected: string[]; original: string[] };
+type QuoteReading = { tokens: string[]; joined: string };
+type QuoteLine = SnapshotSegment & { index: number; corrected: QuoteReading; original: QuoteReading };
 type QuoteLocation = { lines: QuoteLine[]; quoteIn: 'corrected' | 'original' };
+type QuoteMatch = (run: QuoteLine[]) => QuoteLocation['quoteIn'] | null;
+const unsafeElision = /(?<![\p{L}\p{N}])(?:if|unless|in[^\p{L}\p{N}]+case|provided|assuming|not|never|nobody|neither|nor|without|no)(?![\p{L}\p{N}])|n't(?![\p{L}\p{N}])/u;
 
 function elidedIn(line: string[], pieces: string[][]): boolean {
   const counts = [0];
@@ -248,7 +251,7 @@ function elidedIn(line: string[], pieces: string[][]): boolean {
       let reachable = !part;
       for (let i = earliest; !reachable && i < ends.length && ends[i] <= start; i++) {
         const gap = ` ${line.slice(ends[i], start).join(' ')} `;
-        reachable = !/ (if|unless|in case|provided|assuming|not|never|no longer|nobody|neither|nor|without|no) |n't /.test(gap);
+        reachable = !unsafeElision.test(gap);
       }
       if (reachable) next.push(start + piece.length);
     }
@@ -258,17 +261,45 @@ function elidedIn(line: string[], pieces: string[][]): boolean {
   return ends.length > 0;
 }
 
+function quoteMatcher(pieces: string[][], elided: boolean): QuoteMatch {
+  const first = ` ${pieces[0].join(' ')} `;
+  const matches = (run: QuoteLine[], key: 'corrected' | 'original') => {
+    let joined = run.length === 1 ? run[0][key].joined : ' ';
+    if (run.length > 1) for (const line of run) if (line[key].joined.length > 2) joined += line[key].joined.slice(1);
+    if (!joined.includes(first)) return false;
+    return !elided || elidedIn(run.length === 1 ? run[0][key].tokens : run.flatMap(s => s[key].tokens), pieces);
+  };
+  return run => matches(run, 'corrected') ? 'corrected' : matches(run, 'original') ? 'original' : null;
+}
+
+function citedQuote(cited: QuoteLine[], match: QuoteMatch): QuoteLocation | undefined {
+  let original: QuoteLocation | undefined;
+  for (const line of cited) {
+    const quoteIn = match([line]);
+    if (quoteIn === 'corrected') return { lines: [line], quoteIn };
+    if (quoteIn && !original) original = { lines: [line], quoteIn };
+  }
+  if (original) return original;
+  const ordered = [...cited].sort((a, b) => a.index - b.index);
+  for (let size = 2; size <= 3; size++) for (let start = 0; start <= ordered.length - size; start++) {
+    const run = ordered.slice(start, start + size);
+    if (run.some((s, i) => s.index !== run[0].index + i || s.source !== run[0].source)) continue;
+    const quoteIn = match(run);
+    if (quoteIn) return { lines: run, quoteIn };
+  }
+  return undefined;
+}
+
 /** Minimal locations only: a matching line is not counted again in a larger surrounding run. */
-function quoteLocations(lines: QuoteLine[], pieces: string[][], elided: boolean): QuoteLocation[] {
+function quoteLocations(lines: QuoteLine[], match: QuoteMatch): QuoteLocation[] {
   const found: QuoteLocation[] = [], runs = new Set<string>();
-  const matches = (line: string[]) => elided ? elidedIn(line, pieces) : contains(line, pieces[0]);
   for (let size = 1; size <= 3; size++) for (let start = 0; start <= lines.length - size; start++) {
     const run = lines.slice(start, start + size);
     if (run.some(s => s.source !== run[0].source)) continue;
     let contained = false;
     for (let n = 1; n < size; n++) for (let i = start; i <= start + size - n; i++) if (runs.has(`${i}:${n}`)) contained = true;
     if (contained) continue;
-    const quoteIn = matches(run.flatMap(s => s.corrected)) ? 'corrected' : matches(run.flatMap(s => s.original)) ? 'original' : null;
+    const quoteIn = match(run);
     if (quoteIn) { found.push({ lines: run, quoteIn }); runs.add(`${start}:${size}`); }
   }
   return found;
@@ -278,10 +309,13 @@ function quoteLocations(lines: QuoteLine[], pieces: string[][], elided: boolean)
  * Mechanical checks on untrusted model output: prefer cited lines, then cited consecutive same-source runs of 2–3 lines,
  * else locate a unique minimal run (or uniquely cited overlap) in the snapshot. Safe, ordered elisions are checked separately.
  * Located lines come first, keeping at most MAX_CITES; owners use only the model's valid cites, non-project checks the final cites.
- * Oversized items go to Needs review or are dropped. Non-project ranges covering over half the snapshot are ignored together.
+ * Cited tiers run before snapshot-wide search; each line's tokens and joined reading are computed once per validation.
+ * Items without valid cites need a uniquely locatable quote, else are dropped. Oversized items go to Needs review or are dropped.
+ * Non-project ranges covering over half the snapshot are ignored together.
  */
 export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes; dropped: NotesRecord['dropped'] } {
-  const lines: QuoteLine[] = snapshot.segments.map((s, index) => ({ ...s, index, corrected: tokens(s.text), original: tokens(s.originalText) }));
+  const reading = (text: string): QuoteReading => { const list = tokens(text); return { tokens: list, joined: ` ${list.join(' ')} ` }; };
+  const lines: QuoteLine[] = snapshot.segments.map((s, index) => ({ ...s, index, corrected: reading(s.text), original: reading(s.originalText) }));
   const byRef = new Map(lines.map(s => [s.ref, s]));
   const dropped: NotesRecord['dropped'] = [];
   const source = (raw ?? {}) as Record<string, unknown>;
@@ -325,15 +359,14 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       const pieces = parts.map(tokens), count = words(pieces.flat());
       const usable = count >= 5 && count <= 25 && quote.length <= 400
         && (!elided || (parts.length >= 2 && parts.every((p, i) => p.length >= 10 && words(pieces[i]) >= 2)));
-      const locations = usable ? quoteLocations(lines, pieces, elided) : [];
+      const match = quoteMatcher(pieces, elided);
+      const direct = usable ? citedQuote(modelCited, match) : undefined;
+      const locations = usable && !direct ? quoteLocations(lines, match) : [];
       const own = new Set(modelCited.map(s => s.index));
-      const inCites = locations.filter(m => m.lines.every(s => own.has(s.index)));
-      const direct = inCites.find(m => m.lines.length === 1 && m.quoteIn === 'corrected')
-        ?? inCites.find(m => m.lines.length === 1) ?? inCites[0];
       const overlaps = locations.filter(m => m.lines.some(s => own.has(s.index)));
       const located = !direct ? (locations.length === 1 ? locations[0] : overlaps.length === 1 ? overlaps[0] : undefined) : undefined;
       const matched = direct ?? located, ambiguous = !matched && locations.length > 1;
-      if (!modelCited.length && !matched && !ambiguous) { drop('no valid citation'); continue; }
+      if (!modelCited.length && !matched) { drop('no valid citation'); continue; }
       let quoteCheck: NoteItem['quoteCheck'];
       if (located) cited = [...located.lines, ...modelCited.filter(s => !located.lines.includes(s))].slice(0, MAX_CITES);
       const quoteIn = matched?.quoteIn ?? null;
@@ -352,7 +385,7 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
         }
       }
       const note: NoteItem = {
-        section, text, cites: cited.map(s => s.id), startMs: cited.length ? Math.min(...cited.map(s => s.startMs)) : 0, quote, quoteIn,
+        section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote, quoteIn,
         ...(quoteCheck ? { quoteCheck } : {}),
         ...(section === 'actions' || section === 'otherMatters' ? { owner, ...(ownerQuote ? { ownerQuote } : {}), ...(ownerProposed ? { ownerProposed } : {}) } : {}),
         ...(section === 'otherMatters' ? {

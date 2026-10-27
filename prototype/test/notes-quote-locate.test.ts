@@ -76,7 +76,10 @@ test('corrected and original text never mix within a span; an all-original span 
 test('duplicate locations without a cited occurrence are ambiguous, not duplicated surrounding runs', () => {
   const result = check(snapshot([quote, filler, quote, filler]), ['S4']);
   reviewed(result, 'quote found in several places'); assert.deepEqual(notesOutcomes(result), ['quote_ambiguous']);
-  reviewed(check(snapshot([quote, filler, quote]), []), 'quote found in several places');
+  const uncited = check(snapshot([quote, filler, quote]), []);
+  assert.deepEqual(uncited.notes.needsReview, []);
+  assert.deepEqual(uncited.dropped.map(d => d.reason), ['no valid citation']);
+  assert.deepEqual(notesOutcomes(uncited), ['no_citation']);
 });
 
 test('exactly one overlapping span disambiguates, but two overlapping spans do not', () => {
@@ -107,6 +110,61 @@ test('elisions locate spans and use the same ambiguity and cited-overlap rules',
 for (const gap of ['not', 'if', 'never', 'no longer', "can't", 'unless', 'in case', 'provided', 'assuming', 'nobody', 'neither', 'nor', 'without', 'no']) {
   test(`elision cannot hide ${gap}`, () => reviewed(check(snapshot([`Keep the painted lanterns ${gap} on the wooden rack.`]), ['S1'], elision)));
 }
+
+for (const gap of ['not,really', 'if,necessary', 'not.really', "can't,actually", 'really.not', 'necessary.if', 'in,case', 'no.longer']) {
+  test(`elision cannot hide punctuation-adjacent ${gap}`, () => {
+    const s = snapshot([`Keep the painted lanterns ${gap}`, 'on the wooden rack', filler]);
+    reviewed(check(s, ['S1', 'S2'], elision));
+    reviewed(check(s, ['S3'], elision));
+  });
+}
+
+for (const cites of [[], ['S27-S28'], ['S99']]) test(`ambiguous quotes without valid cites are dropped: ${JSON.stringify(cites)}`, () => {
+  for (const [q, line] of [[quote, quote], [elision, 'Keep the painted lanterns after polishing on the wooden rack']]) {
+    const result = check(snapshot([line, filler, line]), cites, q);
+    assert.deepEqual(result.notes.summary, []); assert.deepEqual(result.notes.needsReview, []);
+    assert.deepEqual(result.dropped.map(d => d.reason), ['no valid citation']);
+    assert.deepEqual(notesOutcomes(result), ['no_citation']);
+  }
+});
+
+test('elision safety uses word boundaries, not negation substrings inside harmless words', () => {
+  kept(check(snapshot(['Keep the painted lanterns noteworthy,gift on the wooden rack']), ['S1'], elision), 'elided');
+});
+
+test('cited single-line, spanning and elided tiers never scan whole-snapshot runs', () => {
+  for (const [texts, cites, q, tier] of [
+    [[quote], ['S1'], quote, undefined],
+    [['Keep the painted lanterns', 'on the rack'], ['S2', 'S1'], quote, 'spans_lines'],
+    [['Keep the painted lanterns after polishing on the wooden rack'], ['S1'], elision, 'elided'],
+  ] as const) {
+    const s = snapshot([...texts, ...Array(30).fill(filler)]), slice = Array.prototype.slice;
+    let scans = 0;
+    try {
+      Array.prototype.slice = function(start?: number, end?: number) {
+        if (this.length === s.segments.length && this[0]?.index === 0) scans++;
+        return slice.call(this, start, end);
+      };
+      kept(check(s, [...cites], q), tier);
+    } finally { Array.prototype.slice = slice; }
+    assert.equal(scans, 0, 'cited tiers must return before the whole-snapshot search');
+  }
+});
+
+test('whole-snapshot fallback joins each line reading once, not again per item or run', () => {
+  const s = snapshot(Array.from({ length: 30 }, (_, i) => `Fictionalmarker lantern workshop number ${i} has painted wooden shelves`));
+  const raw = { summary: Array.from({ length: 10 }, (_, i) => ({ text: `Absent note ${i}.`, cites: ['S1'], quote: 'unseen imaginary zebracorn carries golden globes' })) };
+  const join = Array.prototype.join;
+  let joins = 0;
+  try {
+    Array.prototype.join = function(separator?: string) {
+      if (this[0] === 'fictionalmarker') joins++;
+      return join.call(this, separator);
+    };
+    assert.equal(validateNotes(raw, s).notes.needsReview.length, 10);
+  } finally { Array.prototype.join = join; }
+  assert.equal(joins, s.segments.length * 2, 'one cached token string for each corrected/original line');
+});
 
 test('elided pieces must be ordered, substantial and within 25 skipped words', () => {
   reviewed(check(snapshot(['On the wooden rack after polishing keep the painted lanterns.']), ['S1'], elision));
