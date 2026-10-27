@@ -12,6 +12,9 @@ process.env.HF_HOME = join(home, 'hf');
 process.env.XDG_CACHE_HOME = join(home, '.cache');
 process.env.MEETING_TEST_NO_MODELS = '1';
 for (const name of ['MEETING_MODEL_PATH', 'MEETING_DATA_DIR', 'MEETING_CLOUD', 'PROGRESS_PUBLIC_ROOT', 'MEETING_PROCESS_DIR']) delete process.env[name];
+// A real provider key in the owner's shell never reaches a fixture, and only a test's own fake can stand in for the Keychain.
+for (const name of ['GEMINI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_OAUTH_TOKEN']) delete process.env[name];
+process.env.MEETING_SECURITY = '/usr/bin/false';
 process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
 
 export function piPackages(web = false) {

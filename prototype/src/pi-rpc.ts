@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { piCommand } from './pi-command.ts';
+import { piCommand, piEnv, piKeysVersion } from './pi-command.ts';
 
 export type PiAnswer = {
   text: string; provider?: string; model?: string; usage?: unknown; ms: number; attempts: number;
@@ -26,6 +26,7 @@ export type PiRpcOptions = {
 /** Select at admission, not after earlier requests finish. Retired processes drain accepted work before closing. */
 export class ModelRpc {
   private current?: PiRpc;
+  private keys = piKeysVersion();
   private retiring = new Set<Promise<void>>();
   private closed = false;
   private model: () => Promise<string>;
@@ -34,7 +35,9 @@ export class ModelRpc {
   async ask(message: string): Promise<PiAnswer> {
     const model = await this.model();
     if (this.closed) throw new Error('Pi quick lane has stopped.');
-    if (this.current?.options.model !== model) {
+    // A changed saved key also needs a new process: Pi reads its environment once, at start.
+    if (this.current?.options.model !== model || this.keys !== piKeysVersion()) {
+      this.keys = piKeysVersion();
       const old = this.current;
       this.current = new PiRpc({ ...this.options, model });
       if (old) {
@@ -163,7 +166,7 @@ export class PiRpc {
     if (this.closing) throw new Error('Pi quick lane has stopped.');
     const args = this.options.args ?? ['--mode', 'rpc', '--no-session', '--no-tools', '--no-context-files', '--model', this.options.model, '--thinking', 'low',
       ...(this.options.systemPrompt ? ['--system-prompt', this.options.systemPrompt] : [])];
-    const child = spawn(piCommand(this.options.command), args, { cwd: this.options.cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(piCommand(this.options.command), args, { cwd: this.options.cwd, env: piEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     this.buffer = '';
     child.stdout!.setEncoding('utf8');

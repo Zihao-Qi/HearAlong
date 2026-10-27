@@ -46,3 +46,15 @@ dialog.setup-ui::backdrop{background:rgba(24,33,47,.45)}
 .su-toggle{align-self:flex-start}.su-none{margin:0;padding:16px;font-size:14px;color:#5A6577}
 .su-ai-body{gap:14px}.su-count{font-size:14px;color:#5A6577}.su-field{display:flex;flex-direction:column;gap:6px;font-size:14px}.su-field strong{font-weight:600}.su-muted{color:#5A6577}.su-tuned{font-size:13px;color:#5A6577}.su-error{font-size:13px;color:#9A3412;margin:0;overflow-wrap:anywhere}.su-save{display:flex;justify-content:flex-end}
 #setup-settings .su-info{flex-basis:300px}
+.su-keys{display:flex;flex-direction:column}
+.su-key-line{display:flex;flex-wrap:wrap;align-items:center;column-gap:10px;row-gap:6px;padding:10px 14px;border-radius:10px;background:#F4F6F9}
+.su-key-text{flex:1 1 120px;min-width:0;font-size:14px;color:#3B4657;overflow-wrap:anywhere}
+.su-key-icon,.su-key-icon svg{width:16px;height:16px}
+.su-key-buttons{display:flex;flex-wrap:wrap;gap:6px}
+.setup-ui .su-small{min-height:44px;padding:0 10px;border:1px solid #C9D0DB;border-radius:8px;background:#FFF;color:#18212F;font-size:14px;cursor:pointer}
+.setup-ui .su-key-line .su-link{min-height:44px;padding:0 4px}
+.su-key-form{display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid #DDE2EA;border-radius:10px;font-size:14px}
+.su-key-fields{display:flex;gap:8px}.setup-ui .su-key-fields .su-button{flex:none;min-width:96px;font-size:15px;font-weight:600;white-space:nowrap}
+.su-key-note{font-size:13px;line-height:1.45;color:#5A6577}.su-key-other{font-size:14px;padding:0 14px}
+.setup-ui .su-key-form .su-link{align-self:flex-start;min-height:44px;padding:0 4px}
+.su-keys-list{display:flex;flex-direction:column;gap:8px}.su-key-status:not(:empty){margin-top:8px}

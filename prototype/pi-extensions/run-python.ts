@@ -4,7 +4,7 @@
  *
  * Bounds: scratch folder only, 120 s per run (RUN_PYTHON_MS), at most 6 runs per task (RUN_PYTHON_MAX_RUNS), 20 KB each of stdout and stderr, one thread per
  * math library, and the whole process group is killed on timeout, cancel, the script's end or Pi's exit. `uv` supplies pinned
- * packages; it is not a sandbox.
+ * packages, offline (prepared by the server beforehand); the script runs in tool-sandbox.ts's sandbox without credentials.
  *
  * With a process folder (MEETING_PROCESS_DIR, set by runPiTask's `processDir`), each script's group is recorded there before the
  * script starts and removed after it ends, so the server can end it even when Pi was killed and its exit handler never ran.
@@ -16,6 +16,7 @@ import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PACKAGES, UV_ARGS } from './python-env.ts';
 import { spawnGated, type Gated } from './process-groups.ts';
+import { sandboxed, toolEnv } from './tool-sandbox.ts';
 
 const RUN_MS = Number(process.env.RUN_PYTHON_MS ?? 120_000);
 const MAX_RUNS = Number(process.env.RUN_PYTHON_MAX_RUNS ?? 6); // the plan pass sets fewer (M7b)
@@ -64,18 +65,19 @@ export default function runPython(pi: ExtensionAPI) {
       const script = `run-${runNumber}.py`;
       await writeFile(join(cwd, script), params.code, { mode: 0o600 });
       if (signal?.aborted) throw new Error('Cancelled before running.');
-      const env = { ...process.env, OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MKL_NUM_THREADS: '1', VECLIB_MAXIMUM_THREADS: '1', NUMEXPR_NUM_THREADS: '1' };
+      const env = { ...toolEnv(process.env), OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MKL_NUM_THREADS: '1', VECLIB_MAXIMUM_THREADS: '1', NUMEXPR_NUM_THREADS: '1' };
+      const [command, args] = sandboxed('uv', [...UV_ARGS, '--offline', 'python', script], cwd);
       const stdout = capped(), stderr = capped();
       type Outcome = { code: number | null; signal: string | null; timedOut: boolean; error?: string };
       // Recorded before it starts (when the task has a process folder); a script that cannot be recorded does not run.
       let gated: Gated | null = null;
       let unrecorded: Outcome | null = null;
       if (PROCESS_DIR) {
-        try { gated = await spawnGated('uv', [...UV_ARGS, 'python', script], { dir: PROCESS_DIR, kind: 'python', cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
+        try { gated = await spawnGated(command, args, { dir: PROCESS_DIR, kind: 'python', cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
         catch (error) { unrecorded = { code: null, signal: null, timedOut: false, error: (error as Error).message }; }
       }
       const result = unrecorded ?? await new Promise<Outcome>(resolve => {
-        const child = gated?.child ?? spawn('uv', [...UV_ARGS, 'python', script], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = gated?.child ?? spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let timedOut = false, finished = false;
         let exited: Outcome | null = null;
         let drain: NodeJS.Timeout | undefined;

@@ -136,6 +136,7 @@ async function main() {
     ['pane-head', check('pane-head-check', join(out, 'pane-head'))],
     ['plans', [...node, '--import', './scripts/check-env.ts', 'scripts/plans-check.ts', join(out, 'plans')]],
     ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
+    ['api-keys', check('api-keys-check', join(out, 'api-keys'))],
   ];
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {

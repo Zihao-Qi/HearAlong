@@ -10,7 +10,8 @@ import { downloadDisposition } from './download.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
-import { resolvePi } from './pi-command.ts';
+import { isKeyProvider, resolvePi, type KeyProvider } from './pi-command.ts';
+import { ApiKeys, Keychain } from './setup/api-keys.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { serveMeetingAudio } from './listen.ts';
 import { AudioRetention, isAudioRetention, type AudioRetentionSetting } from './audio-retention.ts';
@@ -94,7 +95,9 @@ export async function startServer(options: {
   directory?: string; port?: number; recognizer?: Recognizer | null;
   /** Bounded discovery and injectable OS/network boundaries for setup tests. */
   setup?: SetupOptions;
-  ai?: Omit<AiSetup['options'], 'cwd' | 'cloud'>;
+  ai?: Omit<AiSetup['options'], 'cwd' | 'cloud' | 'keysReady'>;
+  /** The Keychain and the provider check behind saved API keys (tests give stand-ins; MEETING_SECURITY also replaces the tool). */
+  keys?: { keychain?: Keychain; fetch?: typeof fetch };
   /** Live draft transcription; by default on with the local model, off when a test recognizer is injected. */
   drafts?: LiveDrafts | null;
   /** Cloud model access through Pi; null disables it (MEETING_CLOUD=0 does the same). */
@@ -121,6 +124,7 @@ export async function startServer(options: {
   let drafts: LiveDrafts | null = null;
   let setup: SpeechSetup | undefined;
   let aiSetup: AiSetup | undefined;
+  let apiKeys: ApiKeys | undefined;
   try {
     const publicRoot = options.publicRoot ?? join(options.codeRoot ?? ROOT, 'public');
     const staticFiles: Record<string, [string, string]> = {
@@ -173,8 +177,10 @@ export async function startServer(options: {
     const settingsPath = join(directory, 'settings.json');
     type BoardModel = 'quick' | 'main';
     const isBoardModel = (v: unknown): v is BoardModel => v === 'quick' || v === 'main';
-    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null } = {
-      boardModel: 'quick', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false, mainModel: null, quickModel: null,
+    let settings: { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null;
+      /** Providers with a key in the Keychain, and those whose key a failed change may have altered: names only, never a key. */
+      apiKeys: KeyProvider[]; apiKeysUnconfirmed: KeyProvider[] } = {
+      boardModel: 'quick', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false, mainModel: null, quickModel: null, apiKeys: [], apiKeysUnconfirmed: [],
     };
     try {
       const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
@@ -186,6 +192,7 @@ export async function startServer(options: {
       if (typeof saved.miniOpensItself === 'boolean') settings.miniOpensItself = saved.miniOpensItself;
       if (typeof saved.speechModelPath === 'string' && saved.speechModelPath.trim()) settings.speechModelPath = saved.speechModelPath;
       if (typeof saved.setupSeen === 'boolean') settings.setupSeen = saved.setupSeen;
+      for (const key of ['apiKeys', 'apiKeysUnconfirmed'] as const) if (Array.isArray(saved[key])) settings[key] = [...new Set((saved[key] as unknown[]).filter(isKeyProvider))];
     } catch { /* defaults */ }
     let settingsWrite: Promise<unknown> = Promise.resolve();
     const saveSettings = async (change: Partial<typeof settings>) => {
@@ -256,8 +263,14 @@ export async function startServer(options: {
     const cloud = process.env.MEETING_CLOUD !== '0';
     const scratchRoot = join(directory, 'scratch');
     await mkdir(scratchRoot, { recursive: true, mode: 0o700 });
-    const ai = new AiSetup(() => settings, saveSettings, { ...options.ai, cwd: scratchRoot, cloud });
+    let keysLoaded = Promise.resolve();
+    const ai = new AiSetup(() => settings, saveSettings, { ...options.ai, cwd: scratchRoot, cloud, keysReady: () => keysLoaded });
     aiSetup = ai;
+    // Saved API keys reach every Pi child through its environment (pi-command.ts); with cloud models off nothing is read.
+    const keys = new ApiKeys({ saved: () => settings, persist: change => saveSettings(change), reader: ai.reader,
+      keychain: options.keys?.keychain, fetch: options.keys?.fetch, env: options.ai?.env, log: message => console.warn(message) });
+    apiKeys = keys;
+    if (cloud) keysLoaded = keys.load();
     ai.start(); // Discovery, package detection and auth must never delay startup.
     // Exclude the bundled fallback when deciding whether a bare `pi` works in the user's terminal.
     const signInEnv = options.ai?.env ?? process.env;
@@ -662,6 +675,23 @@ export async function startServer(options: {
         if (req.method === 'GET' && url.pathname === '/api/setup') { send(res, 200, setupStatus()); return; }
         if (req.method === 'GET' && url.pathname === '/api/setup/ai/models') { send(res, 200, await ai.models(url.searchParams.get('refresh') === '1')); return; }
         if (req.method === 'PUT' && url.pathname === '/api/setup/ai') { await ai.use(await json(req)); send(res, 200, setupStatus()); return; }
+        if (url.pathname === '/api/setup/ai/keys' || url.pathname.startsWith('/api/setup/ai/keys/')) {
+          if (!cloud) throw new HttpError(409, 'AI is off for this start.');
+          if (req.method === 'GET' && url.pathname === '/api/setup/ai/keys') { send(res, 200, { keys: await keys.list(url.searchParams.get('fresh') === '1') }); return; }
+          const provider = decodeURIComponent(url.pathname.slice('/api/setup/ai/keys/'.length));
+          if (!isKeyProvider(provider)) throw new HttpError(404, 'Not found.');
+          let reset: string[] = [];
+          if (req.method === 'PUT') {
+            const value = await json(req);
+            await keys.add(provider, value && typeof value === 'object' ? value.key : undefined);
+          } else if (req.method === 'DELETE') {
+            await keys.remove(provider);
+            reset = await ai.resetProvider(provider);
+          } else throw new HttpError(405, 'Use PUT or DELETE.');
+          // The new list goes back at once, so the dialog can offer the new models (or stop offering the removed ones).
+          const models = await ai.models(true);
+          send(res, 200, { keys: await keys.list(), models, reset }); return;
+        }
         if (req.method === 'GET' && url.pathname === '/api/setup/speech-models') { send(res, 200, speechSetup.models()); return; }
         if (req.method === 'POST' && url.pathname.startsWith('/api/setup/')) {
           const action = url.pathname.slice('/api/setup/'.length);
@@ -1275,6 +1305,7 @@ export async function startServer(options: {
     let closed: Promise<void> | undefined;
     async function closeOnce() {
       closing = true;
+      keys.seal(); // A key request still arriving is refused; the keys leave the Pi environment once admitted ones have finished.
       const aiClosing = ai.close(); // Abort probes before waiting for HTTP handlers that may be awaiting those probes.
       speechSetup.stopSwitches();
       await speechSetup.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
@@ -1306,6 +1337,7 @@ export async function startServer(options: {
       await boards.close();
       await gate?.close();
       await aiClosing;
+      await keys.close(); // after the HTTP drain: an admitted key request has finished (a later one was refused)
       stopPython(); // first, so jobs waiting on preparation are released
       await pdfText.close(); // waits for an extraction being stopped
       await actionJobs.close();
@@ -1323,6 +1355,7 @@ export async function startServer(options: {
   } catch (error) {
     setup?.stopSwitches();
     await aiSetup?.close();
+    await apiKeys?.close();
     await setup?.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
     retention?.close();
     clearInterval(retentionLoop);

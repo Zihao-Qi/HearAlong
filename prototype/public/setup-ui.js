@@ -106,6 +106,10 @@ function modal(title, id) {
   d.setAttribute('aria-labelledby', id);
   const head = node('div', undefined, 'su-head'), h = node('h2', title); h.id = id;
   const close = button('Close', () => d.close()); close.classList.add('su-close');
+  // `holding`: work in the dialog must finish before it closes (every close goes through d.close, Escape through cancel).
+  const nativeClose = d.close.bind(d);
+  d.close = value => { if (!d.holding) nativeClose(value); };
+  d.addEventListener('cancel', event => { if (d.holding) event.preventDefault(); });
   head.append(h, close); const body = node('div', undefined, 'su-body'); d.append(head, body);
   const error = node('p', undefined, 'su-error'); error.setAttribute('role', 'alert'); error.hidden = true;
   const showError = e => { error.textContent = prose(e.message); error.hidden = false; };
@@ -200,17 +204,121 @@ export async function speechDialog(changed, speech, selected = () => {}) {
   } catch (e) { showError(e); }
 }
 
+const KEY_PROVIDERS = {
+  google: { name: 'Gemini', company: 'Google', url: 'https://aistudio.google.com/apikey', placeholder: 'AIza…', extra: ' On Google’s free tier, Google may use what you send to improve its products.' },
+  openai: { name: 'OpenAI', company: 'OpenAI', url: 'https://platform.openai.com/api-keys', placeholder: 'sk-…', extra: '' },
+  anthropic: { name: 'Anthropic', company: 'Anthropic', url: 'https://console.anthropic.com/settings/keys', placeholder: 'sk-ant-…', extra: '' },
+};
+const countText = data => `From Pi · ${data.count} ${data.count === 1 ? 'model' : 'models'} from ${data.providers.length} ${data.providers.length === 1 ? 'provider' : 'providers'}`;
+/**
+ * Own API keys, under the model count: one button per provider Pi has no credential for, the inline form, and one line per
+ * saved key (or per provider Pi already signs in to). `applied` takes the server's new model list and any reset roles.
+ */
+function keySection(d, initial, applied) {
+  const section = node('div', undefined, 'su-keys'), list = node('div', undefined, 'su-keys-list');
+  // One steady live region, empty until a notice: its text is set and cleared, so it is announced once and nothing re-renders.
+  const status = node('span', '', 'su-key-note su-key-other su-key-status'); status.setAttribute('role', 'status');
+  section.append(list, status);
+  let keys = initial, editing = null, checking = false, problem = '', noticeTimer;
+  d.addEventListener('close', () => clearTimeout(noticeTimer));
+  // While a key is being checked the dialog stays open (Close, Escape and the backdrop wait), so no key is saved unseen.
+  const hold = value => { checking = value; d.holding = value; const close = d.querySelector('.su-close'); if (close) close.disabled = value; };
+  const small = (text, action) => { const b = node('button', text, 'su-small'); b.type = 'button'; b.onclick = action; return b; };
+  const focusLater = selector => queueMicrotask(() => list.querySelector(selector)?.focus());
+  const request = async (provider, method, value) => {
+    const result = await setupRequest(`/api/setup/ai/keys/${provider}`, method, value);
+    keys = result.keys; await applied(result, provider);
+  };
+  const save = async (provider, input) => {
+    if (checking || !input.value.trim()) return;
+    hold(true); problem = ''; render(); focusLater('#su-key-input');
+    try { await request(provider, 'PUT', { key: input.value }); editing = null; hold(false); render(); applied.focusModels(); }
+    catch (e) { hold(false); problem = prose(e.message); render(); focusLater('#su-key-input'); }
+  };
+  const remove = async provider => {
+    try {
+      await request(provider, 'DELETE');
+      render(); focusLater(`[data-key-add="${provider}"]`);
+      if (!list.querySelector(`[data-key-add="${provider}"]`)) applied.focusModels();
+    } catch (e) { applied.showError(e); }
+  };
+  const form = (provider, typed) => {
+    const p = KEY_PROVIDERS[provider], box = node('div', undefined, 'su-key-form'), label = node('label');
+    label.htmlFor = 'su-key-input'; label.append(node('strong', `${p.name} API key`));
+    const from = node('span', ' · from ', 'su-muted'); from.append(link(p.url.replace(/^https:\/\//, ''), p.url)); label.append(from);
+    const input = node('input'); input.id = 'su-key-input'; input.type = 'password'; input.autocomplete = 'off'; input.spellcheck = false;
+    input.placeholder = p.placeholder; input.readOnly = checking; input.value = typed; // read-only, not disabled, keeps focus while checking
+    const submit = node('button', checking ? 'Checking…' : 'Save key', 'su-button primary'); submit.type = 'button';
+    const enable = () => { submit.disabled = checking || !input.value.trim(); };
+    const alert = node('span', problem, 'su-error'); alert.setAttribute('role', 'alert'); alert.id = 'su-key-error'; alert.hidden = !problem;
+    submit.onclick = () => save(provider, input);
+    input.oninput = () => { if (problem) { problem = ''; alert.hidden = true; input.setAttribute('aria-invalid', 'false'); } enable(); };
+    input.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); void save(provider, input); } };
+    input.setAttribute('aria-invalid', String(Boolean(problem))); if (problem) input.setAttribute('aria-describedby', alert.id);
+    const cancel = button('Cancel', () => { editing = null; problem = ''; render(); focusLater(`[data-key-add="${provider}"]`); }, true);
+    cancel.disabled = checking;
+    const fields = node('div', undefined, 'su-key-fields'); fields.append(input, submit); enable();
+    box.append(label, fields, alert, node('span', `${p.company} bills you per use. The key stays in this Mac’s Keychain.${p.extra}`, 'su-key-note'), cancel);
+    // Escape leaves the form, not the dialog; while checking it does nothing.
+    box.addEventListener('keydown', event => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault(); event.stopPropagation();
+      if (!checking) cancel.click();
+    });
+    return box;
+  };
+  const render = () => {
+    const parts = [], typed = list.querySelector('#su-key-input')?.value ?? '';
+    for (const k of keys) {
+      const p = KEY_PROVIDERS[k.provider];
+      if (k.state === 'saved' || k.state === 'shadowed' || k.state === 'unconfirmed') {
+        const line = node('div', undefined, 'su-key-line'), text = k.state === 'saved'
+          ? `${p.name} · ${k.models} ${k.models === 1 ? 'model' : 'models'} · key ending ${k.last4}`
+          : k.state === 'unconfirmed' ? `${p.name} · this key may have changed; remove it and add it again`
+          : `${p.name} · ${k.by === 'env' ? 'the environment’s key is used' : 'Pi’s own sign-in is used'}, not this key`;
+        const mark = icon(k.state === 'saved' ? 'ok' : k.state === 'unconfirmed' ? 'warn' : 'todo'); mark.classList.add('su-key-icon');
+        const b = button('Remove', () => remove(k.provider), true); b.setAttribute('aria-label', `Remove the ${p.name} key`);
+        line.append(mark, node('span', text, 'su-key-text'), b); parts.push(line);
+      } else if (k.state === 'pi' || k.state === 'env') parts.push(node('span', `${p.name} · ${k.state === 'pi' ? 'signed in through Pi' : 'key set in HearAlong’s environment'}`, 'su-key-note su-key-other'));
+    }
+    const open = keys.filter(k => k.state === 'none');
+    if (open.length && !editing) {
+      const line = node('div', undefined, 'su-key-line'), buttons = node('div', undefined, 'su-key-buttons');
+      for (const k of open) {
+        const b = small(KEY_PROVIDERS[k.provider].name, () => { editing = k.provider; problem = ''; render(); focusLater('#su-key-input'); });
+        const name = KEY_PROVIDERS[k.provider].name;
+        b.dataset.keyAdd = k.provider; b.setAttribute('aria-label', `Add ${/^[AEIOU]/.test(name) ? 'an' : 'a'} ${name} API key`); buttons.append(b);
+      }
+      // With no models at all, a key is the other way in, not "more".
+      line.append(node('span', applied.signedOut() ? 'Or use your own API key:' : 'More models with your own API key:', 'su-key-text'), buttons); parts.push(line);
+    }
+    if (editing) parts.push(form(editing, typed));
+    list.replaceChildren(...parts);
+    list.hidden = !parts.length;
+  };
+  section.notify = text => {
+    clearTimeout(noticeTimer); status.textContent = text;
+    noticeTimer = setTimeout(() => { status.textContent = ''; }, 5000);
+  };
+  section.render = render;
+  render();
+  return section;
+}
+
 export async function aiDialog(ai, changed) {
   const { d, body, error, showError } = modal('AI models', 'su-ai-title'); body.classList.add('su-ai-body');
   body.append(node('span', 'Reading Pi’s models…', 'su-count'), error);
   try {
-    const data = await setupRequest('/api/setup/ai/models?refresh=1');
+    // Keys are optional: with AI off (or an older server) the dialog shows only the models.
+    const [first, keyData] = await Promise.all([setupRequest('/api/setup/ai/models?refresh=1'), setupRequest('/api/setup/ai/keys?fresh=1').catch(() => null)]);
+    let data = first;
     const snapshot = await changed();
     ai = snapshot?.rows.find(row => row.id === 'ai') ?? ai;
     if (!d.open) return;
-    const known = new Set(data.models.map(m => m.id));
+    let known = new Set(data.models.map(m => m.id));
     const datalist = node('datalist'); datalist.id = 'su-pi-models';
-    for (const m of data.models) { const option = node('option'); option.value = m.id; datalist.append(option); }
+    const fillList = () => datalist.replaceChildren(...data.models.map(m => { const option = node('option'); option.value = m.id; return option; }));
+    fillList();
     const save = button('Save', async () => {
       save.disabled = true; error.hidden = true;
       try {
@@ -250,11 +358,31 @@ export async function aiDialog(ai, changed) {
       return wrap;
     };
     const footer = node('div', undefined, 'su-save'); footer.append(save);
-    body.replaceChildren(node('span', `From Pi · ${data.count} ${data.count === 1 ? 'model' : 'models'} from ${data.providers.length} ${data.providers.length === 1 ? 'provider' : 'providers'}`, 'su-count'), datalist,
+    const count = node('span', countText(data), 'su-count');
+    // A saved or removed key changes Pi's list at once; a removed provider's chosen models went back to the defaults.
+    const applied = async (result, provider) => {
+      data = result.models; known = new Set(data.models.map(m => m.id)); fillList(); count.textContent = countText(data);
+      if (data.state === 'ok') error.hidden = true;
+      const status = await changed();
+      ai = status?.rows.find(row => row.id === 'ai') ?? ai;
+      const reset = new Set(result.reset ?? []);
+      if (result.reset) for (const role of ['main', 'quick']) {
+        if (fields[role].input.readOnly || !fields[role].input.value.trim().startsWith(`${provider}/`)) continue;
+        fields[role].input.value = ai[role]?.id ?? ''; reset.add(role);
+      }
+      validate();
+      if (reset.size) keys.notify(`${reset.size === 2 ? 'Main and Quick models are' : reset.has('main') ? 'Main model is' : 'Quick model is'} back to the default${reset.size === 2 ? 's' : ''}.`);
+    };
+    applied.focusModels = () => fields.main.input.focus();
+    applied.signedOut = () => data.count === 0;
+    applied.showError = showError;
+    const keys = keyData ? keySection(d, keyData.keys, applied) : node('div');
+    body.replaceChildren(count, datalist, keys,
       field('main', 'Main model', 'notes, plans, Explain'), field('quick', 'Quick model', 'the live board'),
       node('span', 'Tuned on gpt-6.1-sol and gpt-6-luna.', 'su-tuned'), error, footer);
     validate();
-    if (data.state !== 'ok') showError(new Error(ai.detail ?? (data.state === 'off' ? 'AI is off for this start.' : 'Couldn’t read Pi’s models.')));
+    const detail = ai.detail ?? (data.state === 'off' ? 'AI is off for this start.' : 'Couldn’t read Pi’s models.');
+    if (data.state !== 'ok') showError(new Error(data.state === 'signed-out' && keyData ? detail.replace(/\.$/, ' — or add a key above.') : detail));
   } catch (e) { showError(e); }
 }
 
@@ -398,7 +526,7 @@ export class SetupUI {
       case 'off': return row('AI models', 'Off for this start (MEETING_CLOUD=0).', 'todo');
       case 'not-installed': return row('AI models', 'Pi is not installed. Run npm ci.', 'todo', recheck());
       case 'unreadable': return row('AI models', 'Couldn’t read Pi’s models.', 'warn', recheck());
-      default: return row('AI models', 'Sign in with Pi in Terminal, then type /login', 'todo', recheck(), [copyCommand(r.signInCommand)]);
+      default: return row('AI models', 'Sign in with Pi in Terminal, then type /login — or add an API key with Choose models', 'todo', [...recheck(), button('Choose models', this.changeAi, true)], [copyCommand(r.signInCommand)]);
     }
   }
   async allowMic() {

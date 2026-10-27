@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
-import { piCommand } from './pi-command.ts';
+import { piCommand, piEnv } from './pi-command.ts';
 import { endRecorded, signalGroup, spawnGated, type ProcessRecord } from '../pi-extensions/process-groups.ts';
 
 export type TaskModel = string | (() => string | Promise<string>);
@@ -114,7 +114,7 @@ export function runPiTask(prompt: string, options: PiTaskOptions): Promise<PiTas
   try { command = piCommand(options.command, { ...process.env, ...options.env }); }
   catch (error) { return Promise.reject(error); }
   const processDir = options.processDir;
-  const env = options.env || processDir ? { ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) } : undefined;
+  const env = piEnv({ ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) });
   return new Promise((resolve, reject) => {
     let child: ChildProcess | undefined;
     // With a process folder: Pi's own group, known once its record is saved.
