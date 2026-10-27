@@ -31,7 +31,9 @@ export class AiSetup {
   private closed = false;
   readonly settings: () => AiSettings;
   readonly save: (change: AiSettings) => Promise<void>;
-  readonly options: PiModelsOptions & { cloud: boolean; tiny?: (prompt: string, options: PiTaskOptions) => Promise<PiTaskResult> };
+  readonly options: PiModelsOptions & { cloud: boolean; tiny?: (prompt: string, options: PiTaskOptions) => Promise<PiTaskResult>;
+    /** Saved API keys still being read from the Keychain: Pi's list waits for them, or it would lack their models. */
+    keysReady?: () => Promise<void> };
   constructor(settings: () => AiSettings, save: (change: AiSettings) => Promise<void>, options: AiSetup['options']) {
     this.settings = settings; this.save = save; this.options = options; this.reader = new PiModels(options);
   }
@@ -102,6 +104,7 @@ export class AiSetup {
   start() { if (this.options.cloud) this.background(this.recheck()); }
   async models(refresh = false) {
     if (!this.options.cloud || this.closed) return { state: 'off', models: [], count: 0, providers: [] };
+    await this.options.keysReady?.();
     const save = this.saveCheck, pendingSave = save?.pending;
     const list = await this.reader.read(refresh);
     if (!this.closed && !pendingSave && save === this.saveCheck && this.access?.key !== this.key()) this.background(this.check(false));
@@ -113,6 +116,7 @@ export class AiSetup {
     const version = ++this.version, webVersion = ++this.webVersion;
     const save = this.saveCheck, pendingSave = save?.pending;
     if (!pendingSave) this.access = null;
+    await this.options.keysReady?.();
     const [, web] = await Promise.all([this.reader.read(true), this.reader.web()]);
     if (this.closed) return;
     if (webVersion === this.webVersion) this.web = web;
@@ -169,6 +173,20 @@ export class AiSetup {
     });
     this.mutations = mutation;
     await mutation;
+  }
+  /** A removed provider's chosen models go back to the defaults; returns the roles that changed. */
+  async resetProvider(provider: string): Promise<AiRole[]> {
+    const mutation = this.mutations.catch(() => {}).then(async () => {
+      const settings = this.settings(), reset: AiRole[] = [];
+      for (const role of ['main', 'quick'] as const) {
+        const override = role === 'main' ? this.env.MEETING_HEAVY_MODEL : this.env.MEETING_QUICK_MODEL;
+        if (override === undefined && settings[`${role}Model`]?.startsWith(`${provider}/`)) reset.push(role);
+      }
+      if (reset.length && !this.closed) await this.save({ mainModel: reset.includes('main') ? null : settings.mainModel, quickModel: reset.includes('quick') ? null : settings.quickModel });
+      return reset;
+    });
+    this.mutations = mutation;
+    return mutation;
   }
   async close() {
     this.closed = true; ++this.version; this.saveCheck?.controller.abort();

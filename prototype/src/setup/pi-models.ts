@@ -2,7 +2,7 @@ import { execFile, type ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { resolvePi } from '../pi-command.ts';
+import { piEnv, piKeysVersion, resolvePi, type KeyProvider } from '../pi-command.ts';
 
 export type PiModel = { id: string; provider: string; model: string; context: string; maxOut: string; thinking: boolean; images: boolean };
 export type ModelList = { state: 'ok' | 'signed-out' | 'unreadable' | 'not-installed'; models: PiModel[]; count: number; providers: string[] };
@@ -32,17 +32,20 @@ export class PiModels {
   last: ModelList | null = null;
   private readAt = -Infinity;
   private pending?: Promise<ModelList>;
+  /** The saved keys' generation a listing started with: a listing from older keys is never current. */
+  private pendingKeys = -1;
+  private lastKeys = -1;
   private children = new Set<ChildProcess>();
   private closed = false;
   readonly options: PiModelsOptions;
   constructor(options: PiModelsOptions) { this.options = options; }
-  private execute(args: string[]): Promise<{ code: number | null; stdout: string; missing?: boolean; failed: boolean }> {
+  private execute(args: string[], omit?: KeyProvider): Promise<{ code: number | null; stdout: string; missing?: boolean; failed: boolean }> {
     if (this.closed) return Promise.resolve({ code: null, stdout: '', failed: true });
     const env = this.options.env ?? process.env;
     const command = resolvePi({ env, root: this.options.root });
     if (!command) return Promise.resolve({ code: null, stdout: '', missing: true, failed: true });
     return new Promise(resolve => {
-      const child = execFile(command, args, { cwd: this.options.cwd, env, timeout: this.options.timeoutMs ?? 10_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      const child = execFile(command, args, { cwd: this.options.cwd, env: piEnv(env, omit), timeout: this.options.timeoutMs ?? 10_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
         const code = !error ? 0 : typeof error.code === 'number' ? error.code : null;
         resolve({ code, stdout, missing: error?.code === 'ENOENT', failed: Boolean(error) });
       });
@@ -52,16 +55,22 @@ export class PiModels {
   }
   /** Runner-only retry policy. UI reads still never cache a non-ok result. */
   staleForRunner(): boolean {
-    return !this.last || (this.options.clock ?? Date.now)() - this.readAt >= (this.last.state === 'ok' ? 5 * 60_000 : 30_000);
+    return !this.last || this.lastKeys !== piKeysVersion() || (this.options.clock ?? Date.now)() - this.readAt >= (this.last.state === 'ok' ? 5 * 60_000 : 30_000);
   }
   read(refresh = false): Promise<ModelList> {
-    if (this.pending) return this.pending;
+    const keys = piKeysVersion();
+    if (this.pending) {
+      // A forced refresh after a key change waits for the older listing, then lists again with the current keys.
+      if (refresh && this.pendingKeys !== keys) return this.pending.catch(() => {}).then(() => this.read(true));
+      return this.pending;
+    }
     if (this.closed) return Promise.resolve(this.last ?? empty('unreadable'));
     const clock = this.options.clock ?? Date.now;
-    if (!refresh && this.last?.state === 'ok' && clock() - this.readAt < 5 * 60_000) return Promise.resolve(this.last);
+    if (!refresh && this.last?.state === 'ok' && this.lastKeys === keys && clock() - this.readAt < 5 * 60_000) return Promise.resolve(this.last);
+    this.pendingKeys = keys;
     this.pending = this.execute(['--no-context-files', '--list-models']).then(result => {
       this.last = result.missing ? empty('not-installed') : result.failed ? empty('unreadable') : parseModels(result.stdout);
-      this.readAt = clock();
+      this.readAt = clock(); this.lastKeys = keys;
       return this.last;
     }).finally(() => { this.pending = undefined; });
     return this.pending;
@@ -74,6 +83,19 @@ export class PiModels {
       if ((result.code === 0 || result.code === 1) && value?.status === 'not_ready' && typeof value.reason === 'string' && oneLine(value.reason)) return { state: 'not_ready', detail: oneLine(value.reason) };
     } catch { /* Unknown output, timeout and spawn errors are not proof of access. */ }
     return { state: 'unknown', detail: "Couldn't check Pi's access." };
+  }
+  /**
+   * Whether Pi has a credential for a provider. Without the saved key, ready means Pi's own sign-in (or the environment); with
+   * it, that Pi will use one. Without --credentials the JSON holds only status, provider and authType or reason; only status is read.
+   */
+  async providerAuth(provider: KeyProvider, savedKey: boolean): Promise<'ready' | 'not_ready' | 'unknown'> {
+    const result = await this.execute(['auth', 'check', '--provider', provider, '--json', '--no-refresh'], savedKey ? undefined : provider);
+    try {
+      const status = JSON.parse(result.stdout)?.status;
+      if (status === 'ready' && result.code === 0) return 'ready';
+      if (status === 'not_ready' && result.code === 1) return 'not_ready';
+    } catch { /* Unknown output, timeout and spawn errors decide nothing. */ }
+    return 'unknown';
   }
   async web(): Promise<boolean> {
     const result = await this.execute(['list']);

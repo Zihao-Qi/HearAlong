@@ -365,7 +365,7 @@ async function refreshStatus() {
     renderMeetingMenu();
     const caps = status.capabilities;
     $('cloud').textContent = caps.cloudModels
-      ? `On, through Pi with your subscription. Glossary: ${caps.heavyModel}. Corrections: ${caps.correctionModel}. Transcript text and material excerpts are sent to your chosen model provider; audio stays on this Mac.`
+      ? `On, through Pi. Glossary: ${caps.heavyModel}. Corrections: ${caps.correctionModel}. Transcript text and material excerpts are sent to your chosen model provider; audio stays on this Mac.`
       : 'Off (MEETING_CLOUD=0). Nothing leaves this Mac.';
     renderStatusDot();
   } catch (error) {
