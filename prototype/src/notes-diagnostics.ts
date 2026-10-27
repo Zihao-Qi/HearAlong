@@ -1,6 +1,7 @@
-/** Numeric-only notes telemetry. Unknown/unreported usage stays null, not an invented zero. */
+/** Numeric/boolean-only notes telemetry. Unknown/unreported values stay null, not invented zeros. */
 export type RequestDiagnostics = {
   stopReason: string | null;
+  thinking: boolean | null; allowance: number | null;
   usage: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null };
 };
 export type PartDiagnostics = { wallMs: number; waitMs: number | null; requests: RequestDiagnostics[] };
@@ -9,6 +10,7 @@ const number = (value: unknown): number | null => typeof value === 'number' && N
 const reasons = new Set(['pending', 'stop', 'length', 'toolUse', 'error', 'aborted', 'deferred']);
 const request = (value?: any): RequestDiagnostics => ({
   stopReason: reasons.has(value?.stopReason) ? value.stopReason : null,
+  thinking: typeof value?.thinking === 'boolean' ? value.thinking : null, allowance: number(value?.allowance),
   usage: { input: number(value?.usage?.input), output: number(value?.usage?.output), reasoning: number(value?.usage?.reasoning), cacheRead: number(value?.usage?.cacheRead) },
 });
 export const emptyPartDiagnostics = (): PartDiagnostics => ({ wallMs: 0, waitMs: null, requests: [] });
@@ -19,6 +21,10 @@ export function partDiagnosticEvent(part: PartDiagnostics, event: any) {
   if (!part.requests.length || part.requests.at(-1)!.stopReason !== null) part.requests.push(request());
   // Streaming usage can survive a timeout; a final event replaces it with Pi's settled usage.
   const current = part.requests.at(-1)!;
+  if (event.message.localRequest) {
+    const measured = request(event.message.localRequest);
+    current.thinking = measured.thinking; current.allowance = measured.allowance;
+  }
   if (event.message.usage) current.usage = request(event.message).usage;
   if (event.type === 'message_end') current.stopReason = request(event.message).stopReason;
 }

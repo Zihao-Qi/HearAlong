@@ -28,6 +28,7 @@ export function piLaunch(args: string[], options: { mode?: AiMode; model?: strin
   if (mode === 'off') throw new Error('AI is off for this start.');
   if (mode === 'local' && options.model && !isLocalModel(options.model)) throw new Error(`Only local models may run on this Mac: ${options.model}.`);
   const env = piEnv(base, options.omit, mode);
+  delete env.MEETING_LOCAL_NOTES_THINKING;
   // User models.json can contain credential commands and endpoint overrides. Local runs never load that configuration.
   if (mode === 'local' && options.cwd) env.PI_CODING_AGENT_DIR = join(options.cwd, '.pi-local');
   return { args: [
