@@ -36,8 +36,8 @@ export type NoteItem = {
   owner?: string | null; ownerQuote?: string; section: Section;
   /** A name the model gave as owner that the code could not confirm; shown as unconfirmed so the task is not read as the listener's. */
   ownerProposed?: string;
-  /** The quote was found on exactly one nearby line, which was added to the citations. */
-  quoteCheck?: 'passed_after_nearby_line';
+  /** Strict quote match tier; the nearby value is retained only for stored records. */
+  quoteCheck?: 'spans_lines' | 'located' | 'elided' | 'passed_after_nearby_line';
   /** Other matters only. */
   kind?: (typeof OTHER_KINDS)[number]; label?: (typeof OTHER_LABELS)[number];
   /** Set when the item was moved to Needs review. */
@@ -154,8 +154,9 @@ export function notesInstructions(labelled = false): string {
     'Rules:',
     '- One claim per item. Keep conditions and uncertainty ("if X does not help, shorten Y" stays conditional). Keep proposals apart from',
     '  decisions, and questions as questions; never turn an open question into a result.',
-    '- Every item cites the lines it comes from ("cites", at most 6) and gives "quote": 5-25 words copied exactly from one cited line,',
-    '  the words that best support the item.',
+    '- Every item cites the lines it comes from ("cites", at most 6) and gives "quote": 5-25 words copied exactly from the transcript,',
+    '  from one line or running across neighbouring lines; the words that best support the item. To skip words inside a quote write "…"',
+    '  (each piece at least 10 characters).',
     '- Do not guess who said something or label speakers ("the advisor said"). Do not attribute results or work to a person unless',
     '  the transcript states it. A person who is only mentioned is not an owner.',
     '- "owner" only when a line explicitly assigns the task to a named person ("Vela will label the storage bins"); then give that line',
@@ -231,13 +232,57 @@ function ownerSentence(lines: string[], quote: string[]): string | null {
 const MAX_CITES = 8;
 const MAX_ENTRIES = 100;
 
+type QuoteLine = SnapshotSegment & { index: number; corrected: string[]; original: string[] };
+type QuoteLocation = { lines: QuoteLine[]; quoteIn: 'corrected' | 'original' };
+
+function elidedIn(line: string[], pieces: string[][]): boolean {
+  const counts = [0];
+  for (const token of line) counts.push(counts.at(-1)! + words([token]));
+  let ends: number[] = [];
+  for (const [part, piece] of pieces.entries()) {
+    const next: number[] = [];
+    let earliest = 0;
+    for (let start = 0; start <= line.length - piece.length; start++) {
+      while (earliest < ends.length && counts[start] - counts[ends[earliest]] > 25) earliest++;
+      if (!piece.every((token, i) => line[start + i] === token)) continue;
+      let reachable = !part;
+      for (let i = earliest; !reachable && i < ends.length && ends[i] <= start; i++) {
+        const gap = ` ${line.slice(ends[i], start).join(' ')} `;
+        reachable = !/ (if|unless|in case|provided|assuming|not|never|no longer|nobody|neither|nor|without|no) |n't /.test(gap);
+      }
+      if (reachable) next.push(start + piece.length);
+    }
+    if (!next.length) return false;
+    ends = next;
+  }
+  return ends.length > 0;
+}
+
+/** Minimal locations only: a matching line is not counted again in a larger surrounding run. */
+function quoteLocations(lines: QuoteLine[], pieces: string[][], elided: boolean): QuoteLocation[] {
+  const found: QuoteLocation[] = [], runs = new Set<string>();
+  const matches = (line: string[]) => elided ? elidedIn(line, pieces) : contains(line, pieces[0]);
+  for (let size = 1; size <= 3; size++) for (let start = 0; start <= lines.length - size; start++) {
+    const run = lines.slice(start, start + size);
+    if (run.some(s => s.source !== run[0].source)) continue;
+    let contained = false;
+    for (let n = 1; n < size; n++) for (let i = start; i <= start + size - n; i++) if (runs.has(`${i}:${n}`)) contained = true;
+    if (contained) continue;
+    const quoteIn = matches(run.flatMap(s => s.corrected)) ? 'corrected' : matches(run.flatMap(s => s.original)) ? 'original' : null;
+    if (quoteIn) { found.push({ lines: run, quoteIn }); runs.add(`${start}:${size}`); }
+  }
+  return found;
+}
+
 /**
- * Mechanical checks on untrusted model output against the snapshot. Nothing is clipped before it is checked: an
- * oversized item goes to Needs review or is dropped, and every citation it gave counts for the off-topic rule.
- * Valid non-project ranges covering more than half the meeting's lines (overlaps counted once) are ignored together.
+ * Mechanical checks on untrusted model output: prefer cited lines, then cited consecutive same-source runs of 2–3 lines,
+ * else locate a unique minimal run (or uniquely cited overlap) in the snapshot. Safe, ordered elisions are checked separately.
+ * Located lines come first, keeping at most MAX_CITES; owners use only the model's valid cites, non-project checks the final cites.
+ * Oversized items go to Needs review or are dropped. Non-project ranges covering over half the snapshot are ignored together.
  */
 export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes; dropped: NotesRecord['dropped'] } {
-  const byRef = new Map(snapshot.segments.map((s, index) => [s.ref, { ...s, index }]));
+  const lines: QuoteLine[] = snapshot.segments.map((s, index) => ({ ...s, index, corrected: tokens(s.text), original: tokens(s.originalText) }));
+  const byRef = new Map(lines.map(s => [s.ref, s]));
   const dropped: NotesRecord['dropped'] = [];
   const source = (raw ?? {}) as Record<string, unknown>;
   const otherTalk: (OtherTalk & { from: number; to: number })[] = [];
@@ -273,21 +318,26 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       if (!text) { drop('no text'); continue; }
       if (text.length > 2000 || quote.length > 2000) { drop('malformed: text or quote over 2000 characters'); continue; }
       const refs = Array.isArray(item.cites) ? [...new Set(item.cites.filter((c): c is string => typeof c === 'string'))] : [];
-      const cited = refs.map(ref => byRef.get(ref)).filter(s => s !== undefined);
-      if (!cited.length) { drop('no valid citation'); continue; }
-      const ownerLines = cited.flatMap(s => [s.text, s.originalText]);
-      const q = tokens(quote);
-      let quoteIn = cited.some(s => contains(tokens(s.text), q)) ? 'corrected' as const
-        : cited.some(s => contains(tokens(s.originalText), q)) ? 'original' as const : null;
-      let nearby = false;
-      if (!quoteIn && refs.length < MAX_CITES) {
-        const matches = [...byRef.values()].filter(s => cited.some(c => Math.abs(c.index - s.index) <= 3)
-          && (contains(tokens(s.text), q) || contains(tokens(s.originalText), q)));
-        if (matches.length === 1) {
-          cited.push(matches[0]); nearby = true;
-          quoteIn = contains(tokens(matches[0].text), q) ? 'corrected' : 'original';
-        }
-      }
+      const modelCited = refs.map(ref => byRef.get(ref)).filter(s => s !== undefined);
+      let cited = modelCited;
+      const ownerLines = modelCited.flatMap(s => [s.text, s.originalText]);
+      const elided = /…|\.{3}/.test(quote), parts = elided ? quote.split(/…|\.{3}/).map(p => p.trim()) : [quote];
+      const pieces = parts.map(tokens), count = words(pieces.flat());
+      const usable = count >= 5 && count <= 25 && quote.length <= 400
+        && (!elided || (parts.length >= 2 && parts.every((p, i) => p.length >= 10 && words(pieces[i]) >= 2)));
+      const locations = usable ? quoteLocations(lines, pieces, elided) : [];
+      const own = new Set(modelCited.map(s => s.index));
+      const inCites = locations.filter(m => m.lines.every(s => own.has(s.index)));
+      const direct = inCites.find(m => m.lines.length === 1 && m.quoteIn === 'corrected')
+        ?? inCites.find(m => m.lines.length === 1) ?? inCites[0];
+      const overlaps = locations.filter(m => m.lines.some(s => own.has(s.index)));
+      const located = !direct ? (locations.length === 1 ? locations[0] : overlaps.length === 1 ? overlaps[0] : undefined) : undefined;
+      const matched = direct ?? located, ambiguous = !matched && locations.length > 1;
+      if (!modelCited.length && !matched && !ambiguous) { drop('no valid citation'); continue; }
+      let quoteCheck: NoteItem['quoteCheck'];
+      if (located) cited = [...located.lines, ...modelCited.filter(s => !located.lines.includes(s))].slice(0, MAX_CITES);
+      const quoteIn = matched?.quoteIn ?? null;
+      if (matched) quoteCheck = elided ? 'elided' : located ? 'located' : matched.lines.length > 1 ? 'spans_lines' : undefined;
       // A project item resting on non-project talk is probably mis-sorted: kept, but out of the project sections.
       const nonProject = section !== 'otherMatters' && cited.some(s => otherTalkAt(s.index));
       let owner: string | null = null, ownerQuote: string | undefined, ownerProposed: string | undefined;
@@ -302,19 +352,19 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
         }
       }
       const note: NoteItem = {
-        section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote, quoteIn,
-        ...(nearby ? { quoteCheck: 'passed_after_nearby_line' as const } : {}),
+        section, text, cites: cited.map(s => s.id), startMs: cited.length ? Math.min(...cited.map(s => s.startMs)) : 0, quote, quoteIn,
+        ...(quoteCheck ? { quoteCheck } : {}),
         ...(section === 'actions' || section === 'otherMatters' ? { owner, ...(ownerQuote ? { ownerQuote } : {}), ...(ownerProposed ? { ownerProposed } : {}) } : {}),
         ...(section === 'otherMatters' ? {
           kind: OTHER_KINDS.find(k => k === item.kind) ?? 'info', label: OTHER_LABELS.find(l => l === item.label) ?? 'other',
         } : {}),
       };
-      const count = words(q);
       const review = nonProject ? 'cites non-project talk; it may belong in Other matters'
         : text.length > 300 ? 'too long for one claim'
-        : refs.length > MAX_CITES ? `more than ${MAX_CITES} citations`
+        : !located && refs.length > MAX_CITES ? `more than ${MAX_CITES} citations`
         : !count ? 'no quote' : count > 25 || quote.length > 400 ? 'quote too long' : count < 5 ? 'quote too short to support the item'
-        : !quoteIn ? (refs.length > cited.length ? 'quote not found after an invalid citation was removed' : 'quote not found in the cited lines') : null;
+        : ambiguous ? 'quote found in several places'
+        : !quoteIn ? (refs.length > modelCited.length ? 'quote not found after an invalid citation was removed' : 'quote not found in the cited lines') : null;
       candidates.push({ key: tokens(text).join(' '), note, review });
     }
     // Duplicates are judged after the checks, so a broken copy cannot shadow a good one: per text, the first copy that
