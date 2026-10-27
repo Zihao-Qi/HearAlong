@@ -37,7 +37,7 @@ export type NoteItem = {
   /** A name the model gave as owner that the code could not confirm; shown as unconfirmed so the task is not read as the listener's. */
   ownerProposed?: string;
   /** Strict quote match tier; the nearby value is retained only for stored records. */
-  quoteCheck?: 'spans_lines' | 'located' | 'elided' | 'passed_after_nearby_line';
+  quoteCheck?: 'spans_lines' | 'located' | 'elided' | 'joined' | 'passed_after_nearby_line';
   /** Other matters only. */
   kind?: (typeof OTHER_KINDS)[number]; label?: (typeof OTHER_LABELS)[number];
   /** Set when the item was moved to Needs review. */
@@ -261,6 +261,29 @@ function elidedIn(line: string[], pieces: string[][]): boolean {
   return ends.length > 0;
 }
 
+/** Render a safe path already accepted by the elided matcher, marking only non-empty token gaps. */
+function joinedQuote(location: QuoteLocation, parts: string[], pieces: string[][]): string {
+  const line = location.lines.flatMap(s => s[location.quoteIn].tokens);
+  const counts = [0];
+  for (const token of line) counts.push(counts.at(-1)! + words([token]));
+  const failed = new Set<string>();
+  const path = (part: number, end: number): number[] | null => {
+    if (part === pieces.length) return [];
+    const key = `${part}:${end}`, piece = pieces[part];
+    if (failed.has(key)) return null;
+    for (let start = end; start <= line.length - piece.length; start++) {
+      if (part && counts[start] - counts[end] > 25) break;
+      if (!piece.every((token, i) => line[start + i] === token)) continue;
+      if (part && unsafeElision.test(` ${line.slice(end, start).join(' ')} `)) continue;
+      const rest = path(part + 1, start + piece.length);
+      if (rest) return [start, ...rest];
+    }
+    failed.add(key); return null;
+  };
+  const starts = path(0, 0)!;
+  return parts.map((text, i) => (i ? starts[i] > starts[i - 1] + pieces[i - 1].length ? ' … ' : ' ' : '') + text).join('');
+}
+
 function quoteMatcher(pieces: string[][], elided: boolean): QuoteMatch {
   const first = ` ${pieces[0].join(' ')} `;
   const matches = (run: QuoteLine[], key: 'corrected' | 'original') => {
@@ -348,6 +371,7 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       const item = (entry ?? {}) as Record<string, unknown>;
       const text = typeof item.text === 'string' ? item.text.trim() : '';
       const quote = typeof item.quote === 'string' ? item.quote.trim() : '';
+      let storedQuote = quote;
       const drop = (reason: string) => dropped.push({ section, text: text.slice(0, 300) || JSON.stringify(entry).slice(0, 200), reason });
       if (!text) { drop('no text'); continue; }
       if (text.length > 2000 || quote.length > 2000) { drop('malformed: text or quote over 2000 characters'); continue; }
@@ -364,13 +388,27 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       const locations = usable && !direct ? quoteLocations(lines, match) : [];
       const own = new Set(modelCited.map(s => s.index));
       const overlaps = locations.filter(m => m.lines.some(s => own.has(s.index)));
-      const located = !direct ? (locations.length === 1 ? locations[0] : overlaps.length === 1 ? overlaps[0] : undefined) : undefined;
-      const matched = direct ?? located, ambiguous = !matched && locations.length > 1;
+      let located = !direct ? (locations.length === 1 ? locations[0] : overlaps.length === 1 ? overlaps[0] : undefined) : undefined;
+      let matched = direct ?? located, ambiguous = !matched && locations.length > 1;
+      let joined = false;
+      if (usable && !elided && !matched) {
+        const sentences = quote.split(/(?<=[.?!])\s+/), sentencePieces = sentences.map(tokens);
+        if (sentences.length >= 2 && sentences.every((p, i) => p.length >= 10 && words(sentencePieces[i]) >= 2)) {
+          const sentenceMatch = quoteMatcher(sentencePieces, true);
+          const sentenceDirect = citedQuote(modelCited, sentenceMatch);
+          const sentenceLocations = !sentenceDirect ? quoteLocations(lines, sentenceMatch) : [];
+          const sentenceOverlaps = sentenceLocations.filter(m => m.lines.some(s => own.has(s.index)));
+          located = !sentenceDirect ? (sentenceLocations.length === 1 ? sentenceLocations[0] : sentenceOverlaps.length === 1 ? sentenceOverlaps[0] : undefined) : undefined;
+          matched = sentenceDirect ?? located;
+          ambiguous ||= !matched && sentenceLocations.length > 1;
+          if (matched) { joined = true; storedQuote = joinedQuote(matched, sentences, sentencePieces); }
+        }
+      }
       if (!modelCited.length && !matched) { drop('no valid citation'); continue; }
       let quoteCheck: NoteItem['quoteCheck'];
       if (located) cited = [...located.lines, ...modelCited.filter(s => !located.lines.includes(s))].slice(0, MAX_CITES);
       const quoteIn = matched?.quoteIn ?? null;
-      if (matched) quoteCheck = elided ? 'elided' : located ? 'located' : matched.lines.length > 1 ? 'spans_lines' : undefined;
+      if (matched) quoteCheck = joined ? 'joined' : elided ? 'elided' : located ? 'located' : matched.lines.length > 1 ? 'spans_lines' : undefined;
       // A project item resting on non-project talk is probably mis-sorted: kept, but out of the project sections.
       const nonProject = section !== 'otherMatters' && cited.some(s => otherTalkAt(s.index));
       let owner: string | null = null, ownerQuote: string | undefined, ownerProposed: string | undefined;
@@ -385,7 +423,7 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
         }
       }
       const note: NoteItem = {
-        section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote, quoteIn,
+        section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote: storedQuote, quoteIn,
         ...(quoteCheck ? { quoteCheck } : {}),
         ...(section === 'actions' || section === 'otherMatters' ? { owner, ...(ownerQuote ? { ownerQuote } : {}), ...(ownerProposed ? { ownerProposed } : {}) } : {}),
         ...(section === 'otherMatters' ? {
@@ -526,6 +564,8 @@ export type NotesRunner = (input: { instructions: string; inputPath: string; cwd
  * The production runner for each part: one no-tools Pi call. Only a complete run counts: clean exit, Pi settled and not aborted, a normal
  * stop and a non-empty answer. Any tool event is a failure.
  */
+// Measured on qwen3.5:4b: thinking was slower and less reliable for notes.
+const LOCAL_NOTES_THINKING = false;
 export function piNotesRunner(model: TaskModel): NotesRunner {
   return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent, onLocalWait }) => {
     const id = await taskModel(model);
@@ -538,7 +578,7 @@ export function piNotesRunner(model: TaskModel): NotesRunner {
         if (tokenCount(listed.context) > 1) assertLocalContext(id, tokenCount(listed.context), tokenCount(listed.maxOut), instructions + await readFile(inputPath, 'utf8'));
       } finally { await reader.close(); }
     }
-    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, localNotesThinking: thinking === 'medium', onEvent, onLocalWait }));
+    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, localNotesThinking: LOCAL_NOTES_THINKING, onEvent, onLocalWait }));
   };
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {
@@ -643,27 +683,39 @@ export class NotesJobs {
         progress.estimate = await history.estimate('notes', snapshot.segments.length).catch(() => null);
         let failed = false, firstError: unknown;
         const partsBegan = performance.now();
+        let latestPart: keyof typeof NOTES_PARTS | null = null;
         const tasks = Object.entries(NOTES_PARTS).map(async ([name, keys]) => {
           const part = name as keyof typeof NOTES_PARTS;
           const timing = diagnostics.parts[part], began = performance.now();
-          const scanner = new ItemScanner(keys.filter(k => k !== 'otherTalk'), (_section, item) => {
-            if (!controller.signal.aborted && !job.ended) { progress.parts[part].count++; if (typeof item.text === 'string') progress.latest = item.text; }
-          });
           try {
-            const result = await runner({ instructions: partInstructions(instructions, keys), inputPath, cwd,
-              sessionDir: join(this.options.directory, 'sessions', meetingId, part), signal: controller.signal, thinking: 'medium',
-              onLocalWait: ms => { if (!job.ended) timing.waitMs = ms; },
-              onEvent: event => {
-                if (job.ended) return;
-                partDiagnosticEvent(timing, event);
-                if (controller.signal.aborted) return;
-                const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); }
-              } });
-            controller.signal.throwIfAborted();
-            if (job.ended) throw new Error('The notes job has ended.');
-            const raw = extractJson(result.text) as Record<string, unknown>;
-            progress.parts[part].done = true;
-            return { result, raw: Object.fromEntries(keys.map(k => [k, raw[k]])) };
+            const prompt = partInstructions(instructions, keys);
+            for (let attempt = 0; ; attempt++) {
+              controller.signal.throwIfAborted();
+              progress.parts[part].count = 0;
+              if (latestPart === part) { progress.latest = null; latestPart = null; }
+              const scanner = new ItemScanner(keys.filter(k => k !== 'otherTalk'), (_section, item) => {
+                if (!controller.signal.aborted && !job.ended) {
+                  progress.parts[part].count++;
+                  if (typeof item.text === 'string') { progress.latest = item.text; latestPart = part; }
+                }
+              });
+              const result = await runner({ instructions: prompt, inputPath, cwd,
+                sessionDir: join(this.options.directory, 'sessions', meetingId, attempt ? `${part}-retry-${randomUUID()}` : part), signal: controller.signal, thinking: 'medium',
+                onLocalWait: ms => { if (!job.ended) timing.waitMs = (timing.waitMs ?? 0) + ms; },
+                onEvent: event => {
+                  if (job.ended) return;
+                  partDiagnosticEvent(timing, event);
+                  if (controller.signal.aborted) return;
+                  const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); }
+                } });
+              controller.signal.throwIfAborted();
+              if (job.ended) throw new Error('The notes job has ended.');
+              let raw: Record<string, unknown>;
+              try { raw = extractJson(result.text) as Record<string, unknown>; }
+              catch (error) { if (!attempt) continue; throw error; }
+              progress.parts[part].done = true;
+              return { result, raw: Object.fromEntries(keys.map(k => [k, raw[k]])) };
+            }
           } catch (error) {
             // Quota belongs to each part, not only the error selected for display.
             if (RATE_LIMIT.test(error instanceof Error ? error.message : String(error))) this.options.cooldowns?.hit('model', 'notes');
