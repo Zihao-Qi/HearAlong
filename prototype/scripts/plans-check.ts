@@ -429,9 +429,10 @@ async function clickEverything(page: Page, t: string, counts: () => { downloads:
     if (!next) break;
     done.add(next.key);
     const before = await signature();
-    const target = page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).filter({ hasText: next.label.slice(0, 40) }).first();
+    const target = page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).first();
     // A run that publishes while the walk goes on replaces the rows (their keys name the version): a control gone is skipped.
-    try { await clickSettled(page, await target.count() ? target : page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).first()); }
+    // Follow this control's stable key through a publication; its answer text can change while click waits for actionability.
+    try { await clickSettled(page, target); }
     catch { if (await page.locator(`:is(#plans, #plans-options-slot) [data-focus="${next.focus.replace(/"/g, '\\"')}"]`).count()) silent.push(`${next.label} (could not be clicked)`); continue; }
     clicked++;
     let changed = await signature() !== before;
