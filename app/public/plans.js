@@ -504,7 +504,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
       content.replaceChildren(el('p', 'Plans are made from the notes. Write the notes first.', 'plans-no-notes'));
       return;
     }
-    const parts = [head(doc, run, active, kept)];
+    const parts = [head(doc, run, active)];
     parts.push(...notices(doc, run, active, kept));
     if (!active && !doc) parts.push(idlePanel(run));
     if (doc) parts.push(...body(doc, kept));
@@ -537,7 +537,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
   document.addEventListener('click', event => { if (!event.composedPath().some(node => node.classList?.contains('plans-head') || node.classList?.contains('plans-options-wrap'))) closeMenu(); });
   document.addEventListener('focusin', event => { if (!content.querySelector('.plans-head')?.contains(event.target) && !optionsHost?.contains(event.target)) closeMenu(); });
 
-  function head(doc, run, active, kept) {
+  function head(doc, run, active) {
     const replaceable = active && run.state === 'waiting' && run.kind === 'plan' && run.origin === 'auto';
     if (!doc && !replaceable) return null;
     const row = el('div', undefined, 'plans-head');
