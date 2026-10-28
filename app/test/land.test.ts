@@ -27,7 +27,7 @@ const defaults = { check: 'console.log("check passed")', test: 'console.log("tes
 function writePackage(checkout: string, scripts: Scripts = {}, marker = checkout) {
   const selected = { ...defaults, ...scripts };
   const priority = "require('node:assert/strict').ok(Number(require('node:child_process').execFileSync('ps',['-o','nice=','-p',String(process.pid)],{encoding:'utf8'}).trim())>=19);";
-  writeFileSync(join(checkout, 'prototype/package.json'), JSON.stringify({ scripts: Object.fromEntries(
+  writeFileSync(join(checkout, 'app/package.json'), JSON.stringify({ scripts: Object.fromEntries(
     Object.entries(selected).filter(([, code]) => code !== undefined).map(([name, code]) => [name,
       `${quote(process.execPath)} -e ${quote(`${priority} require('node:fs').appendFileSync('../.git/order',${JSON.stringify(name + '\n')}); ${code}`)} -- ${quote(marker)}`]),
   ) }));
@@ -79,10 +79,10 @@ function fixture(t: TestContext, scripts: Scripts = {}) {
     chmodSync(join(main, '.githooks', hook), 0o755);
   }
   writeFileSync(join(main, '.githooks/public-guard.cjs'), '// fixture guard; hooks intentionally use stand-ins\n');
-  mkdirSync(join(main, 'prototype/scripts'), { recursive: true });
+  mkdirSync(join(main, 'app/scripts'), { recursive: true });
   writePackage(main, scripts, root);
   writeFileSync(join(main, 'shared.txt'), 'base\n');
-  writeFileSync(join(main, '.gitignore'), '.claude/worktrees/\nprototype/node_modules\n*.wav\n');
+  writeFileSync(join(main, '.gitignore'), '.claude/worktrees/\napp/node_modules\n*.wav\n');
   git(main, 'add', '-A'); git(main, 'commit', '-m', 'base');
   git(main, 'config', 'core.hooksPath', '.githooks');
   const worktree = join(main, '.claude/worktrees/topic');
@@ -91,7 +91,7 @@ function fixture(t: TestContext, scripts: Scripts = {}) {
   const change = () => writeFileSync(join(worktree, 'feature.txt'), 'feature\n');
   const runWithEnv = (env: NodeJS.ProcessEnv, ...flags: string[]) => {
     const result = spawnSync(nice, ['-n', '19', process.execPath, `--title=${root}`, '--experimental-strip-types', script, 'topic', 'Add topic\n\nDetails', ...flags], {
-      cwd: join(main, 'prototype'), env: { ...gitEnv, ...Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('GIT_'))) }, encoding: 'utf8', timeout: 20_000,
+      cwd: join(main, 'app'), env: { ...gitEnv, ...Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('GIT_'))) }, encoding: 'utf8', timeout: 20_000,
     });
     assert.ifError(result.error);
     let output = result.stdout + result.stderr;
@@ -139,14 +139,14 @@ for (const kind of ['untracked wav', 'staged wav', 'ignored wav', 'ignored node_
   test(`land refuses ${kind} and names it without deleting it`, t => {
     const f = fixture(t); f.change();
     const link = kind.includes('link');
-    const file = join(f.worktree, 'prototype', link ? 'node_modules' : 'capture.wav');
+    const file = join(f.worktree, 'app', link ? 'node_modules' : 'capture.wav');
     if (link) symlinkSync(dirname(f.main), file, 'dir'); else writeFileSync(file, 'not actual audio');
     if (kind.startsWith('staged')) f.git(f.worktree, 'add', '-f', file);
     if (kind === 'untracked wav') writeFileSync(join(f.worktree, '.gitignore'), '.claude/worktrees/\n');
     const before = f.git(f.worktree, 'status', '--porcelain');
     const r = f.run();
     assert.equal(r.status, 1, r.output);
-    assert.match(r.output, link ? /prototype\/node_modules/ : /prototype\/capture\.wav/);
+    assert.match(r.output, link ? /app\/node_modules/ : /app\/capture\.wav/);
     assert.ok(existsSync(file)); assert.equal(f.git(f.worktree, 'status', '--porcelain'), before);
     f.unchanged();
   });
@@ -257,7 +257,7 @@ test('slim full runner gets a fresh output folder and prints each suite and brow
   assert.match(r.output, /leftover test browsers\s+0/); assert.doesNotMatch(r.output, /unlisted checks/);
   assert.match(readFileSync(join(r.logs, 'checks/summary.txt'), 'utf8'), /suite-a exit=0/);
   assert.equal(readFileSync(join(f.main, '.git/order'), 'utf8'), 'check\nchecks\n');
-  assert.equal(existsSync(join(f.main, 'prototype/artifacts')), false);
+  assert.equal(existsSync(join(f.main, 'app/artifacts')), false);
 });
 
 for (const exit of [0, 1]) {
@@ -299,17 +299,17 @@ test('full runner owns audio generation under its output, not main artifacts', t
   const f = fixture(t, { checks: `${summaryCode()} require('node:fs').writeFileSync(process.argv[2]+'/synthetic-meeting.wav','fictional fixture');` }); f.change();
   const r = f.run('--full'); assert.equal(r.status, 0, r.output); assert.ok(r.logs);
   assert.equal(readFileSync(join(r.logs, 'checks/synthetic-meeting.wav'), 'utf8'), 'fictional fixture');
-  assert.equal(existsSync(join(f.main, 'prototype/artifacts')), false);
+  assert.equal(existsSync(join(f.main, 'app/artifacts')), false);
 });
 
 test('full runner leaves an existing ignored audio fixture unchanged', t => {
-  const f = fixture(t); f.change(); mkdirSync(join(f.main, 'prototype/artifacts'));
-  const wav = join(f.main, 'prototype/artifacts/synthetic-meeting.wav'); writeFileSync(wav, 'fixture bytes');
+  const f = fixture(t); f.change(); mkdirSync(join(f.main, 'app/artifacts'));
+  const wav = join(f.main, 'app/artifacts/synthetic-meeting.wav'); writeFileSync(wav, 'fixture bytes');
   const r = f.run('--full'); assert.equal(r.status, 0, r.output); assert.equal(readFileSync(wav, 'utf8'), 'fixture bytes');
 });
 
 test('malformed merged npm configuration fails and rolls back', t => {
-  const f = fixture(t); writeFileSync(join(f.worktree, 'prototype/package.json'), '{invalid');
+  const f = fixture(t); writeFileSync(join(f.worktree, 'app/package.json'), '{invalid');
   const r = f.run(); assert.equal(r.status, 1, r.output); assert.ok(r.logs);
   assert.match(readFileSync(join(r.logs, 'check.log'), 'utf8'), /EJSONPARSE/);
   assert.equal(f.git(f.main, 'rev-parse', 'HEAD'), f.head); assert.equal(f.git(f.main, 'status', '--porcelain'), '');

@@ -1,6 +1,6 @@
 #!/bin/zsh
 set -e
-cd "${0:A:h}/prototype"
+cd "${0:A:h}/app"
 if ! command -v node >/dev/null 2>&1 && [[ -s "$HOME/.nvm/nvm.sh" ]]; then
   source "$HOME/.nvm/nvm.sh"
 fi

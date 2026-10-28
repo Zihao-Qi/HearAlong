@@ -1,7 +1,7 @@
 // The local quote-check counts (src/quote-metrics.ts) as a table: per feature and model, the claims checked, the share that
 // failed, the share whose quote or citation did not check out, and the top reasons. Read-only; --json for machine use.
 // Usage: node --experimental-strip-types scripts/quote-metrics.ts [quote-checks.json | data folder] [--json]
-// Without a path it reads <MEETING_DATA_DIR or prototype/data>/metrics/quote-checks.json.
+// Without a path it reads <MEETING_DATA_DIR or app/data>/metrics/quote-checks.json.
 import { statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

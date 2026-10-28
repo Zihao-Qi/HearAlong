@@ -6,6 +6,7 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { numberInRange } from './config.ts';
+import { dataDirectory, LEGACY_DATA_NOTICE } from './data-directory.ts';
 import { downloadDisposition } from './download.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
@@ -113,7 +114,7 @@ export async function startServer(options: {
   /** Disposable roots and process boundary for update-guard checks; production always uses this checkout. */
   codeRoot?: string; publicRoot?: string; exit?: (code: number) => void; fingerprint?: FingerprintOptions;
 } = {}) {
-  const directory = resolve(options.directory ?? process.env.MEETING_DATA_DIR ?? join(ROOT, 'data'));
+  const directory = dataDirectory(ROOT, options.directory ?? process.env.MEETING_DATA_DIR);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const release = await lock(directory);
   let store: MeetingStore | undefined;
@@ -1414,8 +1415,12 @@ export async function startServer(options: {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   // Started by the installed app's helper: stop once its window has been gone for MEETING_IDLE_EXIT_S seconds and nothing runs.
   const idleSeconds = Number(process.env.MEETING_IDLE_EXIT_S ?? 0);
-  const app = await startServer(idleSeconds > 0 ? { idleMs: idleSeconds * 1000, onIdle: () => { console.log('No window open and nothing running: stopping.'); void app.shutdown().then(() => process.exit(0)); } } : {});
-  console.log(`HearAlong prototype: ${app.url}\nData: ${app.directory}\nNo recording starts until you click Start microphone. No cloud model is connected.`);
+  const app = await startServer(idleSeconds > 0 ? { idleMs: idleSeconds * 1000, onIdle: () => { console.log('No window open and nothing running: stopping.'); void app.shutdown().then(() => process.exit(0)); } } : {}).catch(error => {
+    if ((error as Error).message !== LEGACY_DATA_NOTICE) throw error;
+    console.error(LEGACY_DATA_NOTICE);
+    process.exit(1);
+  });
+  console.log(`HearAlong: ${app.url}\nData: ${app.directory}\nNo recording starts until you click Start microphone. No cloud model is connected.`);
   if (process.env.MEETING_OPEN_BROWSER === '1') {
     spawn('open', ['-a', 'Google Chrome', app.url], { stdio: 'ignore' }).on('error', error => console.warn(`Open ${app.url} manually: ${error.message}`));
   }

@@ -1,4 +1,4 @@
-<img src="prototype/public/icons/icon-192.png" width="96" alt="HearAlong app icon">
+<img src="app/public/icons/icon-192.png" width="96" alt="HearAlong app icon">
 
 # HearAlong
 
@@ -63,12 +63,12 @@ Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI featu
 
 ```sh
 git clone https://github.com/Zihao-Qi/HearAlong.git
-cd HearAlong/prototype
+cd HearAlong/app
 npm ci --ignore-scripts
 npm start
 ```
 
-The setup page finds or downloads a speech model, checks FFmpeg, and offers optional AI and microphone setup. Full settings and privacy details are in [prototype/README.md](prototype/README.md).
+The setup page finds or downloads a speech model, checks FFmpeg, and offers optional AI and microphone setup. Full settings and privacy details are in [app/README.md](app/README.md).
 
 ## Privacy
 
@@ -93,7 +93,7 @@ TypeScript on Node.js (server), plain JavaScript (UI), SQLite, Swift (macOS help
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Vendored libraries keep their own licenses: see [prototype/public/vendor/README.md](prototype/public/vendor/README.md) and [THIRD-PARTY-LICENSES/](THIRD-PARTY-LICENSES/).
+MIT, see [LICENSE](LICENSE). Vendored libraries keep their own licenses: see [app/public/vendor/README.md](app/public/vendor/README.md) and [THIRD-PARTY-LICENSES/](THIRD-PARTY-LICENSES/).
 
 ---
 

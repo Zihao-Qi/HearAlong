@@ -8,9 +8,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
-const prototype = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Source archives have no Git worktree metadata; the ordinary app store is the protected folder.
-const protectedFolders = [join(prototype, 'data')];
+const protectedFolders = [join(appRoot, 'data')];
 async function snapshot() {
   const entries: [string, number, number, number][] = [];
   const walk = async (path: string) => {
@@ -34,7 +34,7 @@ if (!mic) throw new Error('Usage: rehearsal-check.ts <mic.wav> [them.wav]');
 for (const seconds of [60, 30]) {
   const before = await snapshot();
   const args = ['run', 'rehearse', '--', mic, '--from', '10:00', '--minutes', String(seconds / 60), '--headless', ...(seconds === 30 ? ['--them', them] : [])];
-  const child = spawn('npm', args, { cwd: prototype, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('npm', args, { cwd: appRoot, stdio: ['ignore', 'pipe', 'pipe'] });
   const observed = new Set<number>([child.pid!]);
   const commands = new Map<number, string>();
   let output = '', stderr = '';

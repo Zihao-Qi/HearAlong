@@ -1,5 +1,11 @@
 .DS_Store
 .claude/
 
+# Runtime folders stay local, including the old location on legacy branches.
+/app/data/
+/app/artifacts/
+/prototype/data/
+/prototype/artifacts/
+
 # Private material (evaluation, real data, notes): its own private Git repository
 /private

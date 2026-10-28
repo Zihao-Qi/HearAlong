@@ -13,14 +13,14 @@ Requirements:
 
 ```sh
 git clone https://github.com/Zihao-Qi/HearAlong.git
-cd HearAlong/prototype
+cd HearAlong/app
 npm ci --ignore-scripts
 npm start
 ```
 
 The setup page finds or downloads a speech model, checks FFmpeg, and offers optional AI and microphone setup.
 
-Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and origin). Starting the server does not start recording. Use the microphone button only with everyone's consent; Ctrl+C stops the server. The root-level `Start Prototype.command` starts the same server and opens Chrome; set `MEETING_CLOUD=0` in its environment to force AI Off for that start.
+Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and origin). Starting the server does not start recording. Use the microphone button only with everyone's consent; Ctrl+C stops the server. The root-level `Start HearAlong.command` starts the same server and opens Chrome; set `MEETING_CLOUD=0` in its environment to force AI Off for that start.
 
 If a speech model or FFmpeg goes missing later, existing meetings remain readable; use Settings › This Mac › Setup to restore speech. Advanced options: `MEETING_MODEL_PATH=/path/to/model.gguf` overrides the saved speech choice; Pi Voice settings are also discovered read-only. The unit tests and `app-check` below need neither speech weights nor a cloud account.
 
@@ -50,7 +50,7 @@ Quote checks are counted locally in `data/metrics/quote-checks.json`: per featur
 
 ## Public repository guard
 
-Run `npm run guard:install` from `prototype/` to set the absolute main-tree `.githooks` path for every worktree, including older revisions (requires Git and Node.js).
+Run `npm run guard:install` from `app/` to set the absolute main-tree `.githooks` path for every worktree, including older revisions (requires Git and Node.js).
 Keep your ignored `private/public-denylist.txt` in the main working tree; linked worktrees share it, and missing/unreadable/empty lists block commits and pushes.
 Hooks check identities, added lines/paths, refs, commit/tag messages, runtime/media/environment files and files over 2 MB; fix staged changes or rewrite offending commits/tags before pushing.
 
@@ -84,7 +84,7 @@ The optional `scripts/build-app.sh` builds and registers the local macOS helper;
 ```sh
 npm run rehearse -- /path/to/synthetic-mic.wav --from 0:00 --minutes 1
 npm run rehearse -- /path/to/synthetic-mic.wav --them /path/to/synthetic-call.wav --from 0:00 --minutes .5
-npm run rehearse -- --open /path/to/REPO_NAME/prototype/artifacts/rehearsal/runs/RUN_FOLDER
+npm run rehearse -- --open /path/to/REPO_NAME/app/artifacts/rehearsal/runs/RUN_FOLDER
 ```
 
 The visible Chrome session plays an uncompressed PCM or IEEE-float WAV as its microphone in real time; a new recording is started deliberately by this command. Cloud models are off unless `--with-models` is supplied. Each run uses a free port and a separate store under `artifacts/rehearsal/runs/`, never the ordinary app database. Profiles and trimmed WAVs are removed on exit; run data is kept so it can be reopened. Symlinks and hard-linked run files are refused.

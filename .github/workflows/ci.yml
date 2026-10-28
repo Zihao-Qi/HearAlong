@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 90 # the suites run two at a time, up to 30 minutes each
     defaults:
       run:
-        working-directory: prototype
+        working-directory: app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: '22' # Latest 22.x; package.json requires >=22.19.0.
           cache: npm
-          cache-dependency-path: prototype/package-lock.json
+          cache-dependency-path: app/package-lock.json
       # Xcode's swiftc (PDF text tool), cupsfilter, git, python3 and ps come with the runner; only FFmpeg/ffprobe are missing.
       - run: brew install ffmpeg
       - run: npm ci --ignore-scripts
@@ -37,7 +37,7 @@ jobs:
       # Its fixtures write their own fictional deny list, so the private one is not needed.
       - name: Public guard tests
         working-directory: .
-        run: node --test prototype/scripts/public-guard.test.cjs
+        run: node --test app/scripts/public-guard.test.cjs
       # Use the pinned Playwright's headless shell on the displayless runner. Full Chrome logged CVDisplayLink failures
       # during the first run, where plans-check reached the 20-minute limit.
       - name: Install test Chromium
