@@ -29,10 +29,11 @@ jobs:
           node-version: '22' # Latest 22.x; package.json requires >=22.19.0.
           cache: npm
           cache-dependency-path: app/package-lock.json
-      # Xcode's swiftc (PDF text tool), cupsfilter, git, python3 and ps come with the runner; only FFmpeg/ffprobe are missing.
-      - run: brew install ffmpeg
+      # Xcode's swiftc (PDF text tool), cupsfilter, git, python3, ps and zsh come with the runner.
+      - run: brew install ffmpeg shellcheck
       - run: npm ci --ignore-scripts
       - run: npm run check
+      - run: npm run lint
       - run: npm test
       # Its fixtures write their own fictional deny list, so the private one is not needed.
       - name: Public guard tests

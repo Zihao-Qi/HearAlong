@@ -2,9 +2,9 @@
 // meetingassistant:// links; Chrome asks once whether to allow that), then loads the app as soon as the server answers.
 const title = document.getElementById('title'), detail = document.getElementById('detail'), retry = document.getElementById('retry');
 let timer, launchTimer;
-function stop() { clearInterval(timer); clearInterval(launchTimer); }
+function stopTimers() { clearInterval(timer); clearInterval(launchTimer); }
 function start() {
-  stop();
+  stopTimers();
   title.textContent = 'Starting HearAlong…';
   detail.textContent = 'This takes a few seconds. If Chrome asks whether to open HearAlong Helper, allow it (tick “Always allow” to skip this next time).';
   retry.hidden = true;
@@ -15,15 +15,15 @@ function start() {
   launchTimer = setInterval(launch, 3000);
   timer = setInterval(async () => {
     if (Date.now() > until) {
-      stop();
+      stopTimers();
       title.textContent = 'HearAlong did not start';
       detail.innerHTML = 'Open <code>HearAlong Helper</code> from <code>~/Applications</code> (or <code>app/dist</code> for a source checkout), then try again. Installed release logs are in <code>~/Library/Application Support/HearAlong/data/logs/launcher.log</code>; source checkout logs are in <code>app/data/logs/launcher.log</code>.';
       retry.hidden = false;
       retry.focus(); return;
     }
-    try { if ((await fetch('/', { cache: 'no-store' })).ok) { stop(); location.replace('/'); } } catch { /* not up yet */ }
+    try { if ((await fetch('/', { cache: 'no-store' })).ok) { stopTimers(); location.replace('/'); } } catch { /* not up yet */ }
   }, 1000);
 }
 retry.onclick = start;
-window.addEventListener('pagehide', stop);
+window.addEventListener('pagehide', stopTimers);
 start();

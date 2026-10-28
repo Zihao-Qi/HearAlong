@@ -19,6 +19,7 @@ export function timedWords(tokens, startMs = 0) {
       word.endMs = Math.max(word.endMs, startMs + token.t1Ms);
     }
   }
+  // eslint-disable-next-line no-unused-vars -- Strip the internal completion marker from display words.
   return words.map(({ complete, ...word }) => word);
 }
 export const midpoint = word => (word.startMs + word.endMs) / 2;
