@@ -17,8 +17,6 @@ import { LiveDrafts } from '../src/drafts.ts';
 const [speech, them, out = 'artifacts/mini-view'] = process.argv.slice(2);
 if (!speech || !them) throw new Error('Usage: mini-check.ts <speech.wav> <them.wav> [outDir]');
 const outDir = resolve(out);
-await mkdir(outDir, { recursive: true });
-const directory = await mkdtemp(join(tmpdir(), 'meeting-mini-'));
 // A scripted quick model for the board: one question card citing the first new line.
 const board = async (message: string) => {
   const line = message.split('\n').find(l => /^S\d+ \[[^\]]+\] NEW /.test(l))!;
@@ -27,20 +25,51 @@ const board = async (message: string) => {
   return { text: JSON.stringify({ items: [{ type: 'action', text: 'Pack twelve seed-library envelopes with marigold seeds, stamp the sowing month on each flap, and place them in the blue pickup tray.', cites: [ref], quote, confidence: 'high', materials: false, nonProject: false }] }),
     ms: 1, attempts: 1, stopReason: 'stop', aborted: false, usages: [] };
 };
-const app = await startServer({ directory, port: 0, quick: null, heavy: null, board, setup: await dashboardSetup(directory, true),
-  recognizer: { async transcribe() { return { text: 'The fictional seed library will pack twelve marigold envelopes for the spring workshop. Volunteers will label each envelope and place it in the blue pickup tray.',
-    backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 20, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {} },
-  drafts: new LiveDrafts({ modelPath: 'unused', workerScript: new URL('../test/fixtures/fake-stream-worker.ts', import.meta.url) }),
-});
-const browser = await chromium.launch({
-  executablePath: testBrowser(), headless: true,
-  args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(speech)}`],
-});
-const results: string[] = [];
-const check = (name: string, ok: boolean, detail = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`); };
-const errors: string[] = [];
-try {
+const results: string[] = [], errors: string[] = [];
+let currentStep = 'startup', finishing = false, deadlineExpired = false, timer: ReturnType<typeof setTimeout>;
+let rejectDeadline!: (error: Error) => void;
+const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
+// Playwright timeouts do not cover evaluate(), response bodies, route removal or browser/server close.
+// This independent deadline also covers preparatory work between assertions, even if a local catch swallows a timeout.
+function step(name: string, ms = 60_000) {
+  if (finishing) throw new Error('mini-check has entered cleanup');
+  clearTimeout(timer); currentStep = name;
+  console.log(`STEP ${name} (${ms} ms limit)`);
+  timer = setTimeout(() => { deadlineExpired = true; rejectDeadline(new Error(`mini-check step "${name}" timed out after ${ms} ms`)); }, ms);
+}
+const check = (name: string, ok: boolean, detail = '') => {
+  const line = `${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`;
+  results.push(line); console.log(line); step(`after ${name}`);
+};
+async function bounded<T>(name: string, work: () => Promise<T>, ms = 10_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work(), new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`mini-check step "${name}" timed out after ${ms} ms`)), ms);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+let closeBrowser = async () => {}, closeServer = async () => {}, removeDirectory = async () => {};
+async function run() {
+  step('create isolated fixture');
+  await mkdir(outDir, { recursive: true });
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-mini-'));
+  removeDirectory = () => rm(directory, { recursive: true, force: true });
+  const app = await startServer({ directory, port: 0, quick: null, heavy: null, board, setup: await dashboardSetup(directory, true),
+    recognizer: { async transcribe() { return { text: 'The fictional seed library will pack twelve marigold envelopes for the spring workshop. Volunteers will label each envelope and place it in the blue pickup tray.',
+      backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 20, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {} },
+    drafts: new LiveDrafts({ modelPath: 'unused', workerScript: new URL('../test/fixtures/fake-stream-worker.ts', import.meta.url) }),
+  });
+  closeServer = () => app.close();
+  step('launch test browser and start recording');
+  const browser = await chromium.launch({
+    executablePath: testBrowser(), headless: true, timeout: 30_000,
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${resolve(speech)}`],
+  });
+  closeBrowser = () => browser.close();
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  context.setDefaultTimeout(30_000);
+  context.setDefaultNavigationTimeout(30_000);
   // Keeps the page's answer to Chrome's offer to open the window by itself (automatic Picture-in-Picture), to offer it by hand.
   await context.addInitScript(() => {
     const session = navigator.mediaSession;
@@ -85,6 +114,7 @@ try {
     await page.locator('#close-settings').click();
     return reply.miniOpensItself === on && await page.locator('#mini-by-itself').isChecked() === on;
   };
+  step('check helper visibility and mini opening settings');
   await page.evaluate(() => { (window as unknown as { helper: unknown }).helper = setInterval(() => void fetch('/api/live/window'), 500); });
   await page.waitForTimeout(2500); // the app's page hears of the helper with its next transcript poll
   check('setting off by default: leaving the app does not open the mini window', await leave() === 'auto' && !await shown() && await page.locator('#mini-view').isVisible());
@@ -110,6 +140,7 @@ try {
   let firstLive!: Promise<{ recording: { paragraphs: unknown[] } | null }>;
   const fromMini = (r: Response) => { try { return new URL(r.url()).pathname === '/api/live' && r.frame().url().endsWith('/mini.html'); } catch { return false; } };
   const openMini = async (): Promise<Page> => {
+    step('open mini window and read its first response');
     const opened = context.waitForEvent('page');
     firstLive = context.waitForEvent('response', { predicate: fromMini, timeout: 15_000 }).then(r => r.json(), () => ({ recording: null }));
     await page.locator('#mini-view').click();
@@ -146,6 +177,7 @@ try {
   await mf.locator('.ln:not(:has(.empty))').first().waitFor({ timeout: 40_000 });
   check('lines arrive in the mini view', (await mf.locator('.ln').count()) >= 1);
   check('in-person recording: no speaker column', await mf.locator('.lines.plain').count() === 1);
+  step('wait for the first scripted board card', 100_000);
   await mf.locator('.card:not([hidden])').waitFor({ timeout: 90_000 });
   check('the newest card shows as the pinned card', /ACTION · \d\d:\d\d/i.test(await mf.locator('.card .tag').innerText()), await mf.locator('.card .tag').innerText());
 
@@ -228,8 +260,13 @@ try {
   const chip = await page.evaluate(() => { const e = document.getElementById('live-chip')!; return { text: e.innerText, title: e.title }; }); // in one step: it is redrawn at each poll
   check('two problems: the chip leads with them', /^Recording · saving behind · no sound from the mic/.test(chip.text) && /falling behind/.test(chip.title), `${chip.text} | ${chip.title}`);
   await pip.screenshot({ path: join(outDir, 'mini-two-problems.png') });
-  await page.unrouteAll({ behavior: 'wait' }); // lets the held replies finish first
+  step('detach slow PCM routes', 30_000);
+  // A cancelled upload's callback may never finish. Detach it, rather than waiting on its continuation.
+  // New uploads use the real server again; the existing notice assertion below still requires recovery.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  step('remove quiet fixtures', 30_000);
   await unfakeQuiet();
+  step('wait for saving-behind and quiet notices to clear', 30_000);
   await mf.locator('.notice').waitFor({ state: 'detached', timeout: 20_000 });
   await pip.setViewportSize({ width: 360, height: 268 });
 
@@ -258,6 +295,7 @@ try {
     return { key: rows[index]?.dataset.key, y: rows[index]?.getBoundingClientRect().top ?? NaN, index };
   });
   const rowY = (key: string) => mf.evaluate(k => document.querySelector(`#m-scroll .ln[data-key="${k}"]`)?.getBoundingClientRect().top ?? NaN, key);
+  step('wait for three scrollable transcript paragraphs', 130_000);
   await mf.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.querySelectorAll('.ln').length >= 3 && s.scrollHeight > s.clientHeight + 200; }, null, { timeout: 120_000 });
   let state = await scrollState();
   check('following: the newest line at the bottom, the previews below it, no Back to latest', state.gap < 2 && !state.back && state.drafts, JSON.stringify(state));
@@ -420,13 +458,34 @@ try {
   check('Back to latest: it follows the new lines again', (await scrollState()).gap < 2);
   // Following, a selection holds the view too (nothing moves under it); once it is gone, the view goes on following.
   const atLatest = await select();
-  const whileSelected = await newLines();
-  await pip.waitForTimeout(1200);
+  // A natural final can join the selected paragraph: its DOM is correctly frozen, so newLines() sees no change.
+  // Deliver both growth there and a distinct final below it, independent of the audio's 45-second paragraph boundaries.
+  const arrivalKey = 'following-selection-arrival';
+  const followingArrival = async (route: Route) => {
+    const url = new URL(route.request().url()); url.searchParams.delete('have');
+    const response = await route.fetch({ url: url.href });
+    const body = await response.json();
+    if (body.recording) {
+      const held = body.recording.paragraphs.find((p: { key: string }) => p.key === atLatest.key);
+      if (!held) throw new Error('The selected paragraph is missing from the following fixture.');
+      held.text += ' Volunteers finish another sentence in this paragraph.';
+      held.signature += '|following-selection-growth:0';
+      body.recording.paragraphs.push({ key: arrivalKey, signature: `#${arrivalKey}:0`, speaker: null,
+        text: 'A new final line arrives below the selected seed-library instructions.' });
+      body.recording.paragraphsFrom = 0; body.recording.paragraphsTag = arrivalKey;
+    }
+    await route.fulfill({ response, json: body });
+  };
+  await context.route(liveApi, followingArrival);
+  const whileSelected = await mf.waitForFunction(key => Boolean(document.querySelector(`#m-scroll .ln[data-key="${key}"]`)), arrivalKey,
+    { timeout: 40_000 }).then(() => true, () => false);
   check('following: a selection is kept and does not move while new lines arrive', whileSelected && await mf.evaluate(() => getSelection()!.toString()) === atLatest.text && Math.abs(await rowY(atLatest.key) - atLatest.y) < 0.5 && !(await scrollState()).back,
     JSON.stringify({ whileSelected, before: atLatest, text: await mf.evaluate(() => getSelection()!.toString()), moved: await rowY(atLatest.key) - atLatest.y, state: await scrollState() }));
   await mf.evaluate(() => getSelection()!.removeAllRanges());
   await mf.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.scrollHeight - s.scrollTop - s.clientHeight < 2; }, null, { timeout: 3000 }).catch(() => {});
   check('following: once the selection is gone, the view is at the newest line again', (await scrollState()).gap < 2);
+  await context.unroute(liveApi, followingArrival);
+  await mf.locator(`[data-key="${arrivalKey}"]`).waitFor({ state: 'detached', timeout: 5000 });
   // Scrolling back down to the end resumes following, as Back to latest does.
   await mf.locator('#m-scroll').hover();
   await pip.mouse.wheel(0, -160);
@@ -564,7 +623,8 @@ try {
   await pip.screenshot({ path: join(outDir, 'mini-stopping.png') });
   await closed;
   await page.locator('#live-chip').waitFor({ state: 'hidden', timeout: 15_000 });
-  await page.unrouteAll({ behavior: 'wait' });
+  step('detach delayed end routes', 30_000);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
   check('stopped: the window closed and the focus is on Start', await page.locator('#start').isVisible() && await page.locator('#mini-view').isHidden() && await page.evaluate(() => document.activeElement?.id) === 'start');
   // The same meeting recorded again: the kept page hears of it only now, with the tag of the first recording.
   const firstKeys = await retained.evaluate(() => ([...document.querySelectorAll('#m-scroll .ln')] as HTMLElement[]).map(r => r.dataset.key));
@@ -609,6 +669,7 @@ try {
   await page.unroute('**/__them.wav'); // Playwright's interception, if left on, also catches the mini view's stylesheet
   pip = await openMini();
   check('online: the mini view is styled', await mf.locator('.status').evaluate(e => Math.round(e.getBoundingClientRect().height)) === 40);
+  step('wait for scripted Me and Them paragraphs', 100_000);
   await mf.waitForFunction(() => { const labels = [...document.querySelectorAll('.lines:not(.plain) .who')].map(e => e.textContent); return labels.includes('Me') && labels.includes('Them'); }, null, { timeout: 90_000 });
   const rows = await mf.locator('.ln').evaluateAll(es => es.map(e => ({ who: e.querySelector('.who')!.textContent, them: e.querySelector('.who')!.classList.contains('them') })));
   check('online: lines labelled Me and Them, the first line named', rows[0].who !== '' && rows.some(r => r.who === 'Me') && rows.some(r => r.who === 'Them'), rows.map(r => r.who || '·').join(' '));
@@ -617,6 +678,7 @@ try {
   await pip.waitForTimeout(1200);
   await pip.screenshot({ path: join(outDir, 'mini-online.png') });
   // Two preview lines (Me and Them) are higher than Back to latest: scrolling up only a few pixels must not snap back to following.
+  step('wait for scrollable online transcript', 100_000);
   await mf.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.scrollHeight > s.clientHeight + 40; }, null, { timeout: 90_000 });
   const previews = await mf.evaluate(() => document.getElementById('m-drafts')!.getBoundingClientRect().height);
   for (const px of [3, 7]) {
@@ -637,13 +699,30 @@ try {
   await page.locator('#quit-banner').waitFor({ state: 'visible', timeout: 10_000 });
   const inert = await page.evaluate(() => [...document.body.children].filter(n => n.id !== 'quit-banner').every(n => (n as HTMLElement).inert));
   check('a quit: banner shown, the page behind it inert, Start disabled', inert && await page.locator('#start').isDisabled() && /quitting/.test(await page.locator('#quit-text').innerText()));
-  await page.unrouteAll({ behavior: 'wait' });
+  step('detach quit fixture routes', 30_000);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
   check('no page errors', errors.length === 0, errors.join(' | '));
-} finally {
-  await browser.close();
-  await app.close();
-  await rm(directory, { recursive: true, force: true });
 }
-console.log(results.join('\n'));
+let cleanupFailed = false;
+try {
+  await Promise.race([run(), deadline]);
+} catch (error) {
+  const line = `FAIL ${currentStep}: ${(error as Error).message}`;
+  results.push(line); console.error(line); console.error(error);
+} finally {
+  finishing = true;
+  clearTimeout(timer!);
+  for (const [name, close] of [['close test browser', closeBrowser], ['close fixture server', closeServer]] as const) {
+    try { console.log(`STEP ${name} (10000 ms limit)`); await bounded(name, close); }
+    catch (error) { cleanupFailed = true; results.push(`FAIL ${name}: ${(error as Error).message}`); console.error(error); }
+  }
+  // Timed-out startup/work may still own files even if its close hook was not installed yet.
+  if (!cleanupFailed && !deadlineExpired) {
+    try { await bounded('remove fixture directory', removeDirectory); }
+    catch (error) { cleanupFailed = true; results.push(`FAIL remove fixture directory: ${(error as Error).message}`); console.error(error); }
+  }
+}
 console.log(`${results.filter(r => r.startsWith('PASS')).length}/${results.length} passed; screenshots in ${outDir}`);
+// A timed-out operation or cleanup must not keep Node alive on a connection until the suite's outer timeout.
+if (cleanupFailed || deadlineExpired) process.exit(1);
 if (results.some(r => r.startsWith('FAIL'))) process.exitCode = 1;

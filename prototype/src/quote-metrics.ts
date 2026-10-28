@@ -15,8 +15,8 @@ export type QuoteFeature = (typeof QUOTE_FEATURES)[number];
  * run never read), `claim` (the item itself is malformed or not one claim), `limit` (a duplicate, or past a count limit).
  */
 export const OUTCOMES = {
-  passed: 'passed', passed_after_nearby_line: 'passed',
-  no_quote: 'quote', quote_too_short: 'quote', quote_too_long: 'quote', quote_length: 'quote', quote_not_found: 'quote',
+  passed: 'passed', passed_after_nearby_line: 'passed', passed_spans_lines: 'passed', passed_quote_located: 'passed', passed_elided: 'passed', passed_joined: 'passed',
+  no_quote: 'quote', quote_too_short: 'quote', quote_too_long: 'quote', quote_length: 'quote', quote_not_found: 'quote', quote_ambiguous: 'quote',
   quote_not_found_after_invalid_citation: 'quote', quote_joins_speakers: 'quote', quote_not_consecutive: 'quote', quote_in_earlier_lines: 'quote',
   no_citation: 'citation', too_many_citations: 'citation', invalid_citation: 'citation', earlier_lines_only: 'citation', source_not_read: 'citation',
   source_not_found: 'citation', source_unreadable: 'citation', pdf_lines_missing: 'citation', quote_in_search_snippet: 'citation',
@@ -118,7 +118,7 @@ const NOTES_RULES: Rule[] = [
   [/^too long for one claim$/, 'text_too_long'], [/^more than \d+ citations$/, 'too_many_citations'], [/^no quote$/, 'no_quote'],
   [/^quote too long$/, 'quote_too_long'], [/^quote too short to support the item$/, 'quote_too_short'],
   [/^quote not found after an invalid citation was removed$/, 'quote_not_found_after_invalid_citation'], [/^quote not found in the cited lines$/, 'quote_not_found'],
-  [/^duplicate$/, 'duplicate'], [/^more than \d+ items$/, 'over_limit'],
+  [/^quote found in several places$/, 'quote_ambiguous'], [/^duplicate$/, 'duplicate'], [/^more than \d+ items$/, 'over_limit'],
 ];
 /** Dropped-list lines that are not an item's outcome: an owner left unconfirmed (the item is kept), entries never read, ranges. */
 const NOT_AN_ITEM = /^owner not explicitly assigned|^more than \d+ entries$/;
@@ -126,7 +126,8 @@ const NOT_AN_ITEM = /^owner not explicitly assigned|^more than \d+ entries$/;
 export function notesOutcomes(result: { notes: Notes; dropped: NotesRecord['dropped'] }): Outcome[] {
   const { notes, dropped } = result;
   return [
-    ...(['summary', 'decisions', 'actions', 'openQuestions', 'otherMatters'] as const).flatMap(section => notes[section].map(item => item.quoteCheck ?? 'passed' as const)),
+    ...(['summary', 'decisions', 'actions', 'openQuestions', 'otherMatters'] as const).flatMap(section => notes[section].map((item): Outcome => item.quoteCheck === 'spans_lines' ? 'passed_spans_lines'
+      : item.quoteCheck === 'located' ? 'passed_quote_located' : item.quoteCheck === 'elided' ? 'passed_elided' : item.quoteCheck === 'joined' ? 'passed_joined' : item.quoteCheck ?? 'passed')),
     ...notes.needsReview.map(item => match(NOTES_RULES, item.reviewReason ?? '')),
     ...dropped.filter(d => d.section !== 'otherTalk' && !NOT_AN_ITEM.test(d.reason)).map(d => match(NOTES_RULES, d.reason)),
   ];

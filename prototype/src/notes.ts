@@ -36,8 +36,8 @@ export type NoteItem = {
   owner?: string | null; ownerQuote?: string; section: Section;
   /** A name the model gave as owner that the code could not confirm; shown as unconfirmed so the task is not read as the listener's. */
   ownerProposed?: string;
-  /** The quote was found on exactly one nearby line, which was added to the citations. */
-  quoteCheck?: 'passed_after_nearby_line';
+  /** Strict quote match tier; the nearby value is retained only for stored records. */
+  quoteCheck?: 'spans_lines' | 'located' | 'elided' | 'joined' | 'passed_after_nearby_line';
   /** Other matters only. */
   kind?: (typeof OTHER_KINDS)[number]; label?: (typeof OTHER_LABELS)[number];
   /** Set when the item was moved to Needs review. */
@@ -154,8 +154,9 @@ export function notesInstructions(labelled = false): string {
     'Rules:',
     '- One claim per item. Keep conditions and uncertainty ("if X does not help, shorten Y" stays conditional). Keep proposals apart from',
     '  decisions, and questions as questions; never turn an open question into a result.',
-    '- Every item cites the lines it comes from ("cites", at most 6) and gives "quote": 5-25 words copied exactly from one cited line,',
-    '  the words that best support the item.',
+    '- Every item cites the lines it comes from ("cites", at most 6) and gives "quote": 5-25 words copied exactly from the transcript,',
+    '  from one line or running across neighbouring lines; the words that best support the item. To skip words inside a quote write "…"',
+    '  (each piece at least 10 characters).',
     '- Do not guess who said something or label speakers ("the advisor said"). Do not attribute results or work to a person unless',
     '  the transcript states it. A person who is only mentioned is not an owner.',
     '- "owner" only when a line explicitly assigns the task to a named person ("Vela will label the storage bins"); then give that line',
@@ -231,13 +232,114 @@ function ownerSentence(lines: string[], quote: string[]): string | null {
 const MAX_CITES = 8;
 const MAX_ENTRIES = 100;
 
+type QuoteReading = { tokens: string[]; joined: string };
+type QuoteLine = SnapshotSegment & { index: number; corrected: QuoteReading; original: QuoteReading };
+type QuoteLocation = { lines: QuoteLine[]; quoteIn: 'corrected' | 'original' };
+type QuoteMatch = (run: QuoteLine[]) => QuoteLocation['quoteIn'] | null;
+const unsafeElision = /(?<![\p{L}\p{N}])(?:if|unless|in[^\p{L}\p{N}]+case|provided|assuming|not|never|nobody|neither|nor|without|no)(?![\p{L}\p{N}])|n't(?![\p{L}\p{N}])/u;
+
+function elidedIn(line: string[], pieces: string[][]): boolean {
+  const counts = [0];
+  for (const token of line) counts.push(counts.at(-1)! + words([token]));
+  let ends: number[] = [];
+  for (const [part, piece] of pieces.entries()) {
+    const next: number[] = [];
+    let earliest = 0;
+    for (let start = 0; start <= line.length - piece.length; start++) {
+      while (earliest < ends.length && counts[start] - counts[ends[earliest]] > 25) earliest++;
+      if (!piece.every((token, i) => line[start + i] === token)) continue;
+      let reachable = !part;
+      for (let i = earliest; !reachable && i < ends.length && ends[i] <= start; i++) {
+        const gap = ` ${line.slice(ends[i], start).join(' ')} `;
+        reachable = !unsafeElision.test(gap);
+      }
+      if (reachable) next.push(start + piece.length);
+    }
+    if (!next.length) return false;
+    ends = next;
+  }
+  return ends.length > 0;
+}
+
+/** Render a safe path already accepted by the elided matcher, marking only non-empty token gaps. */
+function joinedQuote(location: QuoteLocation, parts: string[], pieces: string[][]): string {
+  const line = location.lines.flatMap(s => s[location.quoteIn].tokens);
+  const counts = [0];
+  for (const token of line) counts.push(counts.at(-1)! + words([token]));
+  const failed = new Set<string>();
+  const path = (part: number, end: number): number[] | null => {
+    if (part === pieces.length) return [];
+    const key = `${part}:${end}`, piece = pieces[part];
+    if (failed.has(key)) return null;
+    for (let start = end; start <= line.length - piece.length; start++) {
+      if (part && counts[start] - counts[end] > 25) break;
+      if (!piece.every((token, i) => line[start + i] === token)) continue;
+      if (part && unsafeElision.test(` ${line.slice(end, start).join(' ')} `)) continue;
+      const rest = path(part + 1, start + piece.length);
+      if (rest) return [start, ...rest];
+    }
+    failed.add(key); return null;
+  };
+  const starts = path(0, 0)!;
+  return parts.map((text, i) => (i ? starts[i] > starts[i - 1] + pieces[i - 1].length ? ' … ' : ' ' : '') + text).join('');
+}
+
+function quoteMatcher(pieces: string[][], elided: boolean): QuoteMatch {
+  const first = ` ${pieces[0].join(' ')} `;
+  const matches = (run: QuoteLine[], key: 'corrected' | 'original') => {
+    let joined = run.length === 1 ? run[0][key].joined : ' ';
+    if (run.length > 1) for (const line of run) if (line[key].joined.length > 2) joined += line[key].joined.slice(1);
+    if (!joined.includes(first)) return false;
+    return !elided || elidedIn(run.length === 1 ? run[0][key].tokens : run.flatMap(s => s[key].tokens), pieces);
+  };
+  return run => matches(run, 'corrected') ? 'corrected' : matches(run, 'original') ? 'original' : null;
+}
+
+function citedQuote(cited: QuoteLine[], match: QuoteMatch): QuoteLocation | undefined {
+  let original: QuoteLocation | undefined;
+  for (const line of cited) {
+    const quoteIn = match([line]);
+    if (quoteIn === 'corrected') return { lines: [line], quoteIn };
+    if (quoteIn && !original) original = { lines: [line], quoteIn };
+  }
+  if (original) return original;
+  const ordered = [...cited].sort((a, b) => a.index - b.index);
+  for (let size = 2; size <= 3; size++) for (let start = 0; start <= ordered.length - size; start++) {
+    const run = ordered.slice(start, start + size);
+    if (run.some((s, i) => s.index !== run[0].index + i || s.source !== run[0].source)) continue;
+    const quoteIn = match(run);
+    if (quoteIn) return { lines: run, quoteIn };
+  }
+  return undefined;
+}
+
+/** Minimal locations only: a matching line is not counted again in a larger surrounding run. */
+function quoteLocations(lines: QuoteLine[], match: QuoteMatch): QuoteLocation[] {
+  const found: QuoteLocation[] = [], runs = new Set<string>();
+  for (let size = 1; size <= 3; size++) for (let start = 0; start <= lines.length - size; start++) {
+    const run = lines.slice(start, start + size);
+    if (run.some(s => s.source !== run[0].source)) continue;
+    let contained = false;
+    for (let n = 1; n < size; n++) for (let i = start; i <= start + size - n; i++) if (runs.has(`${i}:${n}`)) contained = true;
+    if (contained) continue;
+    const quoteIn = match(run);
+    if (quoteIn) { found.push({ lines: run, quoteIn }); runs.add(`${start}:${size}`); }
+  }
+  return found;
+}
+
 /**
- * Mechanical checks on untrusted model output against the snapshot. Nothing is clipped before it is checked: an
- * oversized item goes to Needs review or is dropped, and every citation it gave counts for the off-topic rule.
- * Valid non-project ranges covering more than half the meeting's lines (overlaps counted once) are ignored together.
+ * Mechanical checks on untrusted model output: prefer cited lines, then cited consecutive same-source runs of 2–3 lines,
+ * else locate a unique minimal run (or uniquely cited overlap) in the snapshot. Safe, ordered elisions are checked separately.
+ * Located lines come first, keeping at most MAX_CITES; owners use only the model's valid cites, non-project checks the final cites.
+ * Cited tiers run before snapshot-wide search; each line's tokens and joined reading are computed once per validation.
+ * Items without valid cites need a uniquely locatable quote, else are dropped. Oversized items go to Needs review or are dropped.
+ * Non-project ranges covering over half the snapshot are ignored together.
  */
 export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes; dropped: NotesRecord['dropped'] } {
-  const byRef = new Map(snapshot.segments.map((s, index) => [s.ref, { ...s, index }]));
+  const reading = (text: string): QuoteReading => { const list = tokens(text); return { tokens: list, joined: ` ${list.join(' ')} ` }; };
+  const lines: QuoteLine[] = snapshot.segments.map((s, index) => ({ ...s, index, corrected: reading(s.text), original: reading(s.originalText) }));
+  const byRef = new Map(lines.map(s => [s.ref, s]));
   const dropped: NotesRecord['dropped'] = [];
   const source = (raw ?? {}) as Record<string, unknown>;
   const otherTalk: (OtherTalk & { from: number; to: number })[] = [];
@@ -269,25 +371,44 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       const item = (entry ?? {}) as Record<string, unknown>;
       const text = typeof item.text === 'string' ? item.text.trim() : '';
       const quote = typeof item.quote === 'string' ? item.quote.trim() : '';
+      let storedQuote = quote;
       const drop = (reason: string) => dropped.push({ section, text: text.slice(0, 300) || JSON.stringify(entry).slice(0, 200), reason });
       if (!text) { drop('no text'); continue; }
       if (text.length > 2000 || quote.length > 2000) { drop('malformed: text or quote over 2000 characters'); continue; }
       const refs = Array.isArray(item.cites) ? [...new Set(item.cites.filter((c): c is string => typeof c === 'string'))] : [];
-      const cited = refs.map(ref => byRef.get(ref)).filter(s => s !== undefined);
-      if (!cited.length) { drop('no valid citation'); continue; }
-      const ownerLines = cited.flatMap(s => [s.text, s.originalText]);
-      const q = tokens(quote);
-      let quoteIn = cited.some(s => contains(tokens(s.text), q)) ? 'corrected' as const
-        : cited.some(s => contains(tokens(s.originalText), q)) ? 'original' as const : null;
-      let nearby = false;
-      if (!quoteIn && refs.length < MAX_CITES) {
-        const matches = [...byRef.values()].filter(s => cited.some(c => Math.abs(c.index - s.index) <= 3)
-          && (contains(tokens(s.text), q) || contains(tokens(s.originalText), q)));
-        if (matches.length === 1) {
-          cited.push(matches[0]); nearby = true;
-          quoteIn = contains(tokens(matches[0].text), q) ? 'corrected' : 'original';
+      const modelCited = refs.map(ref => byRef.get(ref)).filter(s => s !== undefined);
+      let cited = modelCited;
+      const ownerLines = modelCited.flatMap(s => [s.text, s.originalText]);
+      const elided = /…|\.{3}/.test(quote), parts = elided ? quote.split(/…|\.{3}/).map(p => p.trim()) : [quote];
+      const pieces = parts.map(tokens), count = words(pieces.flat());
+      const usable = count >= 5 && count <= 25 && quote.length <= 400
+        && (!elided || (parts.length >= 2 && parts.every((p, i) => p.length >= 10 && words(pieces[i]) >= 2)));
+      const match = quoteMatcher(pieces, elided);
+      const direct = usable ? citedQuote(modelCited, match) : undefined;
+      const locations = usable && !direct ? quoteLocations(lines, match) : [];
+      const own = new Set(modelCited.map(s => s.index));
+      const overlaps = locations.filter(m => m.lines.some(s => own.has(s.index)));
+      let located = !direct ? (locations.length === 1 ? locations[0] : overlaps.length === 1 ? overlaps[0] : undefined) : undefined;
+      let matched = direct ?? located, ambiguous = !matched && locations.length > 1;
+      let joined = false;
+      if (usable && !elided && !matched) {
+        const sentences = quote.split(/(?<=[.?!])\s+/), sentencePieces = sentences.map(tokens);
+        if (sentences.length >= 2 && sentences.every((p, i) => p.length >= 10 && words(sentencePieces[i]) >= 2)) {
+          const sentenceMatch = quoteMatcher(sentencePieces, true);
+          const sentenceDirect = citedQuote(modelCited, sentenceMatch);
+          const sentenceLocations = !sentenceDirect ? quoteLocations(lines, sentenceMatch) : [];
+          const sentenceOverlaps = sentenceLocations.filter(m => m.lines.some(s => own.has(s.index)));
+          located = !sentenceDirect ? (sentenceLocations.length === 1 ? sentenceLocations[0] : sentenceOverlaps.length === 1 ? sentenceOverlaps[0] : undefined) : undefined;
+          matched = sentenceDirect ?? located;
+          ambiguous ||= !matched && sentenceLocations.length > 1;
+          if (matched) { joined = true; storedQuote = joinedQuote(matched, sentences, sentencePieces); }
         }
       }
+      if (!modelCited.length && !matched) { drop('no valid citation'); continue; }
+      let quoteCheck: NoteItem['quoteCheck'];
+      if (located) cited = [...located.lines, ...modelCited.filter(s => !located.lines.includes(s))].slice(0, MAX_CITES);
+      const quoteIn = matched?.quoteIn ?? null;
+      if (matched) quoteCheck = joined ? 'joined' : elided ? 'elided' : located ? 'located' : matched.lines.length > 1 ? 'spans_lines' : undefined;
       // A project item resting on non-project talk is probably mis-sorted: kept, but out of the project sections.
       const nonProject = section !== 'otherMatters' && cited.some(s => otherTalkAt(s.index));
       let owner: string | null = null, ownerQuote: string | undefined, ownerProposed: string | undefined;
@@ -302,19 +423,19 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
         }
       }
       const note: NoteItem = {
-        section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote, quoteIn,
-        ...(nearby ? { quoteCheck: 'passed_after_nearby_line' as const } : {}),
+        section, text, cites: cited.map(s => s.id), startMs: Math.min(...cited.map(s => s.startMs)), quote: storedQuote, quoteIn,
+        ...(quoteCheck ? { quoteCheck } : {}),
         ...(section === 'actions' || section === 'otherMatters' ? { owner, ...(ownerQuote ? { ownerQuote } : {}), ...(ownerProposed ? { ownerProposed } : {}) } : {}),
         ...(section === 'otherMatters' ? {
           kind: OTHER_KINDS.find(k => k === item.kind) ?? 'info', label: OTHER_LABELS.find(l => l === item.label) ?? 'other',
         } : {}),
       };
-      const count = words(q);
       const review = nonProject ? 'cites non-project talk; it may belong in Other matters'
         : text.length > 300 ? 'too long for one claim'
-        : refs.length > MAX_CITES ? `more than ${MAX_CITES} citations`
+        : !located && refs.length > MAX_CITES ? `more than ${MAX_CITES} citations`
         : !count ? 'no quote' : count > 25 || quote.length > 400 ? 'quote too long' : count < 5 ? 'quote too short to support the item'
-        : !quoteIn ? (refs.length > cited.length ? 'quote not found after an invalid citation was removed' : 'quote not found in the cited lines') : null;
+        : ambiguous ? 'quote found in several places'
+        : !quoteIn ? (refs.length > modelCited.length ? 'quote not found after an invalid citation was removed' : 'quote not found in the cited lines') : null;
       candidates.push({ key: tokens(text).join(' '), note, review });
     }
     // Duplicates are judged after the checks, so a broken copy cannot shadow a good one: per text, the first copy that
@@ -443,6 +564,8 @@ export type NotesRunner = (input: { instructions: string; inputPath: string; cwd
  * The production runner for each part: one no-tools Pi call. Only a complete run counts: clean exit, Pi settled and not aborted, a normal
  * stop and a non-empty answer. Any tool event is a failure.
  */
+// Measured on qwen3.5:4b: thinking was slower and less reliable for notes.
+const LOCAL_NOTES_THINKING = false;
 export function piNotesRunner(model: TaskModel): NotesRunner {
   return async ({ instructions, inputPath, cwd, sessionDir, signal, thinking, onEvent, onLocalWait }) => {
     const id = await taskModel(model);
@@ -455,7 +578,7 @@ export function piNotesRunner(model: TaskModel): NotesRunner {
         if (tokenCount(listed.context) > 1) assertLocalContext(id, tokenCount(listed.context), tokenCount(listed.maxOut), instructions + await readFile(inputPath, 'utf8'));
       } finally { await reader.close(); }
     }
-    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, localNotesThinking: thinking === 'medium', onEvent, onLocalWait }));
+    return checkNotesRun(await runPiTask(instructions, { model: id, cwd, sessionDir, tools: null, files: [inputPath], timeoutMs: 600_000, signal, thinking, localNotesThinking: LOCAL_NOTES_THINKING, onEvent, onLocalWait }));
   };
 }
 export function checkNotesRun(result: PiTaskResult): PiTaskResult {
@@ -560,27 +683,39 @@ export class NotesJobs {
         progress.estimate = await history.estimate('notes', snapshot.segments.length).catch(() => null);
         let failed = false, firstError: unknown;
         const partsBegan = performance.now();
+        let latestPart: keyof typeof NOTES_PARTS | null = null;
         const tasks = Object.entries(NOTES_PARTS).map(async ([name, keys]) => {
           const part = name as keyof typeof NOTES_PARTS;
           const timing = diagnostics.parts[part], began = performance.now();
-          const scanner = new ItemScanner(keys.filter(k => k !== 'otherTalk'), (_section, item) => {
-            if (!controller.signal.aborted && !job.ended) { progress.parts[part].count++; if (typeof item.text === 'string') progress.latest = item.text; }
-          });
           try {
-            const result = await runner({ instructions: partInstructions(instructions, keys), inputPath, cwd,
-              sessionDir: join(this.options.directory, 'sessions', meetingId, part), signal: controller.signal, thinking: 'medium',
-              onLocalWait: ms => { if (!job.ended) timing.waitMs = ms; },
-              onEvent: event => {
-                if (job.ended) return;
-                partDiagnosticEvent(timing, event);
-                if (controller.signal.aborted) return;
-                const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); }
-              } });
-            controller.signal.throwIfAborted();
-            if (job.ended) throw new Error('The notes job has ended.');
-            const raw = extractJson(result.text) as Record<string, unknown>;
-            progress.parts[part].done = true;
-            return { result, raw: Object.fromEntries(keys.map(k => [k, raw[k]])) };
+            const prompt = partInstructions(instructions, keys);
+            for (let attempt = 0; ; attempt++) {
+              controller.signal.throwIfAborted();
+              progress.parts[part].count = 0;
+              if (latestPart === part) { progress.latest = null; latestPart = null; }
+              const scanner = new ItemScanner(keys.filter(k => k !== 'otherTalk'), (_section, item) => {
+                if (!controller.signal.aborted && !job.ended) {
+                  progress.parts[part].count++;
+                  if (typeof item.text === 'string') { progress.latest = item.text; latestPart = part; }
+                }
+              });
+              const result = await runner({ instructions: prompt, inputPath, cwd,
+                sessionDir: join(this.options.directory, 'sessions', meetingId, attempt ? `${part}-retry-${randomUUID()}` : part), signal: controller.signal, thinking: 'medium',
+                onLocalWait: ms => { if (!job.ended) timing.waitMs = (timing.waitMs ?? 0) + ms; },
+                onEvent: event => {
+                  if (job.ended) return;
+                  partDiagnosticEvent(timing, event);
+                  if (controller.signal.aborted) return;
+                  const delta = textDelta(event); if (delta !== null) { progress.phase = 'write'; scanner.push(delta); }
+                } });
+              controller.signal.throwIfAborted();
+              if (job.ended) throw new Error('The notes job has ended.');
+              let raw: Record<string, unknown>;
+              try { raw = extractJson(result.text) as Record<string, unknown>; }
+              catch (error) { if (!attempt) continue; throw error; }
+              progress.parts[part].done = true;
+              return { result, raw: Object.fromEntries(keys.map(k => [k, raw[k]])) };
+            }
           } catch (error) {
             // Quota belongs to each part, not only the error selected for display.
             if (RATE_LIMIT.test(error instanceof Error ? error.message : String(error))) this.options.cooldowns?.hit('model', 'notes');

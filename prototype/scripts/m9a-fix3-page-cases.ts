@@ -28,8 +28,13 @@ export async function checkFix3Page(page: Page, show: (snapshot: any) => Promise
     const draft = { ...active(0, 0), window: 'follow-preview', windowStartMs: 150000, coveredUntilMs: 151000,
       words: [{ text: 'latest-preview', startMs: 150100, endMs: 150300 }] };
     await show({ segments: [...lines, ...arriving.slice(0, 5)], drafts: [draft], pending: [], replay });
+    // A fulfilled poll is not yet a rendered snapshot on a loaded browser. Release only with a real backlog below us.
+    await page.locator('span[data-id="follow34:0"]').waitFor({ state: 'attached' });
+    await page.locator('#live-draft .preview-text', { hasText: 'latest-preview' }).waitFor({ state: 'attached' });
     assert.deepEqual(await page.evaluate(() => ({ text: getSelection()!.toString(), top: document.getElementById('transcript')!.scrollTop })), held);
-    await page.evaluate(() => getSelection()!.removeAllRanges()); await page.waitForTimeout(150);
+    await page.evaluate(() => new Promise<void>(resolve => {
+      document.addEventListener('selectionchange', () => resolve(), { once: true }); getSelection()!.removeAllRanges();
+    }));
     assert.equal(await page.locator('#transcript').evaluate(n => n.scrollTop), held.top, 'release must not jump');
     assert.equal(await page.locator('#jump').isVisible(), true, 'the newest text is off-screen, so Jump cannot be hidden');
     assert.equal(await page.locator('#jump').textContent(), 'Jump to live ↓');
@@ -44,7 +49,9 @@ export async function checkFix3Page(page: Page, show: (snapshot: any) => Promise
       const text = document.querySelector('span[data-id="follow37:0"]')!.firstChild!, range = document.createRange();
       range.setStart(text, 0); range.setEnd(text, 5); getSelection()!.addRange(range);
     });
-    await page.evaluate(() => getSelection()!.removeAllRanges()); await page.waitForTimeout(100);
+    await page.evaluate(() => new Promise<void>(resolve => {
+      document.addEventListener('selectionchange', () => resolve(), { once: true }); getSelection()!.removeAllRanges();
+    }));
     await show({ segments: [...lines, ...arriving], drafts: [{ ...draft, words: [...draft.words, { text: 'newest', startMs: 151100, endMs: 151300 }] }], pending: [], replay });
     assert.ok(await gap() < 2, 'near-bottom release follows the actual bottom on the next render');
   });

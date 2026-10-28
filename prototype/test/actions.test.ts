@@ -144,11 +144,14 @@ test('material manifest notices a changed file and says when it could not check 
   } finally { await f.close(); }
 });
 
-/** A scripted Pi: each call waits for the test to release it with a result. */
-function scripted() {
+/** A scripted Pi: each call waits for the test to release it with a result. `first` exercises out-of-order preparation. */
+function scripted(first?: string) {
+  let entered!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
   const calls: { action: string; input: string; signal: AbortSignal; release: (r: PiTaskResult | Error) => void }[] = [];
   const runner: ActionRunner = async ({ action, inputPath, signal, onEvent }) => {
     const input = await (await import('node:fs/promises')).readFile(inputPath, 'utf8');
+    if (first && action !== first) await ready;
     return new Promise((resolve, reject) => {
       const call = { action, input, signal, release: (r: PiTaskResult | Error) => r instanceof Error ? reject(r) : resolve(r) };
       // Like runPiTask: an abort that happened before the task started still cancels it.
@@ -157,6 +160,7 @@ function scripted() {
       onEvent({ type: 'tool_execution_start', toolName: 'read', args: { path: '/x/inventory/stock.txt' } });
       onEvent({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Draft…' } });
       calls.push(call);
+      if (action === first) entered();
     });
   };
   return { runner, calls };
@@ -167,7 +171,7 @@ import { until } from './helpers/until.ts';
 test('action jobs: two at a time, merged duplicates, bounded queue, cancel, checks, failure keeps the draft', async () => {
   const f = await fixture();
   try {
-    const { runner, calls } = scripted();
+    const { runner, calls } = scripted('compute');
     const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => f.roots });
     const sel = (i: number) => ({ text: LINES[i].slice(0, 20), segmentIds: [f.segments[i].id] });
     const a = await jobs.submit(f.meeting.id, { action: 'answer', selection: sel(0) });
@@ -186,7 +190,7 @@ test('action jobs: two at a time, merged duplicates, bounded queue, cancel, chec
     assert.equal(jobs.get(c.job.id)!.state, 'cancelled');
 
     // A finished answer with one good and one invented citation: done, with the failure shown.
-    calls[0].release(result('The cupboard has 56 buttons [1], see also [2] and [3].' + META([
+    calls.find(call => call.action === 'answer')!.release(result('The cupboard has 56 buttons [1], see also [2] and [3].' + META([
       { id: 1, type: 'file', rootId: 'R1', path: 'inventory/stock.txt', lines: '3', quote: '7 packets of 8 = 56 buttons, counted on Thursday' },
       { id: 2, type: 'web', url: 'https://invented.example/wardrobe', quote: 'a page nobody fetched here' }])));
     await until(() => jobs.get(a.job.id)!.state === 'done');
@@ -197,7 +201,7 @@ test('action jobs: two at a time, merged duplicates, bounded queue, cancel, chec
     assert.equal(jobs.get(a.job.id)!.draft, '');
 
     // A run that prints text and then exits abnormally is a failure; the partial draft is kept, labelled by state.
-    calls[1].release(result('Partial', { exitCode: 1 }));
+    calls.find(call => call.action === 'compute')!.release(result('Partial', { exitCode: 1 }));
     await until(() => jobs.get(b.job.id)!.state === 'failed');
     assert.match(jobs.get(b.job.id)!.error!, /did not finish normally/);
     assert.equal(jobs.get(b.job.id)!.draft, 'Draft…');

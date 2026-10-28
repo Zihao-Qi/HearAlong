@@ -8,7 +8,7 @@ import { checkNotesRun } from '../src/notes.ts';
 import { emptyPartDiagnostics, notesDiagnosticsRows, partDiagnosticEvent } from '../src/notes-diagnostics.ts';
 import type { PiTaskResult } from '../src/pi-task.ts';
 
-async function fixture(t: any, kind: 'ollama' | 'lmstudio' = 'ollama', notes = true) {
+async function fixture(t: any, kind: 'ollama' | 'lmstudio' = 'ollama', notes = false) {
   let size = 32768, finish = 'stop';
   const bodies: any[] = [];
   const server = createServer(async (req, res) => {
@@ -43,8 +43,19 @@ const record = (message: any) => {
   return part.requests[0];
 };
 
-test('local thinking: notes use medium and 16384, independently of catalog reasoning and requested tokens', async t => {
+test('local thinking: default requests send none and the off allowance', async t => {
   const f = await fixture(t);
+  for (const simple of [true, false]) {
+    const result = await f.ask(undefined, simple, 4096);
+    assert.equal(result.stopReason, 'stop', result.errorMessage);
+    assert.equal(f.bodies.at(-1).reasoning_effort, 'none');
+    assert.equal(f.bodies.at(-1).max_tokens, 4096);
+    assert.equal(record(result).thinking, false); assert.equal(record(result).allowance, 4096);
+  }
+});
+
+test('local thinking: explicit opt-in uses medium and 16384, independently of catalog reasoning and requested tokens', async t => {
+  const f = await fixture(t, 'ollama', true);
   assert.equal(f.provider.getModels()[0].reasoning, false);
   for (const simple of [true, false]) {
     const result = await f.ask(undefined, simple);
@@ -57,7 +68,7 @@ test('local thinking: notes use medium and 16384, independently of catalog reaso
 });
 
 test('local thinking: measured context reserves input and margin; below 6144 falls back without clipping input', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, 'ollama', true);
   f.setSize(16384);
   const input = 'A fictional lantern. '.repeat(1200);
   const result = await f.ask(input, true, 4096);
@@ -72,7 +83,7 @@ test('local thinking: measured context reserves input and margin; below 6144 fal
 });
 
 test('local thinking: the 6144 threshold is inclusive and uses Unicode characters, not UTF-16 units', async t => {
-  const f = await fixture(t);
+  const f = await fixture(t, 'ollama', true);
   const input = '🏮'.repeat(1000);
   assert.equal((await f.ask(input)).stopReason, 'stop');
   const overhead = 32768 - room(32768, f.bodies[0]);
@@ -88,7 +99,7 @@ test('local thinking: the 6144 threshold is inclusive and uses Unicode character
 });
 
 test('local thinking: LM Studio remains unchanged, even with a notes opt-in', async t => {
-  const f = await fixture(t, 'lmstudio');
+  const f = await fixture(t, 'lmstudio', true);
   for (const simple of [true, false]) {
     const result = await f.ask(undefined, simple);
     assert.equal(result.stopReason, 'stop', result.errorMessage);
@@ -99,7 +110,7 @@ test('local thinking: LM Studio remains unchanged, even with a notes opt-in', as
 });
 
 test('local thinking: a length stop still fails notes without suggesting shorter input defeats the cap', async t => {
-  const f = await fixture(t); f.length();
+  const f = await fixture(t, 'ollama', true); f.length();
   const reply = await f.ask();
   assert.equal(reply.stopReason, 'length'); assert.equal(f.bodies[0].max_tokens, 16384);
   const result = { ...reply, text: 'partial', exitCode: 0, exitSignal: null, settled: true, aborted: false, tools: [], toolEvents: 0 } as unknown as PiTaskResult;

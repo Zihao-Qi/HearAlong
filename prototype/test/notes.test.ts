@@ -43,7 +43,7 @@ test('citations, quotes, owners and off-topic ranges are checked against the sna
         { text: 'Leave the waistcoats on rail B until the matinee ends.', cites: [S[1]], quote: 'Keep the striped waistcoats on rail B' },
         { text: 'Leave the waistcoats on rail B until the matinee ends.', cites: [S[1]], quote: 'Keep the striped waistcoats on rail B' }, // duplicate
         { text: 'The watering can belongs beside the yellow bench.', cites: [S[2], S[5]], quote: 'The watering can is beside the yellow bench' }, // rests on non-project talk
-        { text: 'Use a real but wrong citation.', cites: [S[6]], quote: 'Keep the striped waistcoats on rail B' }, // quote is outside S6's three-line window
+        { text: 'Use a real but wrong citation.', cites: [S[6]], quote: 'Keep the dotted waistcoats on rail B' }, // absent quote still needs review
         { text: 'Cite a line that does not exist.', cites: ['S99'], quote: 'x' },
       ],
       actions: [
@@ -367,7 +367,7 @@ test('nothing is clipped before checking; a broken duplicate does not shadow a g
       decisions: [
         // Eight wardrobe citations, then a ninth inside a non-project range: still noticed, so out of the project sections.
         { text: 'Mixed item.', cites: [S[1], S[2], S[3], S[6], 'S90', 'S91', 'S92', 'S93', S[4]], quote: 'Keep the striped waistcoats on rail B' },
-        { text: 'Keep the waistcoats on rail B.', cites: ['S99'], quote: 'Keep the striped waistcoats on rail B' },
+        { text: 'Keep the waistcoats on rail B.', cites: ['S99'], quote: 'Keep the dotted waistcoats on rail B' },
         { text: 'Keep the waistcoats on rail B.', cites: [S[1]], quote: 'Keep the striped waistcoats on rail B' },
         { text: 'A long quote.', cites: [S[1]], quote: `Keep the ${'stripedwaistcoatlongtoken'.repeat(30)} on rail B` },
       ],
