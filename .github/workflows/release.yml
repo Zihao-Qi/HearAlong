@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Package tracked source
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          # git archive fixes metadata to the tagged commit; gzip -n omits host timestamps.
+          git archive --format=tar "$GITHUB_SHA" app install.sh LICENSE THIRD-PARTY-LICENSES |
+            gzip -n > "$RUNNER_TEMP/release/HearAlong.tar.gz"
+          tar -tzf "$RUNNER_TEMP/release/HearAlong.tar.gz" > "$RUNNER_TEMP/release/contents"
+          awk '
+            /(^|\/)(private|data|node_modules|dist)($|\/)/ { bad=1 }
+            END { exit bad }
+          ' "$RUNNER_TEMP/release/contents"
+          rm "$RUNNER_TEMP/release/contents"
+          cp install.sh "$RUNNER_TEMP/release/install.sh"
+          cd "$RUNNER_TEMP/release"
+          sha256sum HearAlong.tar.gz > HearAlong.tar.gz.sha256
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "$RUNNER_TEMP/release/HearAlong.tar.gz" \
+            "$RUNNER_TEMP/release/HearAlong.tar.gz.sha256" \
+            "$RUNNER_TEMP/release/install.sh"

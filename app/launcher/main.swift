@@ -14,8 +14,9 @@ struct Config: Decodable {
     let path: String        // the PATH of the shell that built the app, for the tools the server starts (pi, uv, ffmpeg)
     let app: String         // the repo's app/ folder: the server's working directory
     let port: Int
+    let data: String?      // installer-owned data directory, independent of the replaceable code
 
-    private enum CodingKeys: String, CodingKey { case node, path, app, prototype, port }
+    private enum CodingKeys: String, CodingKey { case node, path, app, prototype, port, data }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -24,6 +25,7 @@ struct Config: Decodable {
         // Keep reading launcher.json files written before the folder rename.
         app = try values.decodeIfPresent(String.self, forKey: .app) ?? values.decode(String.self, forKey: .prototype)
         port = try values.decode(Int.self, forKey: .port)
+        data = try values.decodeIfPresent(String.self, forKey: .data)
     }
 }
 
@@ -42,10 +44,11 @@ final class Helper: NSObject, NSApplicationDelegate {
 
     private var port: Int { Int(env["MEETING_LAUNCHER_PORT"] ?? "") ?? config.port }
     private var base: URL { URL(string: "http://127.0.0.1:\(port)/")! }
-    private var logURL: URL {
-        let data = env["MEETING_DATA_DIR"].map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: config.app).appendingPathComponent("data")
-        return data.appendingPathComponent("logs/launcher.log")
+    private var dataURL: URL {
+        (env["MEETING_DATA_DIR"] ?? config.data).map { URL(fileURLWithPath: $0).standardizedFileURL }
+            ?? URL(fileURLWithPath: config.app).appendingPathComponent("data")
     }
+    private var logURL: URL { dataURL.appendingPathComponent("logs/launcher.log") }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(self, andSelector: #selector(handleURL(_:reply:)),
@@ -101,7 +104,7 @@ final class Helper: NSObject, NSApplicationDelegate {
     private func startServer(openWindow open: Bool) {
         // Check before making logs: that would create the missing data folder and hide the server's notice.
         let root = URL(fileURLWithPath: config.app).standardizedFileURL
-        let data = env["MEETING_DATA_DIR"].map { URL(fileURLWithPath: $0).standardizedFileURL } ?? root.appendingPathComponent("data")
+        let data = dataURL
         let legacy = root.deletingLastPathComponent().appendingPathComponent("prototype/data")
         if data == root.appendingPathComponent("data"),
            !FileManager.default.fileExists(atPath: data.path), FileManager.default.fileExists(atPath: legacy.path) {
@@ -125,6 +128,7 @@ final class Helper: NSObject, NSApplicationDelegate {
         var environment = env
         environment["PATH"] = config.path
         environment["PORT"] = String(port)
+        environment["MEETING_DATA_DIR"] = data.path
         // The server stops by itself once no window has been open for this long and nothing is running.
         environment["MEETING_IDLE_EXIT_S"] = environment["MEETING_IDLE_EXIT_S"] ?? "20"
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]

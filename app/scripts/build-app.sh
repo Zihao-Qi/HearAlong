@@ -2,24 +2,38 @@
 # Builds "HearAlong Helper.app" (M7) into app/dist/ from launcher/main.swift with the Swift toolchain on this Mac: the
 # invisible helper that starts the server for the installed Chrome app "HearAlong" (it opens meetingassistant:// links)
 # and shows the mini view in a native floating window while recording.
-# Nothing is installed; the build registers the helper with macOS so the link finds it. Rebuild after moving the repo or changing Node.
-# Usage: npm run build:app
+# By default the build registers the helper with macOS so the link finds it. Rebuild after moving the repo or changing Node.
+# Usage: npm run build:app; or build-app.sh --install OUTPUT_DIR DATA_DIR APP_ROOT
+# HEARALONG_NO_REGISTER=1 disables LaunchServices registration (required for tests).
 set -eu
 cd "$(dirname "$0")/.."
 APP_ROOT="$(pwd)"
-APP="$APP_ROOT/dist/HearAlong Helper.app"
+OUTPUT_DIR="$APP_ROOT/dist"
+DATA_DIR=""
+if [ "${1:-}" = "--install" ] && [ "$#" -eq 4 ]; then
+  OUTPUT_DIR="$2"
+  DATA_DIR="$3"
+  APP_ROOT="$4"
+elif [ "$#" -ne 0 ]; then
+  echo "Usage: $0 [--install OUTPUT_DIR DATA_DIR APP_ROOT]" >&2
+  exit 1
+fi
+APP="$OUTPUT_DIR/HearAlong Helper.app"
 # Leave legacy bundles untouched; remove obsolete copies manually after rebuilding.
 NODE="$(command -v node)"
 [ -x "$NODE" ] || { echo "node was not found on PATH" >&2; exit 1; }
 command -v swiftc >/dev/null || { echo "swiftc was not found (Xcode command line tools)" >&2; exit 1; }
 
-LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+LSREGISTER=${HEARALONG_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -o "$APP/Contents/MacOS/HearAlongHelper" launcher/main.swift -framework Cocoa -framework WebKit
 
 # The icon, from the app's own (public/icons, drawn by scripts/make-icons.swift).
-ICONSET="$(mktemp -d)/AppIcon.iconset"
+ICON_TMP="$(mktemp -d)"
+trap 'rm -rf "$ICON_TMP"' EXIT
+trap 'exit 1' HUP INT TERM
+ICONSET="$ICON_TMP/AppIcon.iconset"
 mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
   sips -z $size $size public/icons/icon-1024.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
@@ -55,9 +69,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Paths recorded now, because an app opened from Finder does not get the shell's PATH.
-node -e 'process.stdout.write(JSON.stringify({ node: process.argv[1], path: process.argv[2], app: process.argv[3], port: 4318 }, null, 2))' \
-  "$NODE" "$PATH" "$APP_ROOT" > "$APP/Contents/Resources/launcher.json"
+node -e 'process.stdout.write(JSON.stringify({ node: process.argv[1], path: process.argv[2], app: process.argv[3], data: process.argv[4] || undefined, port: 4318 }, null, 2))' \
+  "$NODE" "$PATH" "$APP_ROOT" "$DATA_DIR" > "$APP/Contents/Resources/launcher.json"
 
-codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "note: ad-hoc signing failed; the app still runs on this Mac" >&2
-"$LSREGISTER" -f "$APP" # so a meetingassistant:// link opens this helper
+codesign --force --sign - "$APP" >/dev/null 2>&1
+if [ "${HEARALONG_NO_REGISTER:-0}" != "1" ]; then
+  "$LSREGISTER" -f "$APP" # so a meetingassistant:// link opens this helper
+fi
 echo "Built: $APP"

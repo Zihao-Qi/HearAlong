@@ -59,6 +59,32 @@ HearAlong is my project. I set its direction and requirements, made the product 
 
 ## Getting started
 
+### Install on your Mac
+
+Requires macOS 26 or later, [Google Chrome](https://www.google.com/chrome/) and [Homebrew](https://brew.sh/) on PATH (including its Xcode command line tools). Apple Silicon is recommended; Intel works with slower, CPU-only transcription.
+
+```sh
+curl -fsSL https://github.com/Zihao-Qi/HearAlong/releases/latest/download/install.sh | sh
+```
+
+The installer verifies the release checksum, installs Node.js ≥ 22.19 (`node@22`) and FFmpeg ≥ 4.4 with Homebrew only if needed, and installs pinned runtime packages with npm. It never installs Homebrew or Chrome, and never asks for administrator privileges. It builds and ad-hoc signs the helper locally with Apple's Swift tools; no Apple Developer account is needed.
+
+- Code: `~/Library/Application Support/HearAlong/app/`
+- Recordings, transcripts, settings and downloaded speech models: `~/Library/Application Support/HearAlong/data/`
+- Launcher: `~/Applications/HearAlong Helper.app`
+
+It opens HearAlong in Chrome. In Setup, download the 731 MB speech model (or choose one already on your Mac). You can install HearAlong as a Chrome web app for its own Dock icon. Re-run the same command to upgrade; quit HearAlong first and let its helper/server exit. Upgrades keep your data and replace code only after download, checksum verification, package installation and helper build succeed.
+
+To uninstall, quit HearAlong, then run:
+
+```sh
+sh "$HOME/Library/Application Support/HearAlong/app/install.sh" --uninstall
+```
+
+This removes the code and helper, **not your data**. Delete `~/Library/Application Support/HearAlong/data/` yourself only if you no longer want your meetings or models. Homebrew, Node, FFmpeg, saved Keychain keys and any Chrome web app remain; remove those separately if desired.
+
+### Run from source
+
 Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI features are optional: use Ollama or LM Studio on this Mac, or explicitly opt in to a cloud provider through Pi. Without them, recording and transcription still work fully on the Mac.
 
 ```sh

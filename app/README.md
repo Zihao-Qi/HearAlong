@@ -4,6 +4,8 @@ Local speech recognition, selectable transcript text, draft notes, a live board,
 
 ## Setup and start
 
+For the one-command release installer, upgrades and uninstall instructions, see [Getting started](../README.md#getting-started). Installed releases keep code in `~/Library/Application Support/HearAlong/app/`, data in the separate `~/Library/Application Support/HearAlong/data/`, and the helper in `~/Applications/`. The following instructions run from a source checkout.
+
 Requirements:
 - Node.js ≥ 22.19.0 and npm.
 - Google Chrome for the app. Browser checks and rehearsals require `MEETING_TEST_CHROME` pointing to a disposable Chromium executable; they never default to the user's browser.
@@ -77,7 +79,7 @@ Other included tools:
 - `scripts/plans-check.ts`, `plans-lifecycle-check.ts`, `notes-ui-check.ts`, `m9a-page-check.ts`, `transcript-notes-page-check.ts`, and `audio-retention-check.ts`: browser/domain checks using temporary or fictional data.
 - Layout, mini, launcher, native-mini, replay, and transcription tools document their required input arguments in their source. Supply only your own or synthetic recordings/stores; no private input is bundled. Native launcher checks require a separately built macOS helper and Swift tools.
 
-The optional `scripts/build-app.sh` builds and registers the local macOS helper; it records your local executable paths in its generated bundle. Generated bundles belong in ignored `dist/` and must not be published as source. A browser-only start does not require the helper.
+The optional `scripts/build-app.sh` builds and registers the local macOS helper; it records your local executable paths in its generated bundle. Generated bundles belong in ignored `dist/` and must not be published as source. A browser-only start does not require the helper. The installer uses `sh scripts/build-app.sh --install OUTPUT_DIR DATA_DIR APP_ROOT` to build against the stable installed code path with a separate `MEETING_DATA_DIR`. `HEARALONG_NO_REGISTER=1` disables LaunchServices registration and is mandatory in tests; `HEARALONG_LSREGISTER` can point to a fail-closed registration stub. Installer tests also override `HEARALONG_RELEASE_URL` (a release asset directory, including `file://` fixtures) and `HEARALONG_CHROME_APP` (a disposable Chrome stand-in). They stub Homebrew, npm, Swift and macOS integration; no real install runs in the suite.
 
 ## Rehearse supplied audio
 
