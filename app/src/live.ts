@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { isRemote } from './speakers.ts';
 import { FRAME_RATE, type Frame, type MeetingStore } from './store.ts';
 import type { LiveDrafts } from './drafts.ts';
 import type { CaptureTiming } from './capture-gaps.ts';
@@ -61,6 +62,7 @@ export class LiveCapture {
     this.reconnectUntil = this.clock() + RECORDING_RECONNECT_MS;
   }
   private clock() { return this.options.clock?.() ?? Date.now(); }
+  sourceEnded(source: string): boolean { return this.sources.get(source)?.ended === true; }
   private state(meetingId: string, source: string): SourceState {
     let state = this.sources.get(source);
     if (!state) { state = { meetingId, chain: Promise.resolve(), busy: 0, lastFrameAt: this.clock(), window: null, ended: false, firstFrameAt: null, lastSoundAt: null, endMs: 0 }; this.sources.set(source, state); }
@@ -109,19 +111,19 @@ export class LiveCapture {
   }
 
   /** Saves a frame (before it is acknowledged), feeds its draft, and seals a window when enough is held. */
-  accept(meetingId: string, source: string, sequence: number, startMs: number, pcm: Buffer, pageId?: string | null, timing?: CaptureTiming): Promise<Frame> {
+  accept(meetingId: string, source: string, sequence: number, startMs: number, pcm: Buffer, pageId?: string | null, timing?: CaptureTiming, admit?: () => boolean): Promise<Frame> {
     // Admission is decided when the frame arrives: a frame queued before a close began is saved and sealed by it, not refused.
     if (this.closing) return Promise.reject(new Error('Live capture has stopped.'));
     const state = this.state(meetingId, source);
     return this.run(state, async () => {
-      if (state.ended) throw new CaptureConflict('This audio source has ended; start a new recording.');
+      if (state.ended || (admit && !admit())) throw new CaptureConflict('This audio source has ended; start a new recording.');
       const { frame, added } = await this.store.addFrame(meetingId, source, sequence, startMs, pcm, timing);
       // Reclaim only accepted audio: a rejected sequence/body must not reopen a source or reset retention.
       if (pageId !== undefined) this.store.claimRecording(meetingId, source, pageId);
       state.lastFrameAt = this.clock();
       state.firstFrameAt ??= state.lastFrameAt;
       state.endMs = Math.max(state.endMs, frame.startMs + frame.samples * 1000 / FRAME_RATE);
-      if (rms(asFloats(pcm)) >= (source.startsWith('tab:') ? SOUND_LEVEL.tab : SOUND_LEVEL.mic)) state.lastSoundAt = state.lastFrameAt;
+      if (rms(asFloats(pcm)) >= (isRemote(source) ? SOUND_LEVEL.tab : SOUND_LEVEL.mic)) state.lastSoundAt = state.lastFrameAt;
       const drafts = this.options.drafts;
       // A repeated frame (lost reply, retry) was already fed: feeding it again would repeat its words in the draft.
       if (drafts && added) {
@@ -149,6 +151,19 @@ export class LiveCapture {
       finally { this.options.drafts?.release(source); }
     });
   }
+  /** Loss detection may seal audio, but cannot end a source that became live while sealing or waiting in its queue. */
+  endIfInactive(meetingId: string, source: string, inactive: () => boolean): Promise<boolean> {
+    const state = this.state(meetingId, source);
+    return this.run(state, async () => {
+      if (!inactive()) return false;
+      await this.sealIfDue(state, source, true);
+      if (!inactive()) return false;
+      state.ended = true;
+      this.store.finishRecordingSource(meetingId, source, 'ended', this.clock());
+      this.options.drafts?.release(source);
+      return true;
+    });
+  }
   /** Goodbye is explicit, not inferred from a missing heartbeat or a sleeping laptop. */
   async abandonPage(pageId: string) {
     for (const session of this.store.openRecordings().filter(s => s.pageId === pageId)) {
@@ -160,10 +175,11 @@ export class LiveCapture {
     return this.run(state, async () => {
       const eligible = () => this.store.openRecordings().some(s => s.meetingId === meetingId && s.source === source && (!recoveringOnly || s.state === 'recovering'));
       if (!eligible()) return;
+      if (source.startsWith('app:')) state.ended = true;
       await this.sealIfDue(state, source, true);
       // A reconnect can arrive during sealing. It wins over startup abandonment.
       if (!eligible()) return;
-      // Unlike an explicit source end, abandonment can be resumed by a delayed frame/reconnect.
+      // Microphones/tabs can resume after abandonment; helper-owned app sources never do.
       this.options.drafts?.release(source);
       this.store.finishRecordingSource(meetingId, source, 'abandoned', this.clock());
     });

@@ -47,10 +47,14 @@
       <div id="start-menu" class="start-menu" role="menu" aria-label="Start recording" hidden>
         <p class="start-consent">Make sure everyone has agreed to be recorded.</p>
         <button id="start-mic" role="menuitem">Microphone<span class="muted small">In person: the room</span></button>
-        <button id="start-online" role="menuitem">Microphone + meeting tab<span class="muted small">Online: you, and the call from a Chrome tab</span></button>
+        <button id="start-online" role="menuitem">Microphone + online call<span class="muted small">Online: you, and the call</span></button>
+        <div id="call-heading" class="call-heading" hidden><span>Where is the call?</span><button id="call-back" type="button">Back</button></div>
+        <button id="call-tab" role="menuitem" hidden>A Chrome tab<span class="muted small">Pick it in Chrome’s share window</span></button>
+        <div id="call-apps" class="call-apps" hidden></div>
+        <p id="call-empty" class="call-empty" hidden>No meeting app is playing sound.</p>
       </div>
     </div>
-    <button id="add-tab" class="button" hidden title="Also record a Chrome tab's audio (the online call) as “Them”">Add meeting tab</button>
+    <div id="add-call-wrap" class="start-wrap"><button id="add-tab" class="button" hidden aria-haspopup="menu" aria-expanded="false" aria-controls="start-menu" title="Also record the online call as “Them”">Add online call</button></div>
     <button id="mini-view" class="text-action" type="button" hidden title="A small window that stays on top of other apps while recording">Mini view</button>
     <button id="stop" class="button" hidden>Stop</button>
     <button id="open-system" class="button system-button" type="button" aria-haspopup="dialog" aria-label="Settings">

@@ -41,6 +41,7 @@ function fixture() {
   const app = join(appRoot, 'app');
   const data = join(appRoot, 'data');
   const helper = join(home, 'Applications/HearAlong Helper.app');
+  const helperConfig = join(appRoot, 'helper.json');
   mkdirSync(bin, { recursive: true });
   mkdirSync(home);
   mkdirSync(join(home, 'Applications/Google Chrome.app'), { recursive: true });
@@ -103,9 +104,12 @@ printf '#!/bin/sh\\nexit 0\\n' > "$1"`);
   stub('mv', `if [ "\${TEST_FAIL_HELPER_SWAP:-}" = 1 ] && [ "$2" = "$TEST_HELPER" ]; then
   case "$1" in */previous.app) ;; *) exit 93 ;; esac
 fi
+if [ "\${TEST_FAIL_CONFIG_SWAP:-}" = 1 ] && [ "$2" = "$TEST_HELPER_CONFIG" ]; then
+  case "$1" in */previous.json) ;; *) exit 96 ;; esac
+fi
 exec "${system('mv')}" "$@"`);
   const env = { ...process.env, HOME: home, PATH: bin, TMPDIR: root, CALLS: log, TEST_ROOT: root,
-    TEST_HELPER: helper, HEARALONG_CHROME_APP: join(home, 'Applications/Google Chrome.app'),
+    TEST_HELPER: helper, TEST_HELPER_CONFIG: helperConfig, HEARALONG_CHROME_APP: join(home, 'Applications/Google Chrome.app'),
     HEARALONG_TEST_MODE: '1',
     HEARALONG_NO_REGISTER: '1', HEARALONG_LSREGISTER: join(bin, 'lsregister'),
     HEARALONG_RELEASE_URL: pathToFileURL(release).href };
@@ -124,7 +128,7 @@ exec "${system('mv')}" "$@"`);
     return result;
   };
   const calls = () => readFileSync(log, 'utf8');
-  return { root, home, bin, appRoot, app, data, helper, run, ok, calls };
+  return { root, home, bin, appRoot, app, data, helper, helperConfig, run, ok, calls };
 }
 
 test('installer and builder default to the same system LaunchServices tool (never invoked here)', () => {
@@ -179,6 +183,8 @@ test('fresh offline install streamed through stdin builds the helper with separa
   assert.equal(config.app, f.app);
   assert.equal(config.data, f.data);
   assert.equal(config.port, 4318);
+  assert.deepEqual(JSON.parse(readFileSync(f.helperConfig, 'utf8')), config);
+  assert.ok(!existsSync(join(f.home, 'Applications/HearAlong Helper.json')), 'no visible settings file in Applications');
   assert.match(f.calls(), /npm ci --ignore-scripts --omit=dev/);
   assert.doesNotMatch(f.calls(), /brew /);
   assert.match(f.calls(), /open/);
@@ -237,15 +243,20 @@ test('upgrade preserves data and old code until npm, build and both swaps succee
   writeFileSync(join(f.data, 'meeting.txt'), 'fictional meeting');
   writeFileSync(join(f.helper, 'previous-helper'), 'fictional helper');
   const before = statSync(f.data);
-  for (const failure of ['TEST_NPM_FAIL', 'TEST_BUILD_FAIL', 'TEST_SIGN_FAIL', 'TEST_FAIL_SWAP', 'TEST_FAIL_HELPER_SWAP']) {
+  const previousConfig = JSON.stringify({ ...JSON.parse(readFileSync(f.helperConfig, 'utf8')), path: 'fictional previous PATH' });
+  writeFileSync(f.helperConfig, previousConfig);
+  for (const failure of ['TEST_NPM_FAIL', 'TEST_BUILD_FAIL', 'TEST_SIGN_FAIL', 'TEST_FAIL_SWAP', 'TEST_FAIL_CONFIG_SWAP', 'TEST_FAIL_HELPER_SWAP']) {
     const result = f.run({ [failure]: '1', TEST_OLD_CODE: oldCode });
     assert.notEqual(result.status, 0, failure);
     assert.equal(readlinkSync(f.app), oldTarget, failure);
     assert.equal(readFileSync(oldCode, 'utf8'), 'fictional previous code');
     assert.equal(readFileSync(join(f.helper, 'previous-helper'), 'utf8'), 'fictional helper');
+    assert.equal(readFileSync(f.helperConfig, 'utf8'), previousConfig, 'settings roll back with the bundle');
   }
   f.ok({ TEST_OLD_CODE: oldCode });
   assert.notEqual(readlinkSync(f.app), oldTarget);
+  assert.notEqual(readFileSync(f.helperConfig, 'utf8'), previousConfig);
+  assert.ok(!existsSync(join(f.home, 'Applications/HearAlong Helper.json')));
   assert.ok(!existsSync(oldCode));
   assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting');
   assert.equal(statSync(f.data).ino, before.ino);
@@ -298,6 +309,7 @@ test('uninstall leaves all data and prints its path', () => {
   assert.equal(result.status, 0, result.output);
   assert.ok(!existsSync(f.app));
   assert.ok(!existsSync(f.helper));
+  assert.ok(!existsSync(f.helperConfig));
   assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting');
   assert.ok(result.output.includes(f.data));
 });
