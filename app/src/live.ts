@@ -157,6 +157,8 @@ export class LiveCapture {
     return this.run(state, async () => {
       if (!inactive()) return false;
       await this.sealIfDue(state, source, true);
+      // Cross a full I/O turn, even when sealing resumes in a poll/check callback with nothing held.
+      await new Promise<void>(resolve => setImmediate(() => setImmediate(resolve)));
       if (!inactive()) return false;
       state.ended = true;
       this.store.finishRecordingSource(meetingId, source, 'ended', this.clock());

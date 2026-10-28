@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { MeetingStore } from '../src/store.ts';
@@ -125,7 +126,7 @@ test('loopback app capture: endpoints, PCM, Them labels, notices, Stop and end p
   } finally { await server.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-async function appFixture() {
+async function appFixture(withAppFrame = true) {
   const directory = await mkdtemp(join(tmpdir(), 'hearalong-app-lifetime-'));
   let now = 1_800_000_000_000;
   const server = await startServer({ directory, port: 0, clock: () => now, quick: null, heavy: null, recognizer: {
@@ -140,8 +141,8 @@ async function appFixture() {
   assert.equal((await pcm(mic, 0)).status, 201);
   await post('/api/live/apps', { available: true, apps: [app] });
   assert.equal((await (await post('/api/live/app-capture', { app, meetingId: meeting.id, source, recordingId, pageId: 'page', clockStart: now })).json()).accepted, true);
-  assert.equal((await pcm(source, 0)).status, 201);
-  return { server, meeting, source, mic, pcm, post, request,
+  if (withAppFrame) assert.equal((await pcm(source, 0)).status, 201);
+  return { server, meeting, source, mic, pcm, post, request, cookie, recordingId,
     advance(ms: number) { now += ms; },
     endedAt: () => (server.store.db.prepare('SELECT recordingEndedAt FROM meetings WHERE id=?').get(meeting.id) as { recordingEndedAt: number | null }).recordingEndedAt,
     state: async () => (await (await request('/api/live/app-capture')).json()).state,
@@ -186,6 +187,66 @@ test('accepted PCM is liveness even while helper window polling is stale', async
     assert.equal((await f.state()).ended, false);
     assert.equal((await f.pcm(f.source, 2)).status, 201);
   } finally { await f.close(); }
+});
+
+test('an empty loss seal yields to a concurrent window poll before committing end', async () => {
+  const f = await appFixture(false);
+  const endIfInactive = f.server.capture.endIfInactive.bind(f.server.capture);
+  let lostAtEntry = false, macrotaskRan = false, macrotaskBeforeReturn = false;
+  f.server.capture.endIfInactive = async (meetingId, source, inactive) => {
+    lostAtEntry = inactive();
+    setImmediate(() => { macrotaskRan = true; });
+    const ended = await endIfInactive(meetingId, source, inactive);
+    macrotaskBeforeReturn = macrotaskRan;
+    return ended;
+  };
+  try {
+    // Warm both connections before advancing the fake clock: both requests below are already queued I/O.
+    const warm = await Promise.all([f.request('/api/live/window'), f.request('/api/live/window')]);
+    await Promise.all(warm.map(response => response.json()));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.server.store.heldFrames(f.meeting.id, f.source).length, 0);
+    f.advance(3501);
+    const [state] = await Promise.all([f.state(), f.request('/api/live/window')]);
+    assert.equal(lostAtEntry, true, 'exercise an actual loss decision, not a fresh poll before entry');
+    assert.equal(macrotaskBeforeReturn, true, 'even an empty seal must yield beyond microtasks');
+    assert.equal(state.ended, false);
+    assert.equal(f.server.store.recordingSourceOpen(f.meeting.id, f.source, 'page'), true);
+    assert.equal((await f.pcm(f.source, 0)).status, 201);
+  } finally { await f.close(); }
+});
+
+test('PCM headers arriving during a seal cancel loss before their body or queued admission finishes', async () => {
+  const f = await appFixture();
+  let release!: () => void, entered!: () => void, headersSeen!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sealing = new Promise<void>(resolve => { entered = resolve; });
+  const admittedHeaders = new Promise<void>(resolve => { headersSeen = resolve; });
+  const seal = f.server.store.sealWindow.bind(f.server.store);
+  f.server.store.sealWindow = async (...args) => { entered(); await gate; return seal(...args); };
+  // Header admission checks ownership without claiming durable activity before PCM validation.
+  const sourceOpen = f.server.store.recordingSourceOpen.bind(f.server.store);
+  f.server.store.recordingSourceOpen = (...args) => {
+    const open = sourceOpen(...args);
+    if (open && args[1] === f.source) headersSeen();
+    return open;
+  };
+  const upload = httpRequest(`${f.server.url}/api/meetings/${f.meeting.id}/pcm`, { method: 'POST', headers: {
+    Cookie: f.cookie, Origin: f.server.url, 'X-Page': 'page', 'X-Audio-Source': f.source,
+    'X-Sequence': '1', 'X-Sample-Rate': '16000', 'X-Start-Ms': '1000', 'X-Recording': f.recordingId, 'Content-Length': '64000',
+  } });
+  const response = new Promise<number>((resolve, reject) => { upload.on('error', reject); upload.on('response', res => { res.resume(); res.on('end', () => resolve(res.statusCode!)); }); });
+  try {
+    f.advance(3501);
+    const pending = f.state(); await sealing;
+    upload.flushHeaders(); await admittedHeaders;
+    // Hold the PCM body until loss handling has completed. Only its validated headers prove life here.
+    release(); const state = await pending;
+    upload.end(Buffer.alloc(64000));
+    assert.equal(await response, 201);
+    assert.equal(state.ended, false);
+    assert.equal(f.server.store.recordingSourceOpen(f.meeting.id, f.source, 'page'), true);
+  } finally { release(); upload.destroy(); await response.catch(() => {}); await f.close(); }
 });
 
 test('a heartbeat during a slow loss seal cancels disconnect and keeps subsequent PCM admissible', async () => {
