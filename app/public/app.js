@@ -219,8 +219,9 @@ function renderLive(snapshot) {
     for (const d of mine) capture.lastDraftAt[d.source] = Date.now();
     const missing = [...capture.sources.values()].filter(src => Date.now() - (capture.lastDraftAt[src.sourceId] ?? src.addedAt ?? capture.startedAt) > 10_000);
     const off = snapshot && (!snapshot.draftsAvailable || missing.length === capture.sources.size);
-    const partly = !off && missing.length ? ` · no preview for ${missing.map(src => src.kind === 'tab' ? 'the tab' : 'the mic').join(', ')}` : '';
-    const what = capture.sources.has('tab') ? (capture.sources.has('mic') ? ' · mic + tab' : ' · tab only') : '';
+    const partly = !off && missing.length ? ` · no preview for ${missing.map(src => src.kind === 'app' ? src.app.name : src.kind === 'tab' ? 'the tab' : 'the mic').join(', ')}` : '';
+    const remote = capture.sources.get('app')?.app.name ?? (capture.sources.has('tab') ? 'tab' : null);
+    const what = remote ? (capture.sources.has('mic') ? ` · mic + ${remote}` : ` · ${remote} only`) : '';
     // A problem comes first and replaces the routine source detail, so a narrow chip that cuts its end never hides it.
     const notices = captureNotices(snapshot);
     const problems = notices.map(n => ` · ${n.short}`).join('');
@@ -431,6 +432,8 @@ function updateTranscriptDownloads(id) {
 function selectMeeting(id) {
   if (id === meetingId) return;
   selectionGeneration++;
+  if (capture) void stopCapture();
+  closeStartMenu();
   listen.close();
   meetingId = id;
   renderAudioRemoved(status?.meetings.find(m => m.id === id));
@@ -484,9 +487,9 @@ function controls() {
   const ready = Boolean(status?.config.available && meetingId) && !busy && !requestingMic && !quitView.seen;
   $('start').hidden = recording;
   $('stop').hidden = !recording;
-  $('add-tab').hidden = !recording || Boolean(capture?.sources.has('tab')) || Boolean(capture?.stopping);
+  $('add-tab').hidden = !recording || Boolean(capture?.sources.has('tab') || capture?.sources.has('app')) || Boolean(capture?.stopping);
   $('mini-view').hidden = !recording || Boolean(capture?.stopping) || (nativeMini() ? lastSnapshot.mini.state === 'open' : !miniSupported() || Boolean(mini.win));
-  if (recording) closeStartMenu();
+  if (recording && callMenuAnchor !== 'add-tab') closeStartMenu();
   const snapshotReady = lastSnapshot?.meetingId === meetingId;
   $('start').disabled = !ready || !snapshotReady || Boolean(lastSnapshot?.replay);
   // Switching and new meetings wait for the recording to stop; renaming is fine during one.
@@ -2095,7 +2098,7 @@ function captureSettings(kind, stream, online = false) {
   const track = stream.getAudioTracks()[0];
   const applied = track?.getSettings?.() ?? {};
   return kind === 'tab' ? { kind } : { kind, device: (track?.label || 'default').slice(0, 120), roomMode: micSettings.room && !online,
-    echoCancellation: Boolean(applied.echoCancellation), noiseSuppression: Boolean(applied.noiseSuppression), autoGainControl: Boolean(applied.autoGainControl) };
+    echoCancellation: track?.hearAlongEcho ?? applied.echoCancellation ?? false, noiseSuppression: Boolean(applied.noiseSuppression), autoGainControl: Boolean(applied.autoGainControl) };
 }
 async function listMicrophones() {
   try {
@@ -2163,12 +2166,12 @@ $('mic-test').onclick = guarded(async () => {
   }
 });
 
-// ---------- Capture: a session (one 16 kHz clock) with one or two sources, microphone (Me) and meeting tab (Them) ----------
+// ---------- Capture: microphone (Me) and one meeting tab or app (Them), on the same meeting timeline ----------
 
 /** The current recording session, or undefined. Each source has its own queue and end; the session ends when all have. */
-// capture = { owner, path, context, offsetMs, generation, sources: Map<'mic'|'tab', Source>, stopping, drainUntil, startedAt, lastDraftAt }
+// capture = { owner, path, context, offsetMs, generation, sources: Map<'mic'|'tab'|'app', Source>, stopping, drainUntil, startedAt, lastDraftAt }
 let captureGeneration = 0;
-const SOURCE_NAMES = { mic: 'Microphone', tab: 'Meeting tab' };
+const SOURCE_NAMES = { mic: 'Microphone', tab: 'Meeting tab', app: 'The call' };
 const recordingEnds = createRecordingEnds((path, value) => apiWithin(10_000, path, {
   method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
 }));
@@ -2178,6 +2181,19 @@ function sourceIds() { return capture ? [...capture.sources.values()].map(s => s
 function endSource(session, source, why) {
   if (session.stopping) session.drainUntil ??= Date.now() + 30_000;
   if (source.ending) return source.ending;
+  if (source.kind === 'app') {
+    source.ending = (async () => {
+      try {
+        await post('/api/live/app-capture/stop', { source: source.sourceId });
+        const until = session.drainUntil ?? Date.now() + 30_000;
+        while (!source.ended && Date.now() < until) { await pollAppCapture(); if (!source.ended) await new Promise(resolve => setTimeout(resolve, 250)); }
+        if (!source.ended) log('The call: the end could not be confirmed before the saving deadline.', true);
+      } catch (error) { log(`The call could not confirm its end: ${error.message}`, true); }
+      session.sources.delete('app');
+      controls(); renderLive(lastSnapshot);
+    })();
+    return source.ending;
+  }
   freezeSource(source);
   source.ending = (async () => {
     try {
@@ -2204,6 +2220,7 @@ function endSource(session, source, why) {
 }
 /** Stops the physical input at once (tracks and graph); the frame already buffered is still flushed by endSource. */
 function freezeSource(source) {
+  if (source.kind === 'app') return;
   if (source.frozen) return;
   source.frozen = true;
   source.stream.getTracks().forEach(track => track.stop());
@@ -2277,7 +2294,7 @@ async function addSource(session, kind, stream) {
     const upload = timeout => apiWithin(timeout, `${session.path}/pcm`, { method: 'POST', body: buffer, headers: {
       'Content-Type': 'application/octet-stream', 'X-Audio-Source': source.sourceId, 'X-Sequence': String(sequence),
       'X-Sample-Rate': String(rate), 'X-Start-Ms': String(startMs), 'X-Pending': String(source.pending), 'X-Clock-Start': String(session.startedAt - session.offsetMs), 'X-Recording': session.recordingId,
-      'X-Capture-Settings': JSON.stringify(captureSettings(kind, stream, session.sources.has('tab'))),
+      'X-Capture-Settings': JSON.stringify(captureSettings(kind, stream, session.online || session.sources.has('tab') || session.sources.has('app'))),
       ...(Number.isFinite(captureWallMs) ? { 'X-Capture-Wall-Ms': String(captureWallMs) } : {}),
       ...(discontinuities?.length ? { 'X-Capture-Discontinuities': JSON.stringify(discontinuities) } : {}),
       ...(suspension ? { 'X-Suspension-From': String(suspension.fromWallMs), 'X-Suspension-To': String(suspension.toWallMs) } : {}),
@@ -2287,6 +2304,7 @@ async function addSource(session, kind, stream) {
     }))
       .then(reply => {
         source.pending--;
+        source.firstSaved = true;
         // A Stop asked from the mini view, or a quit, arrives with the frames (they keep coming while this page's timers are slowed).
         if (reply.quit) quitting();
         else if (reply.stop && capture === session) void stopCapture();
@@ -2319,16 +2337,75 @@ async function pickMeetingTab() {
   if (!audio.length) throw new Error('No tab audio: when sharing, tick “Also share tab audio”.');
   return new MediaStream(audio);
 }
-function closeStartMenu() { $('start-menu').hidden = true; $('start').setAttribute('aria-expanded', 'false'); }
+let callMenuAnchor = null;
+let callMenuTimer = null;
+let helperAvailable = false;
+let helperCheckedAt = 0;
+function hasAppCapture() { return helperAvailable && Date.now() - helperCheckedAt < 3000; }
+function closeStartMenu() {
+  $('start-menu').hidden = true;
+  $('start').setAttribute('aria-expanded', 'false'); $('add-tab').setAttribute('aria-expanded', 'false');
+  clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null;
+}
+function startMenuStep(apps) {
+  for (const node of [$('start-mic'), $('start-online'), document.querySelector('.start-consent')]) node.hidden = apps;
+  for (const id of ['call-heading', 'call-tab', 'call-apps']) $(id).hidden = !apps;
+  $('call-empty').hidden = true;
+  $('start-menu').setAttribute('aria-label', apps ? 'Where is the call?' : 'Start recording');
+}
+async function refreshCallApps() {
+  const anchor = callMenuAnchor;
+  if (!anchor) return;
+  try {
+    const result = await api('/api/live/apps');
+    if (callMenuAnchor !== anchor) return;
+    helperAvailable = result.available; helperCheckedAt = Date.now();
+    const apps = result.apps ?? [];
+    const known = new Map([...$('call-apps').children].map(n => [n.dataset.app, n]));
+    for (const app of apps) {
+      let row = known.get(app.id); known.delete(app.id);
+      if (!row) {
+        row = el('button', app.name); row.setAttribute('role', 'menuitem'); row.dataset.app = app.id;
+        row.append(el('span', 'Use headphones', 'muted small'));
+        row.onclick = guarded(() => { closeStartMenu(); return capture ? attachApp(capture, app) : startRecording(true, app); });
+        $('call-apps').append(row);
+      }
+    }
+    for (const row of known.values()) { if (row === document.activeElement) $('call-tab').focus(); row.remove(); }
+    $('call-empty').hidden = apps.length > 0;
+  } catch { /* keep the last list until the next refresh */ }
+}
+function openCallMenu(anchor) {
+  closeStartMenu(); callMenuAnchor = anchor;
+  $(anchor).parentElement.append($('start-menu'));
+  startMenuStep(true); $('call-back').hidden = anchor !== 'start';
+  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true'); $('call-tab').focus();
+  void refreshCallApps(); callMenuTimer = setInterval(refreshCallApps, 1000);
+}
 $('start').onclick = () => {
   const open = $('start-menu').hidden;
+  closeStartMenu();
+  $('start').parentElement.append($('start-menu')); startMenuStep(false);
   $('start-menu').hidden = !open;
   $('start').setAttribute('aria-expanded', String(open));
   if (open) $('start-mic').focus();
 };
 document.addEventListener('click', event => { if (!event.target.closest?.('.start-wrap')) closeStartMenu(); });
-$('start-menu').addEventListener('keydown', event => { if (event.key === 'Escape') { closeStartMenu(); $('start').focus(); } });
-async function startRecording(online) {
+$('start-menu').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { const anchor = callMenuAnchor ?? 'start'; closeStartMenu(); $(anchor).focus(); }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    const rows = [...$('start-menu').querySelectorAll('[role="menuitem"]')].filter(n => !n.hidden && n.offsetParent);
+    rows[(rows.indexOf(document.activeElement) + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus();
+  }
+});
+$('call-back').onclick = () => { closeStartMenu(); startMenuStep(false); $('start-menu').hidden = false; $('start').setAttribute('aria-expanded', 'true'); $('start-online').focus(); };
+$('call-tab').onclick = guarded(() => {
+  closeStartMenu();
+  if (!capture) return startRecording(true);
+  return attachTab(capture, pickMeetingTab().then(stream => ({ stream }), error => ({ error })));
+});
+async function startRecording(online, app = null) {
   closeStartMenu();
   micTest?.stop();
   const path = base();
@@ -2336,7 +2413,7 @@ async function startRecording(online) {
   const generation = ++captureGeneration;
   // The tab picker first, straight from the click; everything else may wait on the network or a permission prompt.
   // Settled at once (stream or error), so a cancelled share is never an unhandled rejection while the microphone starts.
-  const tabRequest = online ? pickMeetingTab().then(stream => ({ stream }), error => ({ error })) : null;
+  const tabRequest = online && !app ? pickMeetingTab().then(stream => ({ stream }), error => ({ error })) : null;
   requestingMic = true; listen.recording(true); controls();
   let micStream, context, session;
   const stillOwner = () => {
@@ -2363,8 +2440,9 @@ async function startRecording(online) {
     session.onResume = () => session.suspension.tick(Date.now(), true);
     document.addEventListener('resume', session.onResume);
     capture = session;
+    session.online = Boolean(app);
     await addSource(session, 'mic', micStream);
-    log(online ? 'Microphone recording started; waiting for the meeting tab…' : 'Microphone recording started.');
+    log(online ? (app ? 'Microphone recording started; waiting for the call…' : 'Microphone recording started; waiting for the meeting tab…') : 'Microphone recording started.');
   } catch (error) {
     micStream?.getTracks().forEach(track => track.stop());
     clearInterval(session?.suspensionTimer);
@@ -2375,34 +2453,85 @@ async function startRecording(online) {
     throw error;
   } finally { requestingMic = false; controls(); renderLive(lastSnapshot); }
   if (tabRequest) await attachTab(session, tabRequest);
+  if (app) await attachApp(session, app);
 }
 /** Adds the picked tab to the session that asked for it, if that session is still recording; otherwise the tab is released. */
 async function attachTab(session, outcome) {
   const { stream, error } = await outcome;
   if (error) { log(`Recording the microphone only: ${error.name === 'NotAllowedError' ? 'tab sharing was cancelled' : error.message}`, true); return; }
-  if (capture !== session || session.stopping || session.finished || session.sources.has('tab')) { stream.getTracks().forEach(track => track.stop()); return; }
+  if (capture !== session || session.stopping || session.finished || session.sources.has('tab') || session.sources.has('app')) { stream.getTracks().forEach(track => track.stop()); return; }
   try {
     const mic = session.sources.get('mic');
     for (const track of mic?.stream.getAudioTracks() ?? []) {
       try { await track.applyConstraints({ echoCancellation: true, noiseSuppression: true, autoGainControl: true }); }
       catch (failure) { log(`Could not update microphone processing; recording continues: ${failure.message}`, true); }
     }
-    if (capture !== session || session.stopping || session.finished || session.sources.has('tab')) { stream.getTracks().forEach(track => track.stop()); return; }
+    if (capture !== session || session.stopping || session.finished || session.sources.has('tab') || session.sources.has('app')) { stream.getTracks().forEach(track => track.stop()); return; }
     await addSource(session, 'tab', stream);
   }
   catch (failure) { stream.getTracks().forEach(track => track.stop()); log(`Recording the microphone only: ${failure.message}`, true); return; }
   log('Meeting tab recording started (“Them”); the microphone is “Me”.');
   controls(); renderLive(lastSnapshot);
 }
+/** The helper is the audio owner; the page holds only its identity and server-observed end. */
+async function attachApp(session, app) {
+  if (capture !== session || session.stopping || session.finished || session.sources.has('tab') || session.sources.has('app')) return;
+  const source = { kind: 'app', app, sourceId: `app:${crypto.randomUUID()}`, addedAt: Date.now(), pending: 0, ended: false };
+  session.sources.set('app', source); session.online = true; controls();
+  try {
+    for (const track of session.sources.get('mic')?.stream.getAudioTracks() ?? []) {
+      const modes = track.getCapabilities?.().echoCancellation;
+      const echo = Array.isArray(modes) && modes.includes('all') ? 'all' : true;
+      try { await track.applyConstraints({ echoCancellation: echo, noiseSuppression: true, autoGainControl: true }); track.hearAlongEcho = echo; }
+      catch (error) { log(`Could not update microphone processing; recording continues: ${error.message}`, true); }
+    }
+    // The control endpoint accepts only the recording now, never a Start that arrives late from a permission prompt.
+    const until = Date.now() + 10_000;
+    while (!session.sources.get('mic')?.firstSaved && Date.now() < until && capture === session && !session.stopping) await new Promise(resolve => setTimeout(resolve, 100));
+    if (capture !== session || session.stopping || session.finished) { source.ended = true; return; }
+    const reply = await post('/api/live/app-capture', { app, meetingId: session.owner, recordingId: session.recordingId, source: source.sourceId, pageId, clockStart: session.startedAt - session.offsetMs });
+    if (!reply.accepted) throw new Error('The recording changed before call capture could start.');
+    log(`Recording you (microphone) and ${app.name} (the call).`);
+  } catch (error) {
+    source.ended = true; session.sources.delete('app');
+    log(`Recording the microphone only: ${error.message}`, true);
+  }
+  controls(); renderLive(lastSnapshot);
+}
+let appCapturePolling = false;
+async function pollAppCapture() {
+  if (appCapturePolling) return;
+  appCapturePolling = true;
+  try {
+    const result = await api('/api/live/app-capture');
+    helperAvailable = result.available; helperCheckedAt = Date.now();
+    const session = capture, source = session?.sources.get('app'), state = result.state;
+    if (!source || state?.source !== source.sourceId) return;
+    if (state.notice && source.notice !== state.notice) { source.notice = state.notice; log(state.notice, true); }
+    if (state.ended && !source.ended) {
+      source.ended = true;
+      if (state.message) log(state.message, true);
+      if (!source.ending) {
+        session.sources.delete('app');
+        if (!session.sources.size) await finishSession(session);
+        controls(); renderLive(lastSnapshot);
+      }
+    }
+  } catch { helperAvailable = false; }
+  finally { appCapturePolling = false; }
+}
 $('start-mic').onclick = guarded(() => startRecording(false));
-$('start-online').onclick = guarded(() => startRecording(true));
+$('start-online').onclick = guarded(() => hasAppCapture() ? openCallMenu('start') : startRecording(true));
 $('add-tab').onclick = guarded(async () => {
   const session = capture;
   if (!session) return;
+  if (hasAppCapture()) { openCallMenu('add-tab'); return; }
   await attachTab(session, pickMeetingTab().then(stream => ({ stream }), error => ({ error }))); // called from the click: the picker needs it
 });
-$('stop').onclick = guarded(stopCapture);
-window.addEventListener('pagehide', () => { for (const source of capture?.sources.values() ?? []) source.stream.getTracks().forEach(track => track.stop()); });
+$('stop').onclick = guarded(() => { closeStartMenu(); return stopCapture(); });
+void pollAppCapture();
+setInterval(pollAppCapture, 1000);
+window.addEventListener('pagehide', () => { for (const source of capture?.sources.values() ?? []) source.stream?.getTracks().forEach(track => track.stop()); });
 window.addEventListener('beforeunload', event => { if (capture) { event.preventDefault(); event.returnValue = ''; } });
 
 // ---------- Mini view (M7, mockup A): a small always-on-top window while recording (docs/design/M7-native-mini.md) ----------

@@ -346,11 +346,15 @@ export class MeetingStore {
   }
   claimRecording(meetingId: string, source: string, pageId: string | null) {
     const previous = this.db.prepare('SELECT state FROM recording_sources WHERE meetingId=? AND source=?').get(meetingId, source) as { state: string } | undefined;
+    if (source.startsWith('app:') && previous && previous.state !== 'open') throw new CaptureConflict('This app source is ended or abandoned; start a new source.');
     // Early HTTP admission may precede body validation; never reopen a finished source just to reject its frame later.
     if (previous?.state === 'ended') return;
     this.recordingStarted(meetingId);
     this.db.prepare(`INSERT INTO recording_sources(meetingId,source,pageId,state) VALUES (?,?,?,'open')
       ON CONFLICT(meetingId,source) DO UPDATE SET pageId=excluded.pageId, state='open'`).run(meetingId, source, pageId);
+  }
+  recordingSourceOpen(meetingId: string, source: string, pageId: string | null): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM recording_sources WHERE meetingId=? AND source=? AND pageId IS ? AND state='open'").get(meetingId, source, pageId));
   }
   openRecordings() {
     return this.db.prepare("SELECT meetingId,source,pageId,state FROM recording_sources WHERE state IN ('open','recovering')").all() as { meetingId: string; source: string; pageId: string | null; state: string }[];
@@ -589,7 +593,10 @@ export class MeetingStore {
     const meeting = this.meeting(id);
     const { labelled, paragraphs } = this.transcriptParagraphs(id, mode, locale);
     const note = mode === 'raw' ? 'Raw speech recognition, before glossary corrections.' : 'Glossary-corrected where marked in the app; raw export is available.';
-    const who = labelled ? 'Speaker labels are capture channels: "Them" is the meeting tab (everyone on the call), "Me" is this microphone during the call.' : 'No speaker labels;';
+    const sources = this.db.prepare('SELECT source FROM chunks WHERE meetingId=? UNION SELECT source FROM frames WHERE meetingId=?').all(id, id) as { source: string }[];
+    const app = sources.some(s => s.source.startsWith('app:')), tab = sources.some(s => s.source.startsWith('tab:'));
+    const call = app ? (tab ? 'meeting tab or app' : 'meeting app') : 'meeting tab';
+    const who = labelled ? `Speaker labels are capture channels: "Them" is the ${call} (everyone on the call), "Me" is this microphone during the call.` : 'No speaker labels;';
     return `# ${meeting.title.replace(/[\r\n]/g, ' ')}\n\nTranscript — ${note} ${who}${labelled ? ' Not' : ' not'} verified meeting decisions.\n\n${paragraphs.join('\n\n')}\n`;
   }
   close() { this.db.close(); }

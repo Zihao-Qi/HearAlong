@@ -21,6 +21,7 @@ ROOT="$HOME/Library/Application Support/HearAlong"
 APP="$ROOT/app"
 DATA="$ROOT/data"
 HELPER="$HOME/Applications/HearAlong Helper.app"
+HELPER_CONFIG="$ROOT/helper.json"
 DEFAULT_LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 LSREGISTER=${HEARALONG_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}
 if [ "${HEARALONG_TEST_MODE:-0}" != 1 ]; then
@@ -82,6 +83,7 @@ if [ "${1:-}" = --uninstall ]; then
     done
   fi
   rm -rf "$HELPER"
+  rm -f "$HELPER_CONFIG"
   printf 'HearAlong removed. Your data is untouched: %s\nHomebrew, Node, FFmpeg and the Chrome web app were not removed.\n' "$DATA"
   exit 0
 fi
@@ -134,6 +136,8 @@ helper_stage=''
 activated=0
 helper_saved=0
 helper_promoted=0
+config_saved=0
+config_promoted=0
 complete=0
 cleanup() {
   set +e
@@ -149,6 +153,8 @@ cleanup() {
     fi
     if [ "$helper_promoted" -eq 1 ]; then rm -rf "$HELPER"; fi
     if [ "$helper_saved" -eq 1 ]; then mv "$helper_stage/previous.app" "$HELPER" 2>/dev/null || true; fi
+    if [ "$config_promoted" -eq 1 ]; then rm -f "$HELPER_CONFIG"; fi
+    if [ "$config_saved" -eq 1 ]; then mv "$helper_stage/previous.json" "$HELPER_CONFIG" 2>/dev/null || true; fi
   fi
   rm -f "$ROOT/.next" "$ROOT/.rollback"
   if [ -n "$stage" ] && [ "$complete" -eq 0 ]; then rm -rf "$stage"; fi
@@ -203,7 +209,7 @@ rm -f "$stage/app/install.sh"
 cp "$stage/install.sh" "$stage/app/install.sh"
 echo 'Installing pinned runtime packages with npm (no lifecycle scripts).'
 (cd "$stage/app" && npm ci --ignore-scripts --omit=dev)
-HEARALONG_NO_REGISTER=1 sh "$stage/app/scripts/build-app.sh" --install "$helper_stage" "$DATA" "$APP"
+HEARALONG_NO_REGISTER=1 HEARALONG_PREVIOUS_HELPER="$HELPER" sh "$stage/app/scripts/build-app.sh" --install "$helper_stage" "$DATA" "$APP"
 # Recheck immediately before activation: an app opened during download must not be replaced.
 not_running
 [ -d "$DATA" ] || mkdir "$DATA"
@@ -215,6 +221,12 @@ if [ -e "$HELPER" ] || [ -L "$HELPER" ]; then
   mv "$HELPER" "$helper_stage/previous.app"
   helper_saved=1
 fi
+if [ -f "$HELPER_CONFIG" ]; then
+  mv "$HELPER_CONFIG" "$helper_stage/previous.json"
+  config_saved=1
+fi
+mv "$helper_stage/HearAlong Helper.json" "$HELPER_CONFIG"
+config_promoted=1
 mv "$helper_stage/HearAlong Helper.app" "$HELPER"
 helper_promoted=1
 if [ "${HEARALONG_NO_REGISTER:-0}" != 1 ]; then "$LSREGISTER" -f "$HELPER"; fi

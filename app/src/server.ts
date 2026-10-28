@@ -28,7 +28,8 @@ import { miniPreviewWords, miniLog, midpoint } from '../public/preview-compositi
 import { LiveCapture } from './live.ts';
 import { captureDiscontinuities } from './capture-gaps.ts';
 import { LiveView, type MiniAction } from './live-view.ts';
-import { ROLE_LABEL, compareSegments } from './speakers.ts';
+import { ROLE_LABEL, compareSegments, isRemote } from './speakers.ts';
+import { AppCaptureControl } from './app-capture.ts';
 import { SegmentsTag } from './segments-tag.ts';
 import { searchRoots } from './materials.ts';
 import { PdfText } from './pdf-text.ts';
@@ -563,6 +564,24 @@ export async function startServer(options: {
     // The mini view (M7 native mini window, docs/design/M7-native-mini.md): drawn from the server alone, so it stays current while
     // the app's page is hidden and throttled (another app in full screen); Stop and cards reach the page through frame replies.
     const liveView = new LiveView(clock);
+    const appCapture = new AppCaptureControl(clock);
+    let endingLostApp: Promise<void> | null = null;
+    const endLostApp = async () => {
+      if (endingLostApp) return endingLostApp;
+      const s = appCapture.state;
+      if (!s || !appCapture.lost()) return;
+      endingLostApp = (async () => {
+        const ended = await capture.endIfInactive(s.meetingId, s.source, () => appCapture.state === s && appCapture.lost());
+        if (!ended || appCapture.state !== s || !appCapture.lost()) return;
+        recording.get(s.meetingId)?.delete(s.source);
+        liveView.ended(s.source, s.stopping);
+        appCapture.ended(s.source, `${s.app.name} capture stopped because the helper disconnected; the microphone keeps recording.`);
+        if (!s.stopping && s.message && liveView.has(s.source)) liveView.appMessage(s.message);
+      })().catch(error => { console.warn(`Could not seal a disconnected app source: ${(error as Error).message}`); }).finally(() => { endingLostApp = null; });
+      return endingLostApp;
+    };
+    const appCaptureSweep = setInterval(() => { void endLostApp(); }, 1000);
+    appCaptureSweep.unref();
     const segmentsTag = new SegmentsTag();
     /** The recording now, with only the sources of its own recording (a reloaded page's old sources are not). */
     const recordingNow = () => {
@@ -622,7 +641,7 @@ export async function startServer(options: {
         const text = miniPreviewWords(source, visible, all, previews.pending, 20, placements);
         const last = mine.at(-1);
         const role = labelled && last ? roleOf(source, last.windowStartMs, Math.max(last.coveredUntilMs, last.windowStartMs + 1)) : null;
-        return { source, speaker: labelled ? (role ? ROLE_LABEL[role] : source.startsWith('tab:') ? 'Them' : 'Me') : null, text };
+        return { source, speaker: labelled ? (role ? ROLE_LABEL[role] : isRemote(source) ? 'Them' : 'Me') : null, text };
       });
       // The newest card not dismissed: a project card, or an other matter only when there is nothing else.
       const cards = (await boards.cards(meetingId)).filter(c => !c.dismissed).sort((a, b) => b.createdAt - a.createdAt);
@@ -687,6 +706,10 @@ export async function startServer(options: {
         if (req.method === 'POST' && url.pathname === '/api/bye') {
           const departed = url.searchParams.get('page') ?? '';
           pages.delete(departed);
+          if (appCapture.state?.pageId === departed) {
+            appCapture.stop();
+            appCapture.ended(appCapture.state.source);
+          }
           const departedSources = appStore.openRecordings().filter(s => s.pageId === departed);
           await capture.abandonPage(departed);
           for (const session of departedSources) recording.get(session.meetingId)?.delete(session.source);
@@ -778,12 +801,48 @@ export async function startServer(options: {
           } else if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
           send(res, 200, { notice: audioRetention.notice }); return;
         }
+        if (url.pathname === '/api/live/apps' && req.method === 'GET') { send(res, 200, appCapture.requestList()); return; }
+        if (url.pathname === '/api/live/app-capture' && req.method === 'GET') { await endLostApp(); send(res, 200, { state: appCapture.state, available: appCapture.available() }); return; }
+        if (url.pathname === '/api/live/apps' && req.method === 'POST') {
+          try { appCapture.report(await json(req)); } catch (error) { throw new HttpError(400, (error as Error).message); }
+          send(res, 200, { ok: true }); return;
+        }
+        if (url.pathname === '/api/live/app-capture' && req.method === 'POST') {
+          const value = await json(req);
+          if (value?.pageId !== pageId) throw new HttpError(400, 'The app capture must belong to this page.');
+          const now = recordingNow();
+          const mic = now?.sources.find(s => s.source.startsWith('mic:'));
+          const owner = mic && appStore.openRecordings().find(s => s.source === mic.source);
+          let accepted;
+          try { accepted = appCapture.start(value, now ? { meetingId: now.meetingId, recordingId: liveView.recordingId(), pageId: owner?.pageId ?? null, sources: now.sources.map(s => s.source), stopping: liveView.stopping() || shuttingDown } : null); }
+          catch (error) { throw new HttpError(400, (error as Error).message); }
+          if (accepted) {
+            appStore.claimRecording(value.meetingId, value.source, value.pageId);
+            liveView.frame(value.source, value.recordingId, 0, value.clockStart);
+          }
+          send(res, 200, { accepted }); return;
+        }
+        if (url.pathname === '/api/live/app-capture/stop' && req.method === 'POST') {
+          const value = await json(req);
+          if (typeof value.source !== 'string') throw new HttpError(400, 'Give the app source.');
+          if (appCapture.state?.pageId === pageId) appCapture.stop(value.source);
+          send(res, 200, { state: appCapture.state }); return;
+        }
+        if (url.pathname === '/api/live/app-capture/notice' && req.method === 'POST') {
+          const value = await json(req);
+          if (typeof value.source !== 'string' || typeof value.message !== 'string' || value.message.length > 600) throw new HttpError(400, 'Give source and message.');
+          appCapture.notice(value.source, value.message);
+          send(res, 200, { ok: true }); return;
+        }
         if (url.pathname === '/api/live' && req.method === 'GET') { send(res, 200, await liveModel(url.searchParams.get('have'))); return; }
         if (url.pathname === '/api/live/window' && req.method === 'GET') {
           // The helper, twice a second: whether its window should show.
           liveView.helperSeen();
+          appCapture.heartbeat();
           const now = recordingNow();
-          send(res, 200, { show: Boolean(now) && liveView.miniState() === 'open', meetingId: now?.meetingId ?? null, session: now ? liveView.sessionId() : null }); return;
+          const s = appCapture.state;
+          if (s && !s.ended && (shuttingDown || liveView.stopping() || liveView.recordingId() !== s.recordingId || !appStore.openRecordings().some(r => r.source.startsWith('mic:') && r.meetingId === s.meetingId && r.pageId === s.pageId))) appCapture.stop();
+          send(res, 200, { show: Boolean(now) && liveView.miniState() === 'open', meetingId: now?.meetingId ?? null, session: now ? liveView.sessionId() : null, appList: appCapture.wantsList(), appCapture: appCapture.command() }); return;
         }
         if (url.pathname.startsWith('/api/live/') && req.method === 'POST') {
           const value = await json(req);
@@ -791,7 +850,7 @@ export async function startServer(options: {
           const action = url.pathname.slice('/api/live/'.length);
           // Only for the recording now: a request about an earlier one, which may arrive late, does nothing.
           const current = Boolean(now) && liveView.current(value);
-          if (action === 'stop') { if (current) liveView.stop(now!.sources.map(s => s.source)); send(res, 200, { stopping: current }); return; }
+          if (action === 'stop') { if (current) { liveView.stop(now!.sources.map(s => s.source)); appCapture.stop(); } send(res, 200, { stopping: current }); return; }
           if (action === 'reveal') {
             if (typeof value.meetingId !== 'string' || typeof value.cardId !== 'string') throw new HttpError(400, 'Give meetingId and cardId.');
             liveView.reveal(value.meetingId, value.cardId); send(res, 200, { revealed: true }); return;
@@ -1204,7 +1263,14 @@ export async function startServer(options: {
           if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
           if (appStore.queuedCount() >= 1000) throw new HttpError(429, 'The transcription queue is full. Stop recording and wait for processing.');
           const source = String(req.headers['x-audio-source'] ?? '');
-          if (!/^(mic|tab):[a-f0-9-]{36}$/.test(source)) throw new HttpError(400, 'Invalid audio source ID.');
+          if (!/^(mic|tab|app):[a-f0-9-]{36}$/.test(source)) throw new HttpError(400, 'Invalid audio source ID.');
+          const appFrameAllowed = () => {
+            const current = appCapture.command();
+            return current?.source === source && current.meetingId === meetingId && current.recordingId === req.headers['x-recording'] && current.pageId === pageId && appStore.recordingSourceOpen(meetingId, source, current.pageId);
+          };
+          if (source.startsWith('app:') && !appFrameAllowed()) throw new HttpError(409, 'This call source has ended; start a new source.');
+          if (source.startsWith('tab:') && appCapture.command()) throw new HttpError(409, 'An app is already recording the call.');
+          if (source.startsWith('app:') && [...recording.get(meetingId) ?? []].some(other => other !== source && isRemote(other))) throw new HttpError(409, 'Only one call source can record at a time.');
           const sequence = numberInRange(req.headers['x-sequence'], 0, 1_000_000, 'Sequence');
           const sampleRate = numberInRange(req.headers['x-sample-rate'], 8000, 96000, 'Sample rate');
           const startMs = numberInRange(req.headers['x-start-ms'], 0, 8 * 3600 * 1000, 'Audio start');
@@ -1243,10 +1309,11 @@ export async function startServer(options: {
             ...(Number.isFinite(fromWallMs) && Number.isFinite(toWallMs) && toWallMs >= fromWallMs
               ? { suspension: { fromWallMs, toWallMs } } : {}) } : undefined;
           let frame;
-          try { frame = await capture.accept(meetingId, source, sequence, startMs, pcm, typeof pageId === 'string' && pageId.length <= 64 ? pageId : null, timing); }
+          try { frame = await capture.accept(meetingId, source, sequence, startMs, pcm, typeof pageId === 'string' && pageId.length <= 64 ? pageId : null, timing, source.startsWith('app:') ? appFrameAllowed : undefined); }
           catch (error) { throw new HttpError(error instanceof CaptureConflict ? 409 : 503, (error as Error).message); }
           lastPcmAt.set(meetingId, clock());
           recording.set(meetingId, (recording.get(meetingId) ?? new Set()).add(source));
+          if (source.startsWith('app:')) appCapture.frame(source);
           boardActive.add(meetingId);
           const pending = Number(req.headers['x-pending']);
           const clockStart = Number(req.headers['x-clock-start']);
@@ -1259,7 +1326,7 @@ export async function startServer(options: {
         if (req.method === 'POST' && action === 'pcm/end') {
           const value = await json(req);
           const source = String(value.source ?? '');
-          if (!/^(mic|tab):[a-f0-9-]{36}$/.test(source)) throw new HttpError(400, 'Invalid audio source ID.');
+          if (!/^(mic|tab|app):[a-f0-9-]{36}$/.test(source)) throw new HttpError(400, 'Invalid audio source ID.');
           const lastSequence = value.lastSequence === null ? null : numberInRange(value.lastSequence, 0, 1_000_000, 'Last sequence');
           let result;
           try { result = await capture.end(meetingId, source, lastSequence); }
@@ -1268,6 +1335,11 @@ export async function startServer(options: {
           if (!appStore.recordingUnended(meetingId)) appStore.recordingEnded(meetingId, clock());
           audioRetention.observe();
           liveView.ended(source, value.stopping === true);
+          if (source.startsWith('app:')) {
+            const message = typeof value.message === 'string' ? value.message.slice(0, 600) : undefined;
+            appCapture.ended(source, message);
+            if (message && value.stopping !== true && liveView.has(source)) liveView.appMessage(message);
+          }
           send(res, 200, result); return;
         }
         if (req.method === 'POST' && action === 'upload') {
@@ -1337,6 +1409,7 @@ export async function startServer(options: {
         // A second request stops the waiting, never the cleanup: it gets the same close, which seals audio and ends workers.
         if (shuttingDown) { hurry = true; return app.close(); }
         shuttingDown = true;
+        appCapture.stop();
         const until = Date.now() + waitMs;
         // A page polls about once a second; give it time to see the flag, then wait for its sources' ends (or the deadline).
         await new Promise(resolve => setTimeout(resolve, 2500));
@@ -1353,6 +1426,7 @@ export async function startServer(options: {
     let closed: Promise<void> | undefined;
     async function closeOnce() {
       closing = true;
+      clearInterval(appCaptureSweep);
       // Local scans/corrections waiting behind another job must defer before shutdown waits for their callers.
       const localRpcClosing = ai.mode() === 'local' ? Promise.all([quick instanceof ModelRpc ? quick.close() : undefined, gate?.close()]) : undefined;
       localRpcClosing?.catch(() => {}); // Observe now; propagate below after the Board's callers have stopped.
