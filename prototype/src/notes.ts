@@ -340,12 +340,12 @@ function quoteLocations(lines: QuoteLine[], match: QuoteMatch): QuoteLocation[] 
  * Owners use only the model's valid cites, non-project checks the final cites.
  * Cited tiers run before snapshot-wide search; each line's tokens and joined reading are computed once per validation.
  * Items without valid cites need a uniquely locatable quote, else are dropped. Oversized items go to Needs review or are dropped.
- * Non-project ranges covering over half the snapshot are ignored together.
+ * The three parts are written blind; a non-project range contradicted by at least 3 distinct verified project items is ignored.
  */
-export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes; dropped: NotesRecord['dropped'] } {
+export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes; dropped: NotesRecord['dropped']; otherTalkIgnored: number } {
   const reading = (text: string): QuoteReading => { const list = tokens(text); return { tokens: list, joined: ` ${list.join(' ')} ` }; };
   const lines: QuoteLine[] = snapshot.segments.map((s, index) => ({ ...s, index, corrected: reading(s.text), original: reading(s.originalText) }));
-  const byRef = new Map(lines.map(s => [s.ref, s]));
+  const byRef = new Map(lines.map(s => [s.ref, s])), byId = new Map(lines.map(s => [s.id, s]));
   const dropped: NotesRecord['dropped'] = [];
   const source = (raw ?? {}) as Record<string, unknown>;
   const otherTalk: (OtherTalk & { from: number; to: number })[] = [];
@@ -356,23 +356,12 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
     if (!from || !to || from.index > to.index) { dropped.push({ section: 'otherTalk', text: JSON.stringify(range).slice(0, 200), reason: 'invalid range' }); continue; }
     otherTalk.push({ fromId: from.id, toId: to.id, startMs: from.startMs, endMs: to.endMs, label: label || 'non-project talk', smallTalk: range?.smallTalk === true, from: from.index, to: to.index });
   }
-  let covered = 0, end = -1;
-  for (const r of [...otherTalk].sort((a, b) => a.from - b.from)) {
-    covered += Math.max(0, r.to - Math.max(end, r.from - 1)); end = Math.max(end, r.to);
-  }
-  if (covered > snapshot.segments.length / 2) {
-    dropped.push({ section: 'otherTalk', text: otherTalk.map(r => `${snapshot.segments[r.from].ref}–${snapshot.segments[r.to].ref}`).join(', ').slice(0, 200),
-      reason: 'marked more than half the meeting as non-project talk; ignored' });
-    otherTalk.length = 0;
-  }
-  const otherTalkAt = (index: number) => otherTalk.some(r => index >= r.from && index <= r.to);
-  const notes: Notes = { suggestedTitle: null, summary: [], decisions: [], actions: [], openQuestions: [], otherMatters: [], needsReview: [],
-    otherTalk: otherTalk.map(({ from: _f, to: _t, ...r }) => r) };
+  const notes: Notes = { suggestedTitle: null, summary: [], decisions: [], actions: [], openQuestions: [], otherMatters: [], needsReview: [], otherTalk: [] };
+  const candidates: { key: string; note: NoteItem; review: string | null }[] = [];
   if (typeof source.title === 'string' && source.title.trim()) notes.suggestedTitle = source.title.trim().slice(0, 120);
   for (const section of NOTE_SECTIONS) {
     const list = Array.isArray(source[section]) ? source[section] as unknown[] : [];
     if (list.length > MAX_ENTRIES) dropped.push({ section, text: `${list.length - MAX_ENTRIES} entries`, reason: `more than ${MAX_ENTRIES} entries` });
-    const candidates: { key: string; note: NoteItem; review: string | null }[] = [];
     for (const entry of list.slice(0, MAX_ENTRIES)) {
       const item = (entry ?? {}) as Record<string, unknown>;
       const text = typeof item.text === 'string' ? item.text.trim() : '';
@@ -433,8 +422,6 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
       const failed = checked.findIndex(q => q.reason);
       const quoteReason = failed < 0 ? null : quotes.length === 1 ? checked[failed].reason
         : checked[failed].reason!.replace(/^(quote |no quote$)/, prefix => `quote ${failed + 1} of ${quotes.length} ${prefix === 'no quote' ? 'has no quote' : ''}`);
-      // A project item resting on non-project talk is probably mis-sorted: kept, but out of the project sections.
-      const nonProject = section !== 'otherMatters' && cited.some(s => otherTalkAt(s.index));
       let owner: string | null = null, ownerQuote: string | undefined, ownerProposed: string | undefined;
       if (typeof item.owner === 'string' && item.owner.trim()) {
         const name = item.owner.trim().slice(0, 60);
@@ -454,26 +441,42 @@ export function validateNotes(raw: unknown, snapshot: Snapshot): { notes: Notes;
           kind: OTHER_KINDS.find(k => k === item.kind) ?? 'info', label: OTHER_LABELS.find(l => l === item.label) ?? 'other',
         } : {}),
       };
-      const review = nonProject ? 'cites non-project talk; it may belong in Other matters'
-        : text.length > 300 ? 'too long for one claim'
+      const review = text.length > 300 ? 'too long for one claim'
         : quotes.length > 3 ? 'more than 3 quotes'
         : !checked.some(q => q.located) && refs.length > MAX_CITES ? `more than ${MAX_CITES} citations`
         : quoteReason;
       candidates.push({ key: tokens(text).join(' '), note, review });
     }
+  }
+  const inside = (id: string, r: (typeof otherTalk)[number]) => { const index = byId.get(id)!.index; return index >= r.from && index <= r.to; };
+  const remaining = otherTalk.filter(r => {
+    const verified = new Set(candidates.filter(c => c.note.section !== 'otherMatters' && c.note.quotes!.every(q => q.quoteIn)
+      && c.note.quotes!.some(q => q.cites.some(id => inside(id, r)))).map(c => c.key)).size;
+    if (verified < 3) return true;
+    dropped.push({ section: 'otherTalk', text: `${snapshot.segments[r.from].ref}–${snapshot.segments[r.to].ref}`,
+      reason: `contradicted by ${verified} verified project items; ignored` });
+    return false;
+  });
+  notes.otherTalk = remaining.map(({ from: _f, to: _t, ...r }) => r);
+  for (const c of candidates) {
+    // A project item resting on non-project talk is probably mis-sorted: kept, but out of the project sections.
+    if (c.note.section !== 'otherMatters' && c.note.cites.some(id => remaining.some(r => inside(id, r)))) c.review = 'cites non-project talk; it may belong in Other matters';
+  }
+  for (const section of NOTE_SECTIONS) {
+    const sectionCandidates = candidates.filter(c => c.note.section === section);
     // Duplicates are judged after the checks, so a broken copy cannot shadow a good one: per text, the first copy that
     // passed is kept, else the first one needing review.
     const best = new Map<string, (typeof candidates)[number]>();
-    for (const c of candidates) { const b = best.get(c.key); if (!b || (b.review && !c.review)) best.set(c.key, c); }
+    for (const c of sectionCandidates) { const b = best.get(c.key); if (!b || (b.review && !c.review)) best.set(c.key, c); }
     let kept = 0;
-    for (const c of candidates) {
+    for (const c of sectionCandidates) {
       if (best.get(c.key) !== c) dropped.push({ section, text: c.note.text.slice(0, 300), reason: 'duplicate' });
       else if (c.review) notes.needsReview.push({ ...c.note, reviewReason: c.review });
       else if (kept++ >= LIMITS[section]) dropped.push({ section, text: c.note.text.slice(0, 300), reason: `more than ${LIMITS[section]} items` });
       else notes[section].push(c.note);
     }
   }
-  return { notes, dropped };
+  return { notes, dropped, otherTalkIgnored: otherTalk.length - remaining.length };
 }
 
 /** The cited lines as given to the model, as heard and as corrected, so citations stay inspectable after the transcript changes. */
@@ -759,7 +762,8 @@ export class NotesJobs {
         const results = settled.map(s => { if (s.status === 'rejected') throw s.reason; return s.value; });
         const result = results[0].result;
         progress.phase = 'check';
-        const { notes, dropped } = validateNotes(Object.assign({}, ...results.map(r => r.raw)), snapshot);
+        const { notes, dropped, otherTalkIgnored } = validateNotes(Object.assign({}, ...results.map(r => r.raw)), snapshot);
+        diagnostics.otherTalkIgnored = otherTalkIgnored;
         const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null;
         await recordQuoteChecks(this.options.directory, 'notes', model, notesOutcomes({ notes, dropped }), this.options.clock());
         if (!NOTE_SECTIONS.some(section => notes[section].length) && !notes.needsReview.length) throw new Error('The model returned no usable notes.');

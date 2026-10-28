@@ -5,7 +5,7 @@ export type RequestDiagnostics = {
   usage: { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null };
 };
 export type PartDiagnostics = { wallMs: number; waitMs: number | null; requests: RequestDiagnostics[] };
-export type NotesDiagnostics = { jobId: string; parts: Record<'project' | 'tasks' | 'other', PartDiagnostics> };
+export type NotesDiagnostics = { jobId: string; parts: Record<'project' | 'tasks' | 'other', PartDiagnostics>; otherTalkIgnored?: number };
 const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 const reasons = new Set(['pending', 'stop', 'length', 'toolUse', 'error', 'aborted', 'deferred']);
 const request = (value?: any): RequestDiagnostics => ({
@@ -33,6 +33,7 @@ export function notesDiagnosticsRows(value: unknown): NotesDiagnostics[] {
   if (!Array.isArray(value)) return [];
   return value.filter(row => row && typeof row.jobId === 'string' && row.parts).slice(-10).map(row => ({
     jobId: row.jobId,
+    ...(number(row.otherTalkIgnored) !== null && Number.isInteger(row.otherTalkIgnored) ? { otherTalkIgnored: row.otherTalkIgnored } : {}),
     parts: Object.fromEntries(['project', 'tasks', 'other'].map(name => {
       const part = row.parts[name];
       return [name, { wallMs: number(part?.wallMs) ?? 0, waitMs: number(part?.waitMs), requests: Array.isArray(part?.requests) ? part.requests.map(request) : [] }];
