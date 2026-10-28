@@ -204,7 +204,7 @@ test('notes and action runners resolve each call, running task keeps its model; 
   const old = notes(input); await until(async () => (await f.calls()).some(c => c.args.includes('json')));
   await f.ai.use({ main: chosen.quickModel, quick: chosen.quickModel });
   await old; await notes(input);
-  await actions({ ...input, action: 'explain', tools: 'read', onEvent: () => {}, processDir: join(f.directory, 'processes') });
+  await actions({ ...input, readRoots: [], action: 'explain', tools: 'read', onEvent: () => {}, processDir: join(f.directory, 'processes') });
   const tasks = (await f.calls()).filter(c => c.args.includes('json'));
   assert.equal(tasks[0].model, chosen.mainModel); assert.equal(tasks.at(-1)!.model, chosen.quickModel); assert.equal(tasks.at(-2)!.model, chosen.quickModel);
   const model = await planModel('plan', () => f.ai.require('main')); assert.equal(model, chosen.quickModel);

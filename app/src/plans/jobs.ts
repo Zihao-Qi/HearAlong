@@ -30,7 +30,7 @@ import {
 import { activeJob, jobData, plansPage, runView, shownJobs, type ListedJob, type PlanJobData, type PlanJobResult } from './view.ts';
 
 const RUN_PYTHON = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'pi-extensions', 'run-python.ts');
-/** The tools of §2: reading (any path, like the actions; the input points at the materials), the web, and run_python. */
+/** Reading is confined to this run's material roots and scratch folder, in both AI modes; Cloud can send tool results and Python output to the provider. */
 export const PLAN_TOOLS = { files: 'read,grep,find,ls', web: 'web_search,fetch_content,get_search_content', python: 'run_python' };
 /** run_python's limits per run (decision 2): 3 runs of 60 s for the plan pass, 8 of 120 s for Explore further. */
 export const PYTHON_LIMITS: Record<ExplorationKind, { ms: number; runs: number }> = { plan: { ms: 60_000, runs: 3 }, explore: { ms: 120_000, runs: 8 } };
@@ -353,7 +353,7 @@ export class PlanJobs {
         let answer: unknown;
         let passWarnings: string[] = [], passReview: string[] = [];
         try {
-          const options: ExplorationPiOptions = { model, thinking, files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env };
+          const options: ExplorationPiOptions = { model, thinking, readRoots: built.refs.roots.map(root => root.path), files: [inputPath], tools: tools.tools, extensions: tools.extensions, env: tools.env };
           if (kind === 'plan') {
             const pass = await runPlanPass(ctx, options, event => evidence.piEvent(event), progress);
             answer = pass.answer; passWarnings = pass.warnings; passReview = pass.review;

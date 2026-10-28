@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { READ_SCOPE_ENV, readRoots } from '../pi-extensions/read-scope.ts';
 import { isLocalModel, piCommand, piLaunch, watchPiRun, type AiMode } from './pi-command.ts';
 import { localFailure, localLengthMessage } from './local-ai.ts';
 import { inLocalPiLane } from './local-pi-lane.ts';
@@ -43,6 +45,8 @@ export type PiTaskOptions = {
   session?: string;
   /** Tool allowlist; `null` disables every tool, skill and extension tool. Omitted: Pi's defaults. */
   tools?: string | null;
+  /** Attached material/snapshot paths, captured with realpath at launch; cwd is added. Missing: no tools. */
+  readRoots?: string[];
   /** Files whose contents Pi puts into the first message (`@path`), so large inputs stay off the command line. */
   files?: string[];
   /** Extension files loaded for this task only (`-e path`), e.g. the Compute action's run_python tool. */
@@ -50,6 +54,7 @@ export type PiTaskOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   command?: string;
+  /** Preassembled CLI arguments, or an explicit command's subprocess fixture arguments. */
   args?: string[];
   onEvent?: (event: any) => void;
   /** Local lane admission time (also reported if cancelled in the queue); zero for cloud tasks. */
@@ -78,13 +83,17 @@ const stopped = (message: string, reason: 'cancelled' | 'timeout'): PiTaskError 
 /** With a process folder: how long Pi's pipes may stay open after it exits (something else inherited them) before they are closed. */
 export const PI_TASK_LIMITS = { drainMs: 2000, cleanupTries: 3, cleanupRetryMs: 300 };
 
+export const READ_SCOPE_EXTENSION = fileURLToPath(new URL('../pi-extensions/read-scope.ts', import.meta.url));
+
 export function piTaskArgs(prompt: string, options: PiTaskOptions): string[] {
+  const scoped = options.tools !== null && options.readRoots !== undefined;
+  const tools = scoped ? options.tools : null;
   return piLaunch([
     '--mode', 'json', '--model', options.model, '--no-context-files',
     ...(options.thinking ? ['--thinking', options.thinking] : []),
-    ...(options.extensions ?? []).flatMap(path => ['-e', path]),
-    ...(options.tools === null ? ['--no-tools', '--no-skills'] : options.tools ? ['--tools', options.tools] : []),
-    ...(options.skills === false && options.tools !== null ? ['--no-skills'] : []),
+    ...(scoped ? [...(options.extensions ?? []), READ_SCOPE_EXTENSION] : []).flatMap(path => ['-e', path]),
+    ...(tools === null ? ['--no-tools', '--no-skills'] : tools ? ['--tools', tools] : []),
+    ...(options.skills === false && tools !== null ? ['--no-skills'] : []),
     ...(options.session ? ['--session', options.session] : options.sessionDir ? ['--session-dir', options.sessionDir] : ['--no-session']),
     '--', ...(options.files ?? []).map(file => `@${file}`), prompt,
   ], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } }).args;
@@ -123,10 +132,32 @@ export async function runPiTask(prompt: string, options: PiTaskOptions): Promise
   } finally { if (!admitted) report(); }
 }
 
+/** Preassembled Pi CLI arguments must not bypass the scope applied by piTaskArgs. */
+function scopedArgs(args: string[], options: PiTaskOptions): string[] {
+  const mode = args.indexOf('--mode');
+  if (mode < 0) {
+    if (!options.command) throw new Error('Custom Pi arguments must declare --mode.');
+    return args; // An explicitly supplied subprocess fixture, not a Pi CLI launch.
+  }
+  const delimiter = args.indexOf('--', mode);
+  const end = delimiter < 0 ? args.length : delimiter;
+  let header = args.slice(mode, end);
+  if (options.tools !== null && options.readRoots !== undefined) {
+    if (!header.some((arg, index) => ['-e', '--extension'].includes(arg) && header[index + 1] === READ_SCOPE_EXTENSION)) header.push('-e', READ_SCOPE_EXTENSION);
+  } else {
+    header = header.filter((arg, index, all) => !['--tools', '-e', '--extension'].includes(arg) && !['--tools', '-e', '--extension'].includes(all[index - 1]));
+    if (!header.includes('--no-tools')) header.push('--no-tools');
+    if (!header.includes('--no-skills')) header.push('--no-skills');
+  }
+  return [...args.slice(0, mode), ...header, ...args.slice(end)];
+}
+
 function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskResult> {
   let args: string[];
+  let scope: string | undefined;
   try {
-    const launch = piLaunch(options.args ?? [], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } });
+    if (options.tools !== null && options.readRoots !== undefined) scope = JSON.stringify(readRoots([...options.readRoots, options.cwd]));
+    const launch = piLaunch(options.args ? scopedArgs(options.args, options) : [], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } });
     args = options.args ? launch.args : piTaskArgs(prompt, options);
   } catch (error) { return Promise.reject(error); }
   const started = performance.now();
@@ -138,6 +169,10 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
   catch (error) { return Promise.reject(error); }
   const processDir = options.processDir;
   const env = piLaunch([], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) } }).env;
+  // Never inherit another task's roots, including through an options.env overlay.
+  delete env[READ_SCOPE_ENV];
+  delete env.RIPGREP_CONFIG_PATH;
+  if (scope) env[READ_SCOPE_ENV] = scope;
   if (options.localNotesThinking && options.model.startsWith('ollama/')) env.MEETING_LOCAL_NOTES_THINKING = '1';
   return new Promise((resolve, reject) => {
     let child: ChildProcess | undefined;

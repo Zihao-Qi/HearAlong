@@ -106,6 +106,8 @@ Audio and speech recognition stay on the Mac. Settings › AI offers three modes
 
 New installs default to local AI if available, otherwise Off. Previously set-up installs with listed cloud models retain cloud access with a one-time notice offering a switch. Adding a new provider requires consent again; changing the consented provider set cancels old cloud work. Pi telemetry and version checks are disabled in every mode. See [the per-feature data table](docs/architecture.md#what-each-feature-sends) for bounds and details. Speech/model/software downloads are separate, explicit setup operations.
 
+In both AI modes, file tools can read only the task's attached meeting/project materials (including a linked repo when attached), any supplied read-only memory snapshot, and its own scratch folder. Roots are resolved at task start; symlinks cannot grant access outside them. Search tools may consult ignore files outside the allowed folders (such as `.gitignore` and the global Git ignore list) to decide what to skip; their contents are not shown to the AI. Action memory snapshots can include the project brief/history and other project meetings' saved notes. Generated Python has the same user-file boundary, plus its system/runtime, package and temporary files. In Cloud mode, file-tool results and Python output can go to the selected provider.
+
 Runtime data (recordings, transcripts, notes and AI session logs) is kept locally and is never part of this repository. All examples and test data here are fictional.
 
 ## Roadmap

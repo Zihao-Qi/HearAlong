@@ -15,7 +15,7 @@ test('stage 2 substitutes only the outline number in the frozen template', () =>
   assert.equal(prompts.planStage2(3), prompts.PLAN_STAGE2.replaceAll('{i}', '3'));
 });
 test('continuation replaces session flags, not tools, thinking, extensions or model', () => {
-  const opts = { model: 'fiction/model', cwd: '.', tools: 'read,run_python', extensions: ['extension.ts'], thinking: 'low' as const };
+  const opts = { model: 'fiction/model', cwd: '.', tools: 'read,run_python', readRoots: [], extensions: ['extension.ts'], thinking: 'low' as const };
   const a = piTaskArgs('read', { ...opts, sessionDir: 'stage1' });
   const b = piTaskArgs('write', { ...opts, session: 'copy.jsonl', sessionDir: 'ignored' });
   assert.deepEqual(a.slice(0, a.indexOf('--session-dir')), b.slice(0, b.indexOf('--session')));

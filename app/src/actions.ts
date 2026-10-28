@@ -520,13 +520,13 @@ export async function checkAnswer(text: string, roots: Material[], evidence: Web
 }
 
 export type ActionRunner = (input: {
-  action: ActionKind; tools: string; instructions: string; inputPath: string; cwd: string; sessionDir: string; signal: AbortSignal; onEvent: (event: any) => void;
+  action: ActionKind; tools: string; readRoots: string[]; instructions: string; inputPath: string; cwd: string; sessionDir: string; signal: AbortSignal; onEvent: (event: any) => void;
   /** Where the task's processes are recorded (Pi's group, Compute's scripts): a server start ends what a crash left there. */
   processDir: string;
 }) => Promise<PiTaskResult>;
 export function piActionRunner(model: TaskModel, timeoutMs = 600_000): ActionRunner {
-  return async ({ action, tools, instructions, inputPath, cwd, sessionDir, signal, onEvent, processDir }) => runPiTask(instructions, {
-    model: await taskModel(model), cwd, sessionDir, tools, extensions: ACTIONS[action].extensions, files: [inputPath], timeoutMs, signal, onEvent, processDir,
+  return async ({ action, tools, readRoots, instructions, inputPath, cwd, sessionDir, signal, onEvent, processDir }) => runPiTask(instructions, {
+    model: await taskModel(model), cwd, sessionDir, tools, readRoots, extensions: ACTIONS[action].extensions, files: [inputPath], timeoutMs, signal, onEvent, processDir,
   });
 }
 /** The tools an action gets: without working web tools, Explain and Other fall back to the materials alone. */
@@ -837,7 +837,7 @@ export class ActionJobs {
         }
       };
       const result = await this.options.runner!({
-        action: job.action, tools: toolsFor(job.action, web), instructions: actionInstructions(job.action, pdfs.length > 0), inputPath, cwd,
+        action: job.action, tools: toolsFor(job.action, web), readRoots: roots.map(root => root.path), instructions: actionInstructions(job.action, pdfs.length > 0), inputPath, cwd,
         sessionDir: join(this.options.directory, 'sessions', job.meetingId, 'actions', job.id), signal: controller.signal, onEvent,
         processDir: join(this.options.directory, 'processes', job.id),
       });

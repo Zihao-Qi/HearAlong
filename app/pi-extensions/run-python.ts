@@ -12,9 +12,9 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { spawn } from 'node:child_process';
-import { rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { PACKAGES, UV_ARGS } from './python-env.ts';
+import { PACKAGES, pythonEnv, UV_ARGS } from './python-env.ts';
 import { spawnGated, type Gated } from './process-groups.ts';
 import { sandboxed, toolEnv } from './tool-sandbox.ts';
 
@@ -65,8 +65,11 @@ export default function runPython(pi: ExtensionAPI) {
       const script = `run-${runNumber}.py`;
       await writeFile(join(cwd, script), params.code, { mode: 0o600 });
       if (signal?.aborted) throw new Error('Cancelled before running.');
-      const env = { ...toolEnv(process.env), OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MKL_NUM_THREADS: '1', VECLIB_MAXIMUM_THREADS: '1', NUMEXPR_NUM_THREADS: '1' };
-      const [command, args] = sandboxed('uv', [...UV_ARGS, '--offline', 'python', script], cwd);
+      const temporary = join(cwd, '.tmp');
+      await mkdir(temporary, { recursive: true, mode: 0o700 });
+      const env = { ...pythonEnv(toolEnv(process.env)), TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+        OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MKL_NUM_THREADS: '1', VECLIB_MAXIMUM_THREADS: '1', NUMEXPR_NUM_THREADS: '1' };
+      const [command, args] = sandboxed('uv', [...UV_ARGS, '--offline', 'python', script], cwd, env);
       const stdout = capped(), stderr = capped();
       type Outcome = { code: number | null; signal: string | null; timedOut: boolean; error?: string };
       // Recorded before it starts (when the task has a process folder); a script that cannot be recorded does not run.

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { PiModels } from '../src/setup/pi-models.ts';
 import { LOCAL_MODELS_EXTENSION, piLaunch, setPiAdmission, setPiKeys, type AiMode } from '../src/pi-command.ts';
 import { fakePi } from './helpers/setup-pi.ts';
-import { runPiTask } from '../src/pi-task.ts';
+import { READ_SCOPE_EXTENSION, runPiTask } from '../src/pi-task.ts';
 import { PiRpc } from '../src/pi-rpc.ts';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -54,9 +54,9 @@ for (const mode of ['local', 'cloud'] as const) test(`${mode} tasks and RPC have
   const rpc = new PiRpc({ model, aiMode: mode, cwd: f.cwd, env: f.env });
   try { await rpc.ask('Example'); } finally { await rpc.close(); }
   const python = fileURLToPath(new URL('../pi-extensions/run-python.ts', import.meta.url));
-  await runPiTask('Example gated', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: 'read,run_python', extensions: [python], processDir: join(f.directory, 'processes') });
+  await runPiTask('Example gated', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: 'read,run_python', readRoots: [], extensions: [python], processDir: join(f.directory, 'processes') });
   const calls = await f.calls();
-  assert.deepEqual(calls[2].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '-e', python, '--tools', 'read,run_python', '--no-session', '--', 'Example gated']);
+  assert.deepEqual(calls[2].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '-e', python, '-e', READ_SCOPE_EXTENSION, '--tools', 'read,run_python', '--no-session', '--', 'Example gated']);
   assert.deepEqual(calls[0].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '--no-tools', ...(mode === 'cloud' ? ['--no-skills'] : []), '--no-session', '--', 'Example']);
   assert.deepEqual(calls[1].args, [...prefix, '--mode', 'rpc', '--no-session', '--no-tools', '--no-context-files', '--model', model, '--thinking', 'low']);
   for (const call of calls) {
