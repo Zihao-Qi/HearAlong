@@ -12,8 +12,19 @@ import WebKit
 struct Config: Decodable {
     let node: String        // absolute path, recorded at build time (an app opened from Finder has no shell PATH)
     let path: String        // the PATH of the shell that built the app, for the tools the server starts (pi, uv, ffmpeg)
-    let prototype: String   // the repo's prototype/ folder: the server's working directory
+    let app: String         // the repo's app/ folder: the server's working directory
     let port: Int
+
+    private enum CodingKeys: String, CodingKey { case node, path, app, prototype, port }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        node = try values.decode(String.self, forKey: .node)
+        path = try values.decode(String.self, forKey: .path)
+        // Keep reading launcher.json files written before the folder rename.
+        app = try values.decodeIfPresent(String.self, forKey: .app) ?? values.decode(String.self, forKey: .prototype)
+        port = try values.decode(Int.self, forKey: .port)
+    }
 }
 
 final class Helper: NSObject, NSApplicationDelegate {
@@ -32,7 +43,7 @@ final class Helper: NSObject, NSApplicationDelegate {
     private var port: Int { Int(env["MEETING_LAUNCHER_PORT"] ?? "") ?? config.port }
     private var base: URL { URL(string: "http://127.0.0.1:\(port)/")! }
     private var logURL: URL {
-        let data = env["MEETING_DATA_DIR"].map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: config.prototype).appendingPathComponent("data")
+        let data = env["MEETING_DATA_DIR"].map { URL(fileURLWithPath: $0) } ?? URL(fileURLWithPath: config.app).appendingPathComponent("data")
         return data.appendingPathComponent("logs/launcher.log")
     }
 
@@ -88,13 +99,24 @@ final class Helper: NSObject, NSApplicationDelegate {
     }
 
     private func startServer(openWindow open: Bool) {
+        // Check before making logs: that would create the missing data folder and hide the server's notice.
+        let root = URL(fileURLWithPath: config.app).standardizedFileURL
+        let data = env["MEETING_DATA_DIR"].map { URL(fileURLWithPath: $0).standardizedFileURL } ?? root.appendingPathComponent("data")
+        let legacy = root.deletingLastPathComponent().appendingPathComponent("prototype/data")
+        if data == root.appendingPathComponent("data"),
+           !FileManager.default.fileExists(atPath: data.path), FileManager.default.fileExists(atPath: legacy.path) {
+            let notice = "Your meetings are still in prototype/data — move that folder to app/data, then restart"
+            if env["MEETING_LAUNCHER_NO_WINDOW"] != "1" { FileHandle.standardError.write("\(notice)\n".data(using: .utf8)!) }
+            fail(notice)
+            return
+        }
         do { try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true) } catch {}
         var actions: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&actions)
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
         posix_spawn_file_actions_addopen(&actions, 1, logURL.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
         posix_spawn_file_actions_adddup2(&actions, 1, 2)
-        posix_spawn_file_actions_addchdir(&actions, config.prototype)
+        posix_spawn_file_actions_addchdir(&actions, config.app)
         var attributes: posix_spawnattr_t? = nil
         posix_spawnattr_init(&attributes)
         // Its own process group, so stopping can end everything the server started, including what its children started.

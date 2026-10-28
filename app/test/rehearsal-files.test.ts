@@ -7,18 +7,18 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRunFiles } from '../scripts/rehearsal-input.ts';
 
-const sourcePrototype = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const sourceApp = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // The CLI derives its allowed runs directory from its own location. Give each invocation test
 // disposable copies of the validation scripts and their browser guard so concurrent suites cannot change its snapshot.
 async function cli(t: TestContext) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'rehearsal-cli-')));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const prototype = join(root, 'prototype');
-  await mkdir(join(prototype, 'scripts'), { recursive: true });
-  for (const name of ['rehearse.ts', 'rehearsal-input.ts', 'test-browser.ts']) await copyFile(join(sourcePrototype, 'scripts', name), join(prototype, 'scripts', name));
-  await writeFile(join(prototype, 'package.json'), '{"type":"module"}');
-  await symlink(join(sourcePrototype, 'node_modules'), join(prototype, 'node_modules'));
-  return { prototype, runs: join(prototype, 'artifacts/rehearsal/runs') };
+  const app = join(root, 'app');
+  await mkdir(join(app, 'scripts'), { recursive: true });
+  for (const name of ['rehearse.ts', 'rehearsal-input.ts', 'test-browser.ts']) await copyFile(join(sourceApp, 'scripts', name), join(app, 'scripts', name));
+  await writeFile(join(app, 'package.json'), '{"type":"module"}');
+  await symlink(join(sourceApp, 'node_modules'), join(app, 'node_modules'));
+  return { app, runs: join(app, 'artifacts/rehearsal/runs') };
 }
 const targets = ['meetings.sqlite', 'meetings.sqlite-wal', 'meetings.sqlite-shm', 'settings.json', 'audio/mic.wav', 'audio/nested/tab.wav'];
 
@@ -46,7 +46,7 @@ test('run validation accepts ordinary files but refuses hard links in databases,
 });
 
 test('--open refuses hard-linked regular files with a plain error before creating server resources', async t => {
-  const { prototype, runs } = await cli(t);
+  const { app, runs } = await cli(t);
   await mkdir(runs, { recursive: true });
   const folder = await mkdtemp(join(runs, 'hardlink-test-'));
   const temporary = await mkdtemp(join(tmpdir(), 'rehearsal-original-'));
@@ -61,7 +61,7 @@ test('--open refuses hard-linked regular files with a plain error before creatin
     await rm(path, { force: true }); await link(original, path);
     const contents = await readdir(folder);
     const result = spawnSync(process.execPath, ['--experimental-strip-types', 'scripts/rehearse.ts', '--open', folder, '--headless'], {
-      cwd: prototype, encoding: 'utf8', timeout: 60_000,
+      cwd: app, encoding: 'utf8', timeout: 60_000,
       // Exists everywhere Node runs; it must never be launched as a browser because validation must fail first.
       env: { ...process.env, MEETING_TEST_CHROME: process.execPath },
     });
@@ -77,7 +77,7 @@ test('--open refuses hard-linked regular files with a plain error before creatin
 });
 
 test('compressed WAVs fail plainly before creating run/server/browser resources', async t => {
-  const { prototype, runs } = await cli(t);
+  const { app, runs } = await cli(t);
   const temporary = await mkdtemp(join(tmpdir(), 'rehearsal-compressed-'));
   t.after(() => rm(temporary, { recursive: true, force: true }));
   const input = Buffer.alloc(46);
@@ -88,7 +88,7 @@ test('compressed WAVs fail plainly before creating run/server/browser resources'
   const path = join(temporary, 'compressed.wav'); await writeFile(path, input);
   const before = await readdir(runs).catch(() => []);
   const result = spawnSync(process.execPath, ['--experimental-strip-types', 'scripts/rehearse.ts', path, '--headless'], {
-    cwd: prototype, encoding: 'utf8', timeout: 60_000, env: { ...process.env, MEETING_TEST_CHROME: '/no/test-chrome' },
+    cwd: app, encoding: 'utf8', timeout: 60_000, env: { ...process.env, MEETING_TEST_CHROME: '/no/test-chrome' },
   });
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');

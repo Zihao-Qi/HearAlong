@@ -9,7 +9,7 @@ import type { startServer } from '../src/server.ts';
 import { clock, loadWav, parseArgs, validateRunFiles, writeTrimmed } from './rehearsal-input.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const RUNS = join(ROOT, 'prototype/artifacts/rehearsal/runs');
+const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The optional observer drives lifecycle/UI checks; the command itself always uses the real UI unmodified. */

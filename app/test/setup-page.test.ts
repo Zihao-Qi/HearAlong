@@ -46,9 +46,9 @@ test('a ready returning user with no meetings opens the dashboard; first-open op
   const status = await response.json(); assert.equal(typeof status.rows.find((r: { id: string }) => r.id === 'ai').signInCommand, 'string');
 });
 
-test('without a Pi on PATH or an override, sign-in uses npx only inside the prototype folder', async t => {
+test('without a Pi on PATH or an override, sign-in uses npx only inside the app folder', async t => {
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: '' }; delete env.MEETING_PI;
   const f = await fixture(t, false, { env, root: join(tmpdir(), 'example-no-bundled-pi') });
   const status = await (await fetch(`${f.app.url}/api/setup`, { headers: { Cookie: f.Cookie } })).json();
-  assert.match(status.rows.find((r: { id: string }) => r.id === 'ai').signInCommand, /^cd '.+\/prototype' && npx pi$/);
+  assert.match(status.rows.find((r: { id: string }) => r.id === 'ai').signInCommand, /^cd '.+\/app' && npx pi$/);
 });

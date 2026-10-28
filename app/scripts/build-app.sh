@@ -1,13 +1,13 @@
 #!/bin/sh
-# Builds "HearAlong Helper.app" (M7) into prototype/dist/ from launcher/main.swift with the Swift toolchain on this Mac: the
+# Builds "HearAlong Helper.app" (M7) into app/dist/ from launcher/main.swift with the Swift toolchain on this Mac: the
 # invisible helper that starts the server for the installed Chrome app "HearAlong" (it opens meetingassistant:// links)
 # and shows the mini view in a native floating window while recording.
 # Nothing is installed; the build registers the helper with macOS so the link finds it. Rebuild after moving the repo or changing Node.
 # Usage: npm run build:app
 set -eu
 cd "$(dirname "$0")/.."
-PROTOTYPE="$(pwd)"
-APP="$PROTOTYPE/dist/HearAlong Helper.app"
+APP_ROOT="$(pwd)"
+APP="$APP_ROOT/dist/HearAlong Helper.app"
 # Leave legacy bundles untouched; remove obsolete copies manually after rebuilding.
 NODE="$(command -v node)"
 [ -x "$NODE" ] || { echo "node was not found on PATH" >&2; exit 1; }
@@ -55,8 +55,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 
 # Paths recorded now, because an app opened from Finder does not get the shell's PATH.
-node -e 'process.stdout.write(JSON.stringify({ node: process.argv[1], path: process.argv[2], prototype: process.argv[3], port: 4318 }, null, 2))' \
-  "$NODE" "$PATH" "$PROTOTYPE" > "$APP/Contents/Resources/launcher.json"
+node -e 'process.stdout.write(JSON.stringify({ node: process.argv[1], path: process.argv[2], app: process.argv[3], port: 4318 }, null, 2))' \
+  "$NODE" "$PATH" "$APP_ROOT" > "$APP/Contents/Resources/launcher.json"
 
 codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "note: ad-hoc signing failed; the app still runs on this Mac" >&2
 "$LSREGISTER" -f "$APP" # so a meetingassistant:// link opens this helper

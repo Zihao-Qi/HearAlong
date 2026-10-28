@@ -1,6 +1,6 @@
 'use strict';
 
-// Run: node --test prototype/scripts/public-guard.test.cjs
+// Run: node --test app/scripts/public-guard.test.cjs
 // Only temporary repositories are committed to; no push or network operation is used.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -73,16 +73,16 @@ function repo(t, { seed = true } = {}) {
   return r;
 }
 
-test('setup command installs executable hooks from prototype/', t => {
+test('setup command installs executable hooks from app/', t => {
   const r = repo(t);
   r.git('config', '--unset', 'core.hooksPath');
-  r.write('prototype/package.json', fs.readFileSync(path.join(SOURCE, 'prototype/package.json')));
-  ok(command(path.join(r.root, 'prototype'), 'npm', ['run', 'guard:install']));
+  r.write('app/package.json', fs.readFileSync(path.join(SOURCE, 'app/package.json')));
+  ok(command(path.join(r.root, 'app'), 'npm', ['run', 'guard:install']));
   assert.equal(r.git('config', '--get', 'core.hooksPath'), path.join(r.root, '.githooks'));
   for (const hook of ['pre-commit', 'commit-msg', 'pre-push']) {
     assert.ok(fs.statSync(path.join(r.root, '.githooks', hook)).mode & 0o111);
   }
-  ok(r.hook('pre-commit', '', path.join(r.root, 'prototype')));
+  ok(r.hook('pre-commit', '', path.join(r.root, 'app')));
   r.stage('blocked.txt', 'Zorblat\n');
   blocked(command(r.root, 'git', ['commit', '-m', 'must fail']), /deny-list term/);
 });
@@ -174,6 +174,9 @@ test('rename with modifications reports the new path and added line number', t =
 
 for (const file of [
   'private/notes.txt', 'data/notes.txt', 'evaluation/notes.txt',
+  'app/data/notes.txt', 'app/artifacts/notes.txt',
+  'nested/app/data/notes.txt', 'nested/app/artifacts/notes.txt',
+  // Older branches must remain guarded too.
   'prototype/data/notes.txt', 'prototype/artifacts/notes.txt',
   'nested/prototype/data/notes.txt', 'nested/prototype/artifacts/notes.txt',
 ]) {
@@ -262,7 +265,7 @@ test('pre-push catches a forbidden intermediate --no-verify commit even after re
 });
 
 for (const [file, content, pattern] of [
-  ['prototype/data/item.txt', 'safe', /private\/runtime path/],
+  ['app/data/item.txt', 'safe', /private\/runtime path/],
   ['clip.mp3', Buffer.from('\0safe'), /blocked extension/],
   ['large.txt', Buffer.alloc(2_000_001, 120), /larger than 2 MB/],
 ]) {
@@ -515,10 +518,10 @@ test('install from an old linked worktree uses main hooks without local hook fil
   const linked = `${r.root}-old revision`;
   t.after(() => fs.rmSync(linked, { recursive: true, force: true }));
   r.git('worktree', 'add', '--detach', linked, 'HEAD~1');
-  const prototype = path.join(linked, 'prototype');
-  fs.mkdirSync(prototype);
-  fs.copyFileSync(path.join(SOURCE, 'prototype/package.json'), path.join(prototype, 'package.json'));
-  ok(command(prototype, 'npm', ['run', 'guard:install']));
+  const app = path.join(linked, 'app');
+  fs.mkdirSync(app);
+  fs.copyFileSync(path.join(SOURCE, 'app/package.json'), path.join(app, 'package.json'));
+  ok(command(app, 'npm', ['run', 'guard:install']));
   assert.equal(command(linked, 'git', ['config', '--get', 'core.hooksPath']).stdout.trim(), path.join(r.root, '.githooks'));
   assert.equal(fs.existsSync(path.join(linked, '.githooks')), false);
   fs.writeFileSync(path.join(linked, 'public.txt'), 'safe\n');

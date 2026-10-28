@@ -145,8 +145,8 @@ function checkFiles(raw, terms) {
 
     if (status === 'A' || status === 'R' || status === 'C') checkLine(terms, path, 1, path);
 
-    // Match these names at the root (including files/symlinks), and prototype runtime paths at any depth.
-    if (/^(private|data|evaluation)(\/|$)/i.test(path) || /(^|\/)prototype\/(data|artifacts)\//i.test(path)) {
+    // Match these names at the root (including files/symlinks), and app runtime paths at any depth (including legacy branches).
+    if (/^(private|data|evaluation)(\/|$)/i.test(path) || /(^|\/)(app|prototype)\/(data|artifacts)\//i.test(path)) {
       reject(`${JSON.stringify(path)}: private/runtime path; unstage or remove it and rewrite affected commits.`);
     }
     if (/\.(wav|f32|sqlite|db|m4a|mp3|mp4|webm|gguf|media)$/i.test(path)) {

@@ -1,5 +1,5 @@
 // Local-only merge routine, from any checkout:
-// node --experimental-strip-types prototype/scripts/land.ts <name> "<message>" [--full] [--timeout-ms N]
+// node --experimental-strip-types app/scripts/land.ts <name> "<message>" [--full] [--timeout-ms N]
 // Quick: npm run check, then npm test. Full: npm run check, then main's npm run checks <fresh-dir>.
 // All commands use nice -n 19, a test Chrome, and per-command logs. Default timeouts:
 // 10 minutes for check/test, 90 minutes for checks; --timeout-ms overrides all three.
@@ -90,9 +90,9 @@ function forbiddenPaths(worktree: string): string[] {
 
 function requireChecksScript(main: string) {
   let script: unknown;
-  try { script = JSON.parse(readFileSync(join(main, 'prototype/package.json'), 'utf8'))?.scripts?.checks; }
-  catch { throw new Error('main prototype/package.json must be readable and define a checks script'); }
-  if (typeof script !== 'string' || !script.trim()) throw new Error('main prototype/package.json must define a checks script before landing');
+  try { script = JSON.parse(readFileSync(join(main, 'app/package.json'), 'utf8'))?.scripts?.checks; }
+  catch { throw new Error('main app/package.json must be readable and define a checks script'); }
+  if (typeof script !== 'string' || !script.trim()) throw new Error('main app/package.json must define a checks script before landing');
 }
 
 function printFullSummary(file: string) {
@@ -120,7 +120,7 @@ async function runCommand(name: 'check' | 'test' | 'checks', args: string[], mai
   try {
     signal.throwIfAborted();
     await new Promise<void>((done, reject) => {
-      const child = spawn('nice', ['-n', '19', 'npm', ...args], { cwd: join(main, 'prototype'), env: { ...process.env, MEETING_TEST_CHROME: chrome }, detached: true, stdio: ['ignore', fd, fd] });
+      const child = spawn('nice', ['-n', '19', 'npm', ...args], { cwd: join(main, 'app'), env: { ...process.env, MEETING_TEST_CHROME: chrome }, detached: true, stdio: ['ignore', fd, fd] });
       let stopped: string | undefined, ending: Promise<void> | undefined;
       const groupExists = () => {
         if (!child.pid) return false;

@@ -112,7 +112,7 @@ try {
   store.close();
   check('the recording was sealed into windows, nothing left held', held === 0 && chunks >= 1, `${chunks} windows, ${held} frames held`);
   const log = await readFile(join(data, 'logs', 'launcher.log'), 'utf8').catch(() => '');
-  check('the server wrote its log', /HearAlong prototype/.test(log));
+  check('the server wrote its log', /HearAlong:/.test(log));
 
   // 2. A server started outside the app (npm start) is used, and left running when the app quits.
   const data2 = await temp();
