@@ -17,7 +17,7 @@ function start() {
     if (Date.now() > until) {
       stop();
       title.textContent = 'HearAlong did not start';
-      detail.innerHTML = 'Open <code>HearAlong Helper</code> from <code>app/dist</code>, or run <code>npm start</code> in <code>app</code>, then try again. Its log is <code>app/data/logs/launcher.log</code>.';
+      detail.innerHTML = 'Open <code>HearAlong Helper</code> from <code>~/Applications</code> (or <code>app/dist</code> for a source checkout), then try again. Installed release logs are in <code>~/Library/Application Support/HearAlong/data/logs/launcher.log</code>; source checkout logs are in <code>app/data/logs/launcher.log</code>.';
       retry.hidden = false;
       retry.focus(); return;
     }
