@@ -158,6 +158,9 @@ async function main() {
     ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
     ['api-keys', check('api-keys-check', join(out, 'api-keys'))],
     ['ai-mode', check('ai-mode-check', join(out, 'ai-mode'))],
+    ['progress', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-check.ts', join(out, 'progress')]],
+    ['progress-fix1', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-fix1-check.ts', join(out, 'progress-fix1')]],
+    ['progress-fix2', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-fix2-check.ts', join(out, 'progress-fix2')]],
   ];
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {

@@ -1,7 +1,7 @@
 // Fix-round geometry and copy regressions. Real page, fictional data, explicit headless browser; all checks collect failures.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
@@ -37,6 +37,9 @@ const plans = async (prompt: string, options: PiTaskOptions): Promise<PiTaskResu
   return { text: JSON.stringify(planAnswer), ms: 1, tools: [], toolEvents: 0, toolResults: [], aborted: false, stopReason: 'stop', settled: true, exitCode: 0, exitSignal: null };
 };
 await dashboardSetup(directory);
+const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
+// Consent must cover exactly the provider of MEETING_HEAVY_MODEL below.
+await writeFile(join(directory, 'settings.json'), JSON.stringify({ ...saved, aiMode: 'cloud', cloudConsent: { providers: ['example'], time: 1 } }));
 const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, actions: null, board: null, plans,
   ai: { env: { ...process.env, MEETING_HEAVY_MODEL: 'example/stand-in' } },
   notes: async () => ({ text: JSON.stringify({ summary: [item('The painted lanterns are ready for the parade and stay on the rack.'), item('Crates stay here.'), item('Check the batteries.')],

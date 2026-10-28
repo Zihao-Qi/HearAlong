@@ -1,7 +1,7 @@
 // Real routes/jobs, scripted Pi events, disposable data and an explicitly chosen headless browser. No model/network calls.
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -88,6 +88,9 @@ NotesFile.prototype.save = async function(record, signal, commit) {
 const originalPublish = PlanVersions.prototype.publish;
 PlanVersions.prototype.publish = async function(...args) { if (mode === 'stream') await planSave.promise; return originalPublish.apply(this, args); };
 await dashboardSetup(directory);
+const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
+// Consent must cover exactly the provider of MEETING_HEAVY_MODEL below.
+await writeFile(join(directory, 'settings.json'), JSON.stringify({ ...saved, aiMode: 'cloud', cloudConsent: { providers: ['example'], time: 1 } }));
 await writeFile(join(directory, 'job-durations.json'), 'null'); // Optional corrupt history must not block the notes job.
 const app = await startServer({ directory, port: 0, publicRoot: process.env.PROGRESS_PUBLIC_ROOT, notes, plans,
   ai: { env: { ...process.env, MEETING_HEAVY_MODEL: 'example/stand-in' } }, quick: null, heavy: null, recognizer: null, drafts: null, board: null, actions: null });
