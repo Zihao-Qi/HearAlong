@@ -19,11 +19,11 @@ before(() => {
   mkdirSync(source);
   mkdirSync(release);
   // Only Git-tracked files enter the fixture. Overlay the two implementation files so uncommitted work is tested too.
-  execFileSync('git', ['archive', '--format=tar', '-o', join(directory, 'tracked.tar'), 'HEAD', 'app', 'LICENSE'], { cwd: repo });
+  execFileSync('git', ['archive', '--format=tar', '-o', join(directory, 'tracked.tar'), 'HEAD', 'app', 'LICENSE', 'THIRD-PARTY-LICENSES'], { cwd: repo });
   execFileSync('tar', ['-xf', join(directory, 'tracked.tar'), '-C', source]);
   cpSync(join(repo, 'app/scripts/build-app.sh'), join(source, 'app/scripts/build-app.sh'));
   cpSync(installer, join(source, 'install.sh'));
-  execFileSync('tar', ['-czf', join(release, 'HearAlong.tar.gz'), '-C', source, 'app', 'install.sh', 'LICENSE']);
+  execFileSync('tar', ['-czf', join(release, 'HearAlong.tar.gz'), '-C', source, 'app', 'install.sh', 'LICENSE', 'THIRD-PARTY-LICENSES']);
   checksum(release);
 });
 after(() => rmSync(directory, { recursive: true, force: true }));
@@ -77,7 +77,12 @@ if [ -n "\${TEST_OLD_CODE:-}" ]; then [ -f "$TEST_OLD_CODE" ]; fi
 [ "\${TEST_NPM_FAIL:-}" != 1 ]`);
   for (const name of ['ffmpeg', 'ffprobe']) {
     stub(name, `if [ "\${TEST_FFMPEG:-}" = missing ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then exit 1; fi
-if [ "\${TEST_FFMPEG:-}" = old ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then echo '${name} version 3.2'; else echo '${name} version 8.0'; fi`);
+if [ "\${TEST_FFMPEG:-}" = old ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then echo '${name} version 3.2';
+elif [ "\${TEST_FFMPEG:-}" = clang_banner ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then
+  printf '${name} version n4.3.2\\nbuilt with Apple clang version 16.0.0\\n'
+elif [ "\${TEST_FFMPEG:-}" = n44_banner ]; then
+  printf '${name} version n4.4.1\\nbuilt with Apple clang version 16.0.0\\n'
+else echo '${name} version 8.0'; fi`);
   }
   mkdirSync(join(root, 'tools/bin'), { recursive: true });
   for (const name of ['node', 'npm', 'ffmpeg', 'ffprobe']) symlinkSync(join(bin, name), join(root, 'tools/bin', name));
@@ -98,6 +103,7 @@ fi
 exec "${system('mv')}" "$@"`);
   const env = { ...process.env, HOME: home, PATH: bin, TMPDIR: root, CALLS: log, TEST_ROOT: root,
     TEST_HELPER: helper, HEARALONG_CHROME_APP: join(home, 'Applications/Google Chrome.app'),
+    HEARALONG_TEST_MODE: '1',
     HEARALONG_NO_REGISTER: '1', HEARALONG_LSREGISTER: join(bin, 'lsregister'),
     HEARALONG_RELEASE_URL: pathToFileURL(release).href };
   const run = (extra: Record<string, string> = {}, args: string[] = [], input?: string) => {
@@ -296,4 +302,146 @@ test('non-macOS and missing Chrome stop before installation changes', () => {
   assert.match(result.output, /needs Google Chrome.*https:\/\/www.google.com\/chrome\//);
   assert.ok(!existsSync(f.appRoot));
   assert.doesNotMatch(f.calls(), /brew |download|npm|swiftc|open/);
+});
+
+test('FFmpeg banner matching clang 16 but old ffmpeg version is rejected and installs via brew', () => {
+  const f = fixture();
+  f.ok({ TEST_FFMPEG: 'clang_banner' });
+  assert.match(f.calls(), /brew install ffmpeg\n/);
+});
+
+test('FFmpeg banner with supported version n4.4+ proceeds without brew install', () => {
+  const f = fixture();
+  f.ok({ TEST_FFMPEG: 'n44_banner' });
+  assert.doesNotMatch(f.calls(), /brew install ffmpeg/);
+});
+
+test('cleanup completes and removes lock even if rollback or previous helper restore fails', () => {
+  const f = fixture();
+  f.ok();
+  writeFileSync(join(f.appRoot, '.rollback'), 'stale rollback');
+  const result = f.run({ TEST_FAIL_HELPER_SWAP: '1' });
+  assert.notEqual(result.status, 0);
+  assert.ok(!existsSync(join(f.appRoot, '.install-lock')), 'lock removed');
+  assert.ok(!existsSync(join(f.appRoot, '.rollback')), 'stale rollback cleaned up');
+});
+
+test('release archive containing symlinks or hardlinks is rejected before extraction', () => {
+  const f = fixture();
+  const badRelease = join(f.root, 'bad-release');
+  mkdirSync(badRelease);
+  const badSource = join(f.root, 'bad-source');
+  mkdirSync(badSource);
+  mkdirSync(join(badSource, 'app'));
+  writeFileSync(join(badSource, 'app/package-lock.json'), '{}');
+  writeFileSync(join(badSource, 'LICENSE'), 'MIT');
+  writeFileSync(join(badSource, 'install.sh'), 'echo ok');
+  symlinkSync('../../data/settings.json', join(badSource, 'app/install.sh-link'));
+  execFileSync('tar', ['-czf', join(badRelease, 'HearAlong.tar.gz'), '-C', badSource, 'app', 'install.sh', 'LICENSE']);
+  const hash = createHash('sha256').update(readFileSync(join(badRelease, 'HearAlong.tar.gz'))).digest('hex');
+  writeFileSync(join(badRelease, 'HearAlong.tar.gz.sha256'), `${hash}  HearAlong.tar.gz\n`);
+  const result = f.run({ HEARALONG_RELEASE_URL: pathToFileURL(badRelease).href });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /Links are not permitted/);
+  assert.ok(!existsSync(f.app));
+  assert.doesNotMatch(f.calls(), /npm|swiftc|open/);
+});
+
+test('release archive containing unexpected or traversal paths is rejected', () => {
+  const f = fixture();
+  const badRelease = join(f.root, 'bad-paths-release');
+  mkdirSync(badRelease);
+  const badSource = join(f.root, 'bad-paths-source');
+  mkdirSync(badSource);
+  mkdirSync(join(badSource, 'app'));
+  writeFileSync(join(badSource, 'app/package-lock.json'), '{}');
+  writeFileSync(join(badSource, 'LICENSE'), 'MIT');
+  writeFileSync(join(badSource, 'install.sh'), 'echo ok');
+  mkdirSync(join(badSource, 'data'));
+  writeFileSync(join(badSource, 'data/evil.txt'), 'evil');
+  execFileSync('tar', ['-czf', join(badRelease, 'HearAlong.tar.gz'), '-C', badSource, 'app', 'install.sh', 'LICENSE', 'data']);
+  const hash = createHash('sha256').update(readFileSync(join(badRelease, 'HearAlong.tar.gz'))).digest('hex');
+  writeFileSync(join(badRelease, 'HearAlong.tar.gz.sha256'), `${hash}  HearAlong.tar.gz\n`);
+  const result = f.run({ HEARALONG_RELEASE_URL: pathToFileURL(badRelease).href });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /Unexpected paths in the release archive/);
+  assert.ok(!existsSync(f.app));
+});
+
+test('uninstall retry removes orphaned version directory when app symlink is already gone', () => {
+  const f = fixture();
+  f.ok();
+  const oldTarget = readlinkSync(f.app);
+  const oldVersionDir = join(f.appRoot, oldTarget.slice(0, oldTarget.indexOf('/')));
+  rmSync(f.app);
+  assert.ok(existsSync(oldVersionDir));
+  const result = f.run({}, ['--uninstall']);
+  assert.equal(result.status, 0, result.output);
+  assert.ok(!existsSync(oldVersionDir), 'orphaned version directory removed');
+  assert.ok(!existsSync(f.helper));
+  assert.match(result.output, /HearAlong removed/);
+
+  const second = f.run({}, ['--uninstall']);
+  assert.equal(second.status, 0, second.output);
+});
+
+test('uninstall fails and does not report success if a version directory cannot be removed', () => {
+  const f = fixture();
+  f.ok();
+  const orphan = join(f.appRoot, '.app-123456');
+  mkdirSync(orphan);
+  writeFileSync(join(orphan, 'locked.txt'), 'locked');
+  execFileSync('/bin/chmod', ['000', orphan]);
+  try {
+    const result = f.run({}, ['--uninstall']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.output, /uninstall incomplete|Could not remove/);
+    assert.doesNotMatch(result.output, /HearAlong removed/);
+  } finally {
+    execFileSync('/bin/chmod', ['755', orphan]);
+  }
+});
+
+test('test overrides are ignored when HEARALONG_TEST_MODE is not 1', () => {
+  const f = fixture();
+  const result = f.run({ HEARALONG_TEST_MODE: '0', HEARALONG_LSREGISTER: join(f.bin, 'lsregister') });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /Internet curl refused by installer fixture/);
+  assert.doesNotMatch(f.calls(), /lsregister/);
+});
+
+test('release URL with http protocol is refused even in test mode', () => {
+  const f = fixture();
+  const result = f.run({ HEARALONG_RELEASE_URL: 'http://example.com/HearAlong' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /Release URL must use https:\/\//);
+});
+
+test('release workflow tag filter matches strict semver with optional suffix', () => {
+  const validTags = ['v0.1.0', 'v1.0.0', 'v26.0.1', 'v1.0.0-rc1', 'v2.1.0-alpha.1'];
+  const invalidTags = ['v', 'v-wip', 'vanilla', 'v1', 'v1.0', 'v1.0.0.0', '1.0.0'];
+  const semverRegex = /^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/;
+  for (const tag of validTags) assert.ok(semverRegex.test(tag), `should accept ${tag}`);
+  for (const tag of invalidTags) assert.ok(!semverRegex.test(tag), `should reject ${tag}`);
+  for (const tag of validTags) {
+    const isPrerelease = tag.includes('-');
+    assert.equal(isPrerelease, tag.includes('-rc') || tag.includes('-alpha'));
+  }
+});
+
+test('uninstall traps signals HUP, INT, TERM to remove install lock on interrupt', () => {
+  const source = readFileSync(installer, 'utf8');
+  const uninstallSection = source.slice(source.indexOf('if [ "${1:-}" = --uninstall ];'), source.indexOf('printf \'HearAlong removed.'));
+  assert.match(uninstallSection, /trap 'exit 1' HUP INT TERM/);
+  assert.match(uninstallSection, /trap 'rmdir "\$ROOT\/\.install-lock"' EXIT/);
+});
+
+test('uppercase SHA-256 checksum is accepted and verified', () => {
+  const f = fixture();
+  const upperRelease = join(f.root, 'upper-release');
+  cpSync(release, upperRelease, { recursive: true });
+  const hash = readFileSync(join(upperRelease, 'HearAlong.tar.gz.sha256'), 'utf8');
+  writeFileSync(join(upperRelease, 'HearAlong.tar.gz.sha256'), hash.toUpperCase());
+  f.ok({ HEARALONG_RELEASE_URL: pathToFileURL(upperRelease).href });
+  assert.ok(existsSync(f.app));
 });

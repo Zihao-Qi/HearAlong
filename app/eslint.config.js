@@ -3,8 +3,6 @@ import globals from 'globals';
 
 export default [
   { ignores: ['public/vendor/**'] },
-  // TODO(after pi-app-audio): fix the four existing unused bindings, then remove this block.
-  { ignores: ['public/app.js'] },
   {
     files: ['public/**/*.js'],
     ...js.configs.recommended,

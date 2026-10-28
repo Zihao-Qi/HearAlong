@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
 
 permissions:
   contents: read
@@ -28,11 +28,24 @@ jobs:
           git archive --format=tar "$GITHUB_SHA" app install.sh LICENSE THIRD-PARTY-LICENSES |
             gzip -n > "$RUNNER_TEMP/release/HearAlong.tar.gz"
           tar -tzf "$RUNNER_TEMP/release/HearAlong.tar.gz" > "$RUNNER_TEMP/release/contents"
-          awk '
-            /(^|\/)(private|data|node_modules|dist)($|\/)/ { bad=1 }
+          if ! awk '
+            /^\// || /(^|\/)\.\.($|\/)/ || /(^|\/)(private|data|node_modules|dist)($|\/)/ { bad=1 }
+            !/^(app\/|install\.sh$|LICENSE$|THIRD-PARTY-LICENSES\/)/ { bad=1 }
             END { exit bad }
-          ' "$RUNNER_TEMP/release/contents"
+          ' "$RUNNER_TEMP/release/contents"; then
+            echo "Unexpected paths in release archive" >&2
+            exit 1
+          fi
           rm "$RUNNER_TEMP/release/contents"
+          tar -tvzf "$RUNNER_TEMP/release/HearAlong.tar.gz" > "$RUNNER_TEMP/release/listing"
+          if ! awk '
+            /^[lh]/ || / -> / || / link to / { bad=1 }
+            END { exit bad }
+          ' "$RUNNER_TEMP/release/listing"; then
+            echo "Links are not permitted in release archive" >&2
+            exit 1
+          fi
+          rm "$RUNNER_TEMP/release/listing"
           cp install.sh "$RUNNER_TEMP/release/install.sh"
           cd "$RUNNER_TEMP/release"
           sha256sum HearAlong.tar.gz > HearAlong.tar.gz.sha256
@@ -41,8 +54,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Ref $GITHUB_REF_NAME is not a valid vMAJOR.MINOR.PATCH(-suffix) tag" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_NAME" =~ - ]]; then
+            FLAGS=(--prerelease --latest=false)
+          else
+            FLAGS=(--latest)
+          fi
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "${FLAGS[@]}"
+          else
+            gh release edit "$GITHUB_REF_NAME" --verify-tag "${FLAGS[@]}"
           fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
             "$RUNNER_TEMP/release/HearAlong.tar.gz" \
