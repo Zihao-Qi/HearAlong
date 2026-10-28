@@ -420,13 +420,34 @@ try {
   check('Back to latest: it follows the new lines again', (await scrollState()).gap < 2);
   // Following, a selection holds the view too (nothing moves under it); once it is gone, the view goes on following.
   const atLatest = await select();
-  const whileSelected = await newLines();
-  await pip.waitForTimeout(1200);
+  // A natural final can join the selected paragraph: its DOM is correctly frozen, so newLines() sees no change.
+  // Deliver both growth there and a distinct final below it, independent of the audio's 45-second paragraph boundaries.
+  const arrivalKey = 'following-selection-arrival';
+  const followingArrival = async (route: Route) => {
+    const url = new URL(route.request().url()); url.searchParams.delete('have');
+    const response = await route.fetch({ url: url.href });
+    const body = await response.json();
+    if (body.recording) {
+      const held = body.recording.paragraphs.find((p: { key: string }) => p.key === atLatest.key);
+      if (!held) throw new Error('The selected paragraph is missing from the following fixture.');
+      held.text += ' Volunteers finish another sentence in this paragraph.';
+      held.signature += '|following-selection-growth:0';
+      body.recording.paragraphs.push({ key: arrivalKey, signature: `#${arrivalKey}:0`, speaker: null,
+        text: 'A new final line arrives below the selected seed-library instructions.' });
+      body.recording.paragraphsFrom = 0; body.recording.paragraphsTag = arrivalKey;
+    }
+    await route.fulfill({ response, json: body });
+  };
+  await context.route(liveApi, followingArrival);
+  const whileSelected = await mf.waitForFunction(key => Boolean(document.querySelector(`#m-scroll .ln[data-key="${key}"]`)), arrivalKey,
+    { timeout: 40_000 }).then(() => true, () => false);
   check('following: a selection is kept and does not move while new lines arrive', whileSelected && await mf.evaluate(() => getSelection()!.toString()) === atLatest.text && Math.abs(await rowY(atLatest.key) - atLatest.y) < 0.5 && !(await scrollState()).back,
     JSON.stringify({ whileSelected, before: atLatest, text: await mf.evaluate(() => getSelection()!.toString()), moved: await rowY(atLatest.key) - atLatest.y, state: await scrollState() }));
   await mf.evaluate(() => getSelection()!.removeAllRanges());
   await mf.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.scrollHeight - s.scrollTop - s.clientHeight < 2; }, null, { timeout: 3000 }).catch(() => {});
   check('following: once the selection is gone, the view is at the newest line again', (await scrollState()).gap < 2);
+  await context.unroute(liveApi, followingArrival);
+  await mf.locator(`[data-key="${arrivalKey}"]`).waitFor({ state: 'detached', timeout: 5000 });
   // Scrolling back down to the end resumes following, as Back to latest does.
   await mf.locator('#m-scroll').hover();
   await pip.mouse.wheel(0, -160);
