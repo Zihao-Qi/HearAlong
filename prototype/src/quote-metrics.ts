@@ -16,7 +16,7 @@ export type QuoteFeature = (typeof QUOTE_FEATURES)[number];
  */
 export const OUTCOMES = {
   passed: 'passed', passed_after_nearby_line: 'passed', passed_spans_lines: 'passed', passed_quote_located: 'passed', passed_elided: 'passed', passed_joined: 'passed',
-  no_quote: 'quote', quote_too_short: 'quote', quote_too_long: 'quote', quote_length: 'quote', quote_not_found: 'quote', quote_ambiguous: 'quote',
+  too_many_quotes: 'quote', no_quote: 'quote', quote_too_short: 'quote', quote_too_long: 'quote', quote_length: 'quote', quote_not_found: 'quote', quote_ambiguous: 'quote',
   quote_not_found_after_invalid_citation: 'quote', quote_joins_speakers: 'quote', quote_not_consecutive: 'quote', quote_in_earlier_lines: 'quote',
   no_citation: 'citation', too_many_citations: 'citation', invalid_citation: 'citation', earlier_lines_only: 'citation', source_not_read: 'citation',
   source_not_found: 'citation', source_unreadable: 'citation', pdf_lines_missing: 'citation', quote_in_search_snippet: 'citation',
@@ -115,7 +115,7 @@ export function boardOutcomes(result: { kept: unknown[]; dropped: { reason: stri
 /** The notes' Needs review and drop reasons (notes.ts validateNotes). */
 const NOTES_RULES: Rule[] = [
   [/^no text$/, 'no_text'], [/^malformed: /, 'malformed'], [/^no valid citation$/, 'no_citation'], [/^cites non-project talk/, 'non_project'],
-  [/^too long for one claim$/, 'text_too_long'], [/^more than \d+ citations$/, 'too_many_citations'], [/^no quote$/, 'no_quote'],
+  [/^too long for one claim$/, 'text_too_long'], [/^more than \d+ citations$/, 'too_many_citations'], [/^more than 3 quotes$/, 'too_many_quotes'], [/^no quote$/, 'no_quote'],
   [/^quote too long$/, 'quote_too_long'], [/^quote too short to support the item$/, 'quote_too_short'],
   [/^quote not found after an invalid citation was removed$/, 'quote_not_found_after_invalid_citation'], [/^quote not found in the cited lines$/, 'quote_not_found'],
   [/^quote found in several places$/, 'quote_ambiguous'], [/^duplicate$/, 'duplicate'], [/^more than \d+ items$/, 'over_limit'],
@@ -128,7 +128,7 @@ export function notesOutcomes(result: { notes: Notes; dropped: NotesRecord['drop
   return [
     ...(['summary', 'decisions', 'actions', 'openQuestions', 'otherMatters'] as const).flatMap(section => notes[section].map((item): Outcome => item.quoteCheck === 'spans_lines' ? 'passed_spans_lines'
       : item.quoteCheck === 'located' ? 'passed_quote_located' : item.quoteCheck === 'elided' ? 'passed_elided' : item.quoteCheck === 'joined' ? 'passed_joined' : item.quoteCheck ?? 'passed')),
-    ...notes.needsReview.map(item => match(NOTES_RULES, item.reviewReason ?? '')),
+    ...notes.needsReview.map(item => match(NOTES_RULES, (item.reviewReason ?? '').replace(/^quote \d+ of \d+ /, 'quote ').replace(/^quote has no quote$/, 'no quote'))),
     ...dropped.filter(d => d.section !== 'otherTalk' && !NOT_AN_ITEM.test(d.reason)).map(d => match(NOTES_RULES, d.reason)),
   ];
 }
