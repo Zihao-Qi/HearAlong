@@ -1277,6 +1277,8 @@ export async function startServer(options: {
           const startMs = numberInRange(req.headers['x-start-ms'], 0, 8 * 3600 * 1000, 'Audio start');
           if (!Number.isInteger(sequence) || !Number.isInteger(sampleRate)) throw new HttpError(400, 'Sequence and sample rate must be integers.');
           if (sampleRate !== 16000) throw new HttpError(400, 'Live audio must be 16 kHz mono.');
+          // Admitted headers prove the helper is alive even while its body or source queue is waiting.
+          if (source.startsWith('app:')) appCapture.frame(source);
           // Protect in-flight bodies without reopening a source or clearing completion before validation/admission.
           receivingPcm.set(meetingId, (receivingPcm.get(meetingId) ?? 0) + 1);
           releasePcm = () => {

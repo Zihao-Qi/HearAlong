@@ -66,4 +66,22 @@ try {
   assert.notEqual(flagsHash, changed, 'compiler-arguments-only change must not reuse the old signed bundle');
   verify(target); await clean();
   console.log(`PASS flags-only change replaces bundle: CDHash=${flagsHash} (different)`);
+
+  // These temporary probe wrappers change identity metadata, never the actual compiler/SDK used to compile.
+  const probes = join(directory, 'toolchain-probes'); await mkdir(probes);
+  const xcrun = '/usr/bin/xcrun';
+  const compiler = execFileSync('/usr/bin/which', ['swiftc'], { encoding: 'utf8' }).trim();
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  const realToolEnvironment = `#!/bin/sh\nPATH=${quote(process.env.PATH ?? '')}\nexport PATH\n`;
+  await writeFile(join(probes, 'swiftc'), `${realToolEnvironment}exec ${quote(compiler)} "$@"\n`, { mode: 0o755 });
+  await writeFile(join(probes, 'xcrun'), `#!/bin/sh\nif [ "$*" = --show-sdk-path ]; then\n  sdk=$(${quote(xcrun)} --show-sdk-path)\n  printf '%s/fictional-sdk\\n' "$sdk"\nelse\n  exec ${quote(xcrun)} "$@"\nfi\n`, { mode: 0o755 });
+  run({ PATH: `${probes}:${process.env.PATH}` }); const sdkHash = hash(target);
+  assert.notEqual(sdkHash, flagsHash, 'SDK-probe-only change must replace the signed bundle');
+  verify(target); await clean();
+  console.log(`PASS SDK-path-only change replaces bundle: CDHash=${sdkHash} (different)`);
+  await writeFile(join(probes, 'swiftc'), `${realToolEnvironment}if [ "$*" = -version ]; then\n  ${quote(compiler)} -version\n  printf '%s\\n' 'Fictional compiler revision'\nelse\n  exec ${quote(compiler)} "$@"\nfi\n`, { mode: 0o755 });
+  run({ PATH: `${probes}:${process.env.PATH}` }); const compilerHash = hash(target);
+  assert.notEqual(compilerHash, sdkHash, 'compiler-version-only change must replace the signed bundle');
+  verify(target); await clean();
+  console.log(`PASS compiler-version-only change replaces bundle: CDHash=${compilerHash} (different)`);
 } finally { await rm(directory, { recursive: true, force: true }); }

@@ -23,6 +23,8 @@ TARGET="$OUTPUT_DIR/HearAlong Helper.app"
 NODE="$(command -v node)"
 [ -x "$NODE" ] || { echo "node was not found on PATH" >&2; exit 1; }
 command -v swiftc >/dev/null || { echo "swiftc was not found (Xcode command line tools)" >&2; exit 1; }
+SWIFTC_VERSION="$(swiftc -version)"
+SDK_PATH="$(xcrun --show-sdk-path)"
 
 LSREGISTER=${HEARALONG_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}
 mkdir -p "$OUTPUT_DIR"
@@ -106,12 +108,13 @@ node -e '
   const hash = crypto.createHash("sha256");
   const field = value => { const bytes = Buffer.from(value); hash.update(String(bytes.length) + ":"); hash.update(bytes); };
   // Normalize only the staged output path: flags, input order and all other arguments remain identity inputs.
-  field("swiftc"); field(JSON.stringify(process.argv.slice(2).map(arg => arg.startsWith(process.argv[1] + "/") ? arg.slice(process.argv[1].length + 1) : arg)));
+  field("swiftc"); field(process.argv[2]); field(process.argv[3]);
+  field(JSON.stringify(process.argv.slice(4).map(arg => arg.startsWith(process.argv[1] + "/") ? arg.slice(process.argv[1].length + 1) : arg)));
   const files = fs.readdirSync("launcher").filter(p => p.endsWith(".swift") && !p.endsWith("Tests.swift")).sort().map(p => "launcher/" + p);
   files.push("Contents/Info.plist", "public/icons/icon-1024.png");
   for (const file of files) { field(file); field(fs.readFileSync(file === "Contents/Info.plist" ? process.argv[1] + "/" + file : file)); }
   process.stdout.write(hash.digest("hex"));
-' "$APP" "$@" > "$APP/Contents/Resources/helper-inputs.sha256"
+' "$APP" "$SWIFTC_VERSION" "$SDK_PATH" "$@" > "$APP/Contents/Resources/helper-inputs.sha256"
 
 codesign --force --sign - "$APP" >/dev/null 2>&1
 # Swift embeds a fresh Mach-O UUID, even for unchanged source. Preserve the entire previous signed bundle, not a re-sign.

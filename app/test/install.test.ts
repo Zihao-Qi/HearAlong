@@ -90,7 +90,9 @@ else echo '${name} version 8.0'; fi`);
   mkdirSync(join(root, 'tools/bin'), { recursive: true });
   for (const name of ['node', 'npm', 'ffmpeg', 'ffprobe']) symlinkSync(join(bin, name), join(root, 'tools/bin', name));
   cpSync(join(bin, 'uv'), join(root, 'tools/bin/uv')); // A test removes bin/uv to model a Mac without uv.
+  stub('xcrun', '[ "$*" = --show-sdk-path ]; echo /FictionalSDK');
   stub('swiftc', `echo swiftc >> "$CALLS"
+if [ "$*" = -version ]; then echo 'Fictional Swift version 1'; exit 0; fi
 [ "$HEARALONG_NO_REGISTER" = 1 ]
 [ "\${TEST_BUILD_FAIL:-}" != 1 ]
 if [ "\${TEST_START_DURING_BUILD:-}" = 1 ]; then : > "$TEST_ROOT/started"; fi
