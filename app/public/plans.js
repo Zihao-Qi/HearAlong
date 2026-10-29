@@ -519,7 +519,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
   // Only the per-plan projection determines freshness, including while viewing kept plans.
   const stalePlans = doc => (doc?.plans ?? []).filter(p => !p.freshness.current);
   const staleLabels = doc => [...new Set(stalePlans(doc).map(p => p.freshness.label).filter(Boolean))];
-  const notesWarning = /^(?:Missing speech: |\d+ audio chunk\(s\) were still being transcribed when the notes were written\.$|\d+ line\(s\) had not been checked for misheard terms\.$)/;
+  const notesWarning = /^(?:Missing speech: |The transcript changed after the notes were written\.$|\d+ audio chunk\(s\) were still being transcribed when the notes were written\.$|\d+ line\(s\) had not been checked for misheard terms\.$)/;
 
   function closeMenu(returnFocus = false) {
     if (!v.menu) return;

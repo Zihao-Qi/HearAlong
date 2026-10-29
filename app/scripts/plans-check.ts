@@ -327,7 +327,7 @@ async function stateChecks(page: Page, state: string, config: string, t: string)
     case 'failed': check(`${t}: failed, the last good plans shown`, /^Planning again did not finish: The model's answer could not be read as plans\. The plans below are the ones from /.test(banners) && (await rowHeights(page)).length === 3, banners); break;
     case 'stale':
     case 'stale-materials': {
-      check(`${t}: quiet stale bar link`, stale === 'Made before the notes changed', stale);
+      check(`${t}: quiet stale bar link`, stale === (state === 'stale' ? 'Made before the notes changed' : 'Made before the materials changed'), stale);
       await page.locator('#plans .plans-stale').click();
       const menu = await page.locator('#plans-menu').innerText();
       check(`${t}: stale detail and Plan again in Options`, menu.includes(state === 'stale' ? 'Made before the notes changed.' : 'Made before the materials changed.')

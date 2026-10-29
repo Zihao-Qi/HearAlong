@@ -199,7 +199,8 @@ for (const change of ['transcript', 'notes'] as const) test(`Plans stale control
   stale.click();
   const menu = words(f.host.querySelector('#plans-menu')!);
   assert.ok(menu.includes(`${label}.`));
-  assert.ok(menu.includes('The transcript changed after the notes were written.'), 'Options must not filter the transcript warning as coverage noise');
+  // A notes warning stays with the notes (and the Markdown download); the stale label above carries the change.
+  assert.ok(!menu.includes('The transcript changed after the notes were written.'), 'Options shows plan warnings only');
   if (change === 'transcript') assert.doesNotMatch(menu, /Made before the notes changed/);
 });
 
