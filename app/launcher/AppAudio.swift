@@ -6,19 +6,47 @@ struct AudioApp: Codable, Equatable {
     let id: String
     let name: String
 }
-struct AudioProcess {
+struct AudioProcess: Equatable {
     let object: AudioObjectID
     let pid: pid_t
     let bundle: String
     let name: String
     let running: Bool
     let excluded: Bool
+    var eligible: Bool { !excluded && !bundle.isEmpty && !excludedAudioBundle(bundle) }
 }
+struct AudioAppOwner {
+    let app: AudioApp
+    let excluded: Bool
+}
+private func excludedAudioBundle(_ bundle: String) -> Bool {
+    bundle.hasPrefix("com.google.Chrome") || bundle.hasPrefix("local.meeting-research-assistant")
+}
+
+/** Keep the HAL object/pid, but attribute shared XPC helpers to their responsible app. Never undo an exclusion. */
+func attributeAudioProcess(_ process: AudioProcess, responsibleApp: AudioAppOwner?) -> AudioProcess {
+    guard let owner = responsibleApp, !owner.app.id.isEmpty else { return process }
+    return AudioProcess(object: process.object, pid: process.pid, bundle: owner.app.id, name: owner.app.name, running: process.running,
+                        excluded: process.excluded || excludedAudioBundle(process.bundle) || owner.excluded || excludedAudioBundle(owner.app.id))
+}
+/** The same selection is used by Start, process-change monitoring and the no-tap regression checks. */
+func audioProcesses(for app: AudioApp, in processes: [AudioProcess]) -> [AudioProcess] {
+    processes.filter { $0.eligible && $0.bundle == app.id }
+}
+
+// libSystem SPI, not a public SDK API. Responsibility follows XPC clients, unlike parent pid (usually launchd).
+// Resolve optionally so an OS without the SPI retains the bundle/path fallback rather than failing to launch.
+private let responsibleAudioPID: (@convention(c) (pid_t) -> pid_t)? = {
+    guard let library = dlopen("/usr/lib/libSystem.B.dylib", RTLD_LAZY) else { return nil }
+    defer { dlclose(library) }
+    guard let symbol = dlsym(library, "responsibility_get_pid_responsible_for_pid") else { return nil }
+    return unsafeBitCast(symbol, to: (@convention(c) (pid_t) -> pid_t).self)
+}()
 
 /** HAL discovery is separate from grouping so the same rules are exercised without touching Core Audio. */
 func groupAudioApps(_ processes: [AudioProcess]) -> [AudioApp] {
     var names: [String: String] = [:]
-    for p in processes where p.running && !p.excluded && !p.bundle.isEmpty && !p.bundle.hasPrefix("com.google.Chrome") && !p.bundle.hasPrefix("local.meeting-research-assistant") {
+    for p in processes where p.running && p.eligible {
         names[p.bundle] = p.name
     }
     return names.map { AudioApp(id: $0.key, name: String($0.value.prefix(120))) }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -214,6 +242,26 @@ final class CoreAudioInput: AppAudioInput {
     private var processSet = Set<AudioObjectID>()
     private let log: (String) -> Void
     init(serverGroup: pid_t, log: @escaping (String) -> Void) { self.serverGroup = serverGroup; self.log = log }
+    private func excludedPID(_ pid: pid_t) -> Bool {
+        pid == getpid() || (serverGroup > 0 && getpgid(pid) == serverGroup)
+    }
+    /** Only a real outer .app is an owner; an XPC service's own bundle is not its client app. */
+    private func appOwner(_ pid: pid_t) -> AudioAppOwner? {
+        let app = NSRunningApplication(processIdentifier: pid)
+        var executablePath = [CChar](repeating: 0, count: 4096)
+        let pathSize = proc_pidpath(pid, &executablePath, UInt32(executablePath.count))
+        let executable = pathSize > 0 ? URL(fileURLWithPath: String(cString: executablePath)) : nil
+        guard let url = app?.bundleURL ?? app?.executableURL ?? executable else { return nil }
+        var path = URL(fileURLWithPath: "/"), outer: URL?
+        for component in url.pathComponents.dropFirst() {
+            path.appendPathComponent(component)
+            if component.hasSuffix(".app") { outer = path; break }
+        }
+        guard let outer, let bundle = Bundle(url: outer), let id = bundle.bundleIdentifier, !id.isEmpty else { return nil }
+        let main = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
+        let name = main?.localizedName ?? (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String) ?? app?.localizedName ?? id
+        return AudioAppOwner(app: AudioApp(id: id, name: name), excluded: excludedPID(pid) || excludedAudioBundle(id))
+    }
     private func processes() throws -> [AudioProcess] {
         var address = halAddress(kAudioHardwarePropertyProcessObjectList), size: UInt32 = 0
         let system = AudioObjectID(kAudioObjectSystemObject)
@@ -225,25 +273,15 @@ final class CoreAudioInput: AppAudioInput {
             guard let pid = try? halScalar(object, kAudioProcessPropertyPID, initial: pid_t(0)), pid > 0 else { return nil }
             let app = NSRunningApplication(processIdentifier: pid)
             let bundle = (try? halString(object, kAudioProcessPropertyBundleID)) ?? app?.bundleIdentifier ?? ""
-            // Nested helper bundles belong to the outer app, not a separate row. Do not guess from a bundle-id prefix.
-            var executablePath = [CChar](repeating: 0, count: 4096)
-            let pathSize = proc_pidpath(pid, &executablePath, UInt32(executablePath.count))
-            let executable = pathSize > 0 ? URL(fileURLWithPath: String(cString: executablePath)) : nil
-            var outer = app?.bundleURL
-            if let url = outer ?? app?.executableURL ?? executable {
-                var path = URL(fileURLWithPath: "/")
-                for component in url.pathComponents.dropFirst() {
-                    path.appendPathComponent(component)
-                    if component.hasSuffix(".app") { outer = path; break }
-                }
-            }
-            let owner = outer.flatMap { Bundle(url: $0) }
-            let id = owner?.bundleIdentifier ?? bundle
-            let main = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
-            let name = main?.localizedName ?? (owner?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String) ?? app?.localizedName ?? id
+            // Preserve the original outer-app/path fallback when responsibility is unavailable or has no app.
+            let fallback = appOwner(pid)
             let running = ((try? halScalar(object, kAudioProcessPropertyIsRunningOutput, initial: UInt32(0))) ?? 0) != 0
-            return AudioProcess(object: object, pid: pid, bundle: bundle.isEmpty ? "" : id, name: name, running: running,
-                                excluded: pid == getpid() || (serverGroup > 0 && getpgid(pid) == serverGroup) || bundle.hasPrefix("com.google.Chrome"))
+            let process = AudioProcess(object: object, pid: pid, bundle: bundle.isEmpty ? "" : fallback?.app.id ?? bundle,
+                                       name: fallback?.app.name ?? app?.localizedName ?? bundle, running: running,
+                                       excluded: excludedPID(pid) || excludedAudioBundle(bundle) || (fallback?.excluded ?? false))
+            let responsible = responsibleAudioPID?(pid) ?? 0
+            let owner = responsible > 0 && responsible != pid ? appOwner(responsible) : nil
+            return attributeAudioProcess(process, responsibleApp: owner)
         }
     }
     func apps() throws -> [AudioApp] { groupAudioApps(try processes()) }
@@ -251,7 +289,7 @@ final class CoreAudioInput: AppAudioInput {
         stop()
         let all = try processes()
         guard groupAudioApps(all).contains(where: { $0.id == app.id }) else { throw ProbeError.message("\(app.name) is no longer playing sound.") }
-        let objects = all.filter { $0.bundle == app.id && !$0.excluded }.map(\.object)
+        let objects = audioProcesses(for: app, in: all).map(\.object)
         processSet = Set(objects); lastProcessCheck = Date()
         do {
             let description = CATapDescription(stereoMixdownOfProcesses: objects)
@@ -286,7 +324,7 @@ final class CoreAudioInput: AppAudioInput {
             if batch.failed { throw ProbeError.message("Call audio processing fell behind; this source stopped.") }
             if !final, let target, Date().timeIntervalSince(lastProcessCheck) >= 2 {
                 lastProcessCheck = Date()
-                let current = try processes().filter { $0.bundle == target.id && !$0.excluded }
+                let current = audioProcesses(for: target, in: try processes())
                 if !current.contains(where: { $0.running }) { throw ProbeError.message("\(target.name) closed; the microphone keeps recording.") }
                 let objects = Set(current.map(\.object))
                 if objects != processSet {

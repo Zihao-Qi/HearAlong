@@ -105,25 +105,60 @@ node -e 'process.stdout.write(JSON.stringify({ node: process.argv[1], path: proc
 cp "$BUILD_TMP/HearAlong Helper.json" "$APP/Contents/Resources/launcher.json"
 node -e '
   const fs = require("node:fs"), crypto = require("node:crypto");
-  const hash = crypto.createHash("sha256");
+  const hash = crypto.createHash("sha256"), components = {};
   const field = value => { const bytes = Buffer.from(value); hash.update(String(bytes.length) + ":"); hash.update(bytes); };
+  const component = (name, value) => { field(value); components[name] = crypto.createHash("sha256").update(value).digest("hex"); };
+  // Keep the original aggregate fingerprint byte-for-byte: component digests are diagnostic only, never a reuse condition.
   // Normalize only the staged output path: flags, input order and all other arguments remain identity inputs.
-  field("swiftc"); field(process.argv[2]); field(process.argv[3]);
-  field(JSON.stringify(process.argv.slice(4).map(arg => arg.startsWith(process.argv[1] + "/") ? arg.slice(process.argv[1].length + 1) : arg)));
+  field("swiftc"); component("swiftc version", process.argv[2]); component("SDK path", process.argv[3]);
+  component("args", JSON.stringify(process.argv.slice(4).map(arg => arg.startsWith(process.argv[1] + "/") ? arg.slice(process.argv[1].length + 1) : arg)));
   const files = fs.readdirSync("launcher").filter(p => p.endsWith(".swift") && !p.endsWith("Tests.swift")).sort().map(p => "launcher/" + p);
   files.push("Contents/Info.plist", "public/icons/icon-1024.png");
-  for (const file of files) { field(file); field(fs.readFileSync(file === "Contents/Info.plist" ? process.argv[1] + "/" + file : file)); }
+  for (const file of files) { field(file); component(file, fs.readFileSync(file === "Contents/Info.plist" ? process.argv[1] + "/" + file : file)); }
+  fs.writeFileSync(process.argv[1] + "/Contents/Resources/helper-inputs.json", JSON.stringify(components, null, 2));
   process.stdout.write(hash.digest("hex"));
 ' "$APP" "$SWIFTC_VERSION" "$SDK_PATH" "$@" > "$APP/Contents/Resources/helper-inputs.sha256"
 
 codesign --force --sign - "$APP" >/dev/null 2>&1
+# CDHash describes the actual signature, not the input fingerprint. Diagnostics must not change reuse eligibility.
+signed_hash() {
+  description=$(codesign -dvvv "$1" 2>&1) || true
+  node -e 'process.stdout.write(/CDHash=([a-f0-9]+)/i.exec(process.argv[1])?.[1] ?? "none")' "$description"
+}
+PREVIOUS_HASH=none
+REUSED=0
+BUILD_REASON='no previous bundle'
+if [ -n "$PREVIOUS" ] && { [ -e "$PREVIOUS" ] || [ -L "$PREVIOUS" ]; }; then
+  PREVIOUS_HASH=$(signed_hash "$PREVIOUS")
+  BUILD_REASON='inputs changed'
+fi
 # Swift embeds a fresh Mach-O UUID, even for unchanged source. Preserve the entire previous signed bundle, not a re-sign.
 if [ -n "$PREVIOUS" ] && [ -f "$PREVIOUS/Contents/Resources/helper-inputs.sha256" ] &&
    node -e 'const fs=require("node:fs"); process.exit(fs.readFileSync(process.argv[1],"utf8") === fs.readFileSync(process.argv[2],"utf8") ? 0 : 1)' \
-     "$APP/Contents/Resources/helper-inputs.sha256" "$PREVIOUS/Contents/Resources/helper-inputs.sha256" &&
-   codesign --verify --deep --strict "$PREVIOUS" >/dev/null 2>&1; then
-  rm -rf "$APP"
-  cp -R "$PREVIOUS" "$APP"
+     "$APP/Contents/Resources/helper-inputs.sha256" "$PREVIOUS/Contents/Resources/helper-inputs.sha256"; then
+  if codesign --verify --deep --strict "$PREVIOUS" > "$BUILD_TMP/verification.txt" 2>&1; then
+    rm -rf "$APP"
+    cp -R "$PREVIOUS" "$APP"
+    REUSED=1
+  else
+    reason=$(node -e 'process.stdout.write(require("node:fs").readFileSync(process.argv[1], "utf8").trim().replace(/\s+/g, " ") || "codesign rejected the bundle")' "$BUILD_TMP/verification.txt")
+    BUILD_REASON="previous failed verification: $reason"
+  fi
+fi
+HELPER_HASH=$(signed_hash "$APP")
+if [ "$REUSED" -eq 0 ] && [ "$BUILD_REASON" = 'inputs changed' ]; then
+  node -e '
+    const fs = require("node:fs");
+    const read = path => { try { return fs.readFileSync(path, "utf8"); } catch { return null; } };
+    const previous = process.argv[1] + "/Contents/Resources/", current = process.argv[2] + "/Contents/Resources/";
+    let before = null;
+    try { before = JSON.parse(read(previous + "helper-inputs.json")); } catch { /* Older signed bundles have only the aggregate. */ }
+    const after = JSON.parse(read(current + "helper-inputs.json"));
+    const names = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after)])];
+    console.log("Helper input fingerprints: previous " + (read(previous + "helper-inputs.sha256") ?? "unavailable") + "; current " + read(current + "helper-inputs.sha256"));
+    console.log("Changed helper inputs: " + (before ? names.filter(name => before[name] !== after[name]).join(", ") : "unknown (previous component digests unavailable)"));
+    for (const name of names) console.log("  " + name + ": previous " + (before?.[name] ?? "unavailable") + "; current " + (after[name] ?? "absent") + (before && before[name] !== after[name] ? " (changed)" : ""));
+  ' "$PREVIOUS" "$APP"
 fi
 if [ -e "$CONFIG" ] || [ -L "$CONFIG" ]; then
   mv "$CONFIG" "$BUILD_TMP/previous.json"
@@ -137,4 +172,8 @@ if [ "${HEARALONG_NO_REGISTER:-0}" != "1" ]; then
   "$LSREGISTER" -f "$TARGET" # so a meetingassistant:// link opens this helper
 fi
 COMPLETE=1
-echo "Built: $TARGET"
+if [ "$REUSED" -eq 1 ]; then
+  printf 'Reused the signed helper (cdhash %s)\n' "$HELPER_HASH"
+else
+  printf 'Built a new helper (cdhash %s; previous %s) because %s\n' "$HELPER_HASH" "$PREVIOUS_HASH" "$BUILD_REASON"
+fi
