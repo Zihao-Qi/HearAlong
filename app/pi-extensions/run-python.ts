@@ -17,7 +17,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PACKAGES, pythonEnv, UV_ARGS } from './python-env.ts';
 import { spawnGated, type Gated } from './process-groups.ts';
-import { pythonOwner } from './python-owner.ts';
+import { pythonOwner, sweepPython } from './python-owner.ts';
 import { sandboxed, toolEnv } from './tool-sandbox.ts';
 
 const RUN_MS = Number(process.env.RUN_PYTHON_MS ?? 120_000);
@@ -122,6 +122,8 @@ export default function runPython(pi: ExtensionAPI) {
         else gated?.release();
       });
       if (gated) await rm(gated.path, { force: true }).catch(() => {});
+      try { await sweepPython(cwd, env, command); }
+      catch { console.warn('Best-effort Python leftover cleanup was unavailable; the calculation result is unchanged.'); }
       const status = result.error ? `could not start: ${result.error}` : result.timedOut ? `timed out after ${RUN_MS / 1000} s`
         : result.code === 0 ? 'exit 0' : `exit ${result.code ?? result.signal}`;
       const out = stdout.text(), err = stderr.text();

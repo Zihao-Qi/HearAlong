@@ -38,6 +38,48 @@ static int sweep(void) {
     return found;
 }
 
+// This sweep is deliberately not an ownership proof. Use only kernel metadata, same uid, an allowed executable,
+// a sandboxed process and the exact task cwd. A hostile child can change cwd and escape this best-effort cleanup.
+static int leftover_matches(pid_t pid, const char *cwd, const char *runtime, int argc, char **interpreters,
+                            int (*sandbox_check_fn)(pid_t, const char *, int, ...), struct proc_bsdinfo *info) {
+    char executable[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, executable, sizeof(executable)) <= 0) return 0;
+    size_t length = strlen(runtime);
+    int allowed = !strncmp(executable, runtime, length) && executable[length] == '/';
+    for (int i = 0; i < argc && !allowed; i++) allowed = !strcmp(executable, interpreters[i]);
+    if (!allowed || sandbox_check_fn(pid, NULL, 0) <= 0) return 0;
+    if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, info, sizeof(*info)) != sizeof(*info)
+        || info->pbi_uid != geteuid() || info->pbi_status == 5) return 0;
+    struct proc_vnodepathinfo paths;
+    if (proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &paths, sizeof(paths)) != sizeof(paths)) return 0;
+    return !strcmp(paths.pvi_cdir.vip_path, cwd);
+}
+
+static int best_effort(int argc, char **argv) {
+    if (argc < 4) return 126;
+    void *library = dlopen("/usr/lib/libsandbox.dylib", RTLD_LAZY);
+    int (*check)(pid_t, const char *, int, ...) = library ? dlsym(library, "sandbox_check") : NULL;
+    if (!check) { if (library) dlclose(library); return 126; }
+    int capacity = proc_listallpids(NULL, 0) + 1024;
+    pid_t *pids = calloc((size_t)capacity, sizeof(pid_t));
+    if (!pids) { dlclose(library); return 126; }
+    int count = proc_listallpids(pids, capacity * (int)sizeof(pid_t)), killed = 0;
+    if (count <= 0 || count >= capacity) { free(pids); dlclose(library); return 126; }
+    for (int i = 0; i < count; i++) {
+        pid_t pid = pids[i];
+        if (pid <= 1 || pid == getpid()) continue;
+        struct proc_bsdinfo before, after;
+        if (!leftover_matches(pid, argv[2], argv[3], argc - 4, &argv[4], check, &before)) continue;
+        // Recheck uid/executable/cwd/sandbox and process birth time immediately before signalling to avoid reused pids.
+        if (!leftover_matches(pid, argv[2], argv[3], argc - 4, &argv[4], check, &after)
+            || before.pbi_start_tvsec != after.pbi_start_tvsec || before.pbi_start_tvusec != after.pbi_start_tvusec) continue;
+        if (kill(pid, SIGKILL) == 0) killed++;
+    }
+    free(pids); dlclose(library);
+    printf("%d\n", killed);
+    return 0;
+}
+
 static int own(char **command) {
     if (responsible(getpid()) != getpid()) { fputs("Python ownership was not isolated.\n", stderr); return 126; }
     int queue = kqueue();
@@ -81,6 +123,7 @@ static int own(char **command) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--sweep")) return best_effort(argc, argv);
     responsible = dlsym(RTLD_DEFAULT, "responsibility_get_pid_responsible_for_pid");
     disclaim = dlsym(RTLD_DEFAULT, "responsibility_spawnattrs_setdisclaim");
     if (!responsible || !disclaim || argc < 2) { fputs("Python process ownership is unavailable.\n", stderr); return 126; }

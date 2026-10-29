@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { pythonEnv } from './python-env.ts';
+import { realPath } from './read-scope.ts';
 const exec = promisify(execFile);
 const source = fileURLToPath(new URL('../native/python-owner.c', import.meta.url));
 const compiling = new Map<string, Promise<string>>();
@@ -28,4 +29,14 @@ export async function pythonOwner(cwd: string, env: NodeJS.ProcessEnv): Promise<
     ready.catch(() => compiling.delete(path));
   }
   return ready;
+}
+
+/** Cheap cleanup for accidental leftovers; never read process arguments/environments or claim hostile containment. */
+export async function sweepPython(cwd: string, env: NodeJS.ProcessEnv, owner?: string): Promise<number> {
+  const command = owner ?? await pythonOwner(cwd, env);
+  const { stdout } = await exec(command, ['--sweep', realPath(cwd), realPath(pythonEnv(env, cwd).UV_PYTHON_INSTALL_DIR!),
+    realPath(process.execPath), realPath('/bin/sh'), realPath('/bin/bash')], { env, timeout: 2000, maxBuffer: 1024 });
+  const count = Number(stdout.trim());
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error('Invalid leftover cleanup result.');
+  return count;
 }
