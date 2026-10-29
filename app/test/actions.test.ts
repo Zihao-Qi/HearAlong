@@ -39,6 +39,20 @@ const result = (text: string, extra: Partial<PiTaskResult> = {}): PiTaskResult =
 });
 const META = (sources: unknown[]) => `\n<<<META\n${JSON.stringify({ sources, assumptions: ['all packets are unopened'], openPoints: [] })}\nMETA>>>`;
 
+test('missing web refuses Look up with a plain message and no model call', async () => {
+  const f = await fixture();
+  let calls = 0;
+  const jobs = new ActionJobs({ store: f.store, directory: f.directory, clock: Date.now,
+    runner: async () => { calls++; return result('Unexpected'); }, rootsFor: () => f.roots,
+    glossaryFor: async () => null, webAvailable: () => false });
+  try {
+    await assert.rejects(jobs.submit(f.meeting.id, { action: 'lookUp', selection: { text: LINES[0], segmentIds: [f.segments[0].id] } }),
+      { status: 400, message: 'Web lookups are not available.' });
+    assert.equal(calls, 0);
+    assert.equal(jobs.list(f.meeting.id).length, 0);
+  } finally { await jobs.close(); await f.close(); }
+});
+
 test('context is captured once around the selection, with limits', async () => {
   const f = await fixture();
   try {

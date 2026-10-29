@@ -11,7 +11,7 @@ Requirements:
 - Google Chrome for the app. Browser checks and rehearsals require `MEETING_TEST_CHROME` pointing to a disposable Chromium executable; they never default to the user's browser.
 - FFmpeg and ffprobe on PATH only to import audio/video files. Recording and transcription of HearAlong recordings do not need them.
 - A compatible speech model for `transcribe-cpp`; the setup page finds installed models or downloads Parakeet.
-- Optional AI: Ollama or LM Studio on this Mac, or explicit consent to cloud models through Pi. A pinned Pi is included and always used for tool-using tasks; metadata/no-tools commands may still use Pi on PATH. Accounts and enabled user extensions retain their existing agent-directory configuration. Calculations run JavaScript on HearAlong's bundled Node with bundled mathjs; nothing is installed or downloaded for them. Web lookup needs Pi's `pi-web-access` package enabled.
+- Optional AI: Ollama or LM Studio on this Mac, or explicit consent to cloud models through Pi. A pinned Pi is included and always used for tool-using tasks; metadata/no-tools commands may still use Pi on PATH. Accounts and enabled user extensions retain their existing agent-directory configuration. Calculations run JavaScript on HearAlong's bundled Node with bundled mathjs; nothing is installed or downloaded for them. In Cloud mode, web lookups are available when Pi's web-search package is already set up in Pi. HearAlong does not install it; otherwise web-only actions are hidden and Plans/Explore continue without web.
 
 ```sh
 git clone https://github.com/Zihao-Qi/HearAlong.git

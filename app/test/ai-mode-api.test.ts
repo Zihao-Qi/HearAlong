@@ -62,6 +62,18 @@ for (const mode of ['local', 'off'] as const) test(`changing Cloud to ${mode} en
   }
 });
 
+test('Cloud without web refuses Look up without package guidance or inference', async t => {
+  const f = await fixture(t, { aiMode: 'cloud', mainModel: 'example/main', quickModel: 'example/quick',
+    cloudConsent: { providers: ['example'], time: 1 } }, cloud, true);
+  const meeting = f.app.store.createMeeting('Example cloud lookup');
+  const status = await (await f.request(`/api/meetings/${meeting.id}/actions`)).json();
+  assert.equal(status.web, false);
+  const response = await f.request(`/api/meetings/${meeting.id}/actions`, 'POST', { action: 'lookUp' });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'Web lookups are not available.');
+  assert.equal((await f.calls()).some(call => call.args.includes('json') || call.args.includes('rpc')), false);
+});
+
 test('cloud consent is enforced when saving; a new provider asks again', async t => {
   const f = await fixture(t, { aiMode: 'off' }, [...cloud, 'other main 32K 4K no no']);
   const pair = { mode: 'cloud', main: 'example/main', quick: 'example/quick' };

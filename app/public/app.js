@@ -5,7 +5,7 @@ import { createListenPlayer } from '/listen.js';
 import { createSegmentsPoll } from '/segments-poll.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
-import { SetupUI, setupRequest, copyCommand, aiDialog } from '/setup-ui.js';
+import { SetupUI, setupRequest, aiDialog } from '/setup-ui.js';
 import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
 
 const $ = id => document.getElementById(id);
@@ -137,6 +137,9 @@ function closeSelectionMenu() {
   $('selection-hint').hidden = true;
   menuSelection = null;
 }
+function renderSelectionActions() {
+  $('selection-menu').querySelector('[data-action="lookUp"]').hidden = actionsView.web !== true;
+}
 function placeSelectionMenu() {
   const menu = $('selection-menu');
   if (menu.contains(document.activeElement)) return; // typing in "Other…" must not close the menu
@@ -151,6 +154,7 @@ function placeSelectionMenu() {
   const text = fragment.textContent.replace(/\s+/g, ' ').trim();
   if (!ids.length || !text) { closeSelectionMenu(); return; }
   menuSelection = { owner: meetingId, text, segmentIds: ids };
+  renderSelectionActions();
   const rect = range.getBoundingClientRect();
   const pane = box.parentElement.getBoundingClientRect();
   const boxTop = box.getBoundingClientRect().top - pane.top;
@@ -168,7 +172,7 @@ document.addEventListener('selectionchange', () => {
 $('selection-menu').addEventListener('mousedown', event => { if (event.target.tagName !== 'INPUT') event.preventDefault(); });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('selection-menu').hidden) { closeSelectionMenu(); return; }
-  const buttons = [...$('selection-menu').querySelectorAll('.selection-actions button')];
+  const buttons = [...$('selection-menu').querySelectorAll('.selection-actions button')].filter(button => !button.hidden && !button.disabled);
   const index = buttons.indexOf(document.activeElement);
   if (index >= 0 && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
     event.preventDefault();
@@ -185,11 +189,7 @@ for (const button of $('selection-menu').querySelectorAll('.selection-actions bu
       $('selection-hint').hidden = false;
       return;
     }
-    if (action === 'lookUp' && actionsView.web === false) {
-      $('selection-hint').textContent = 'Web search is not available: the pi-web-access tools were not found in Pi.';
-      $('selection-hint').hidden = false;
-      return;
-    }
+    if (action === 'lookUp' && actionsView.web !== true) return;
     if (action === 'other') { $('selection-other').hidden = false; $('selection-prompt').focus(); return; }
     await startAction(action, menuSelection);
   });
@@ -464,6 +464,7 @@ function selectMeeting(id) {
   actionsView.cards.forEach(entry => entry.node.remove());
   actionsView.cards.clear();
   Object.assign(actionsView, { owner: null, jobs: [], materials: false, web: null, unseen: false });
+  renderSelectionActions();
   $('board-empty').hidden = false;
   $('actions-status').textContent = '';
   void refreshActions();
@@ -1389,6 +1390,7 @@ async function refreshActions() {
     }
     actionsView.owner = owner;
     Object.assign(actionsView, { jobs: data.jobs, materials: data.materials, enabled: data.enabled, web: data.web });
+    renderSelectionActions();
     $('actions-status').hidden = data.enabled && !data.pausedUntil;
     $('actions-status').textContent = !data.enabled ? ''
       : data.pausedUntil ? `Paused after a rate-limit error until ${new Date(data.pausedUntil).toLocaleTimeString()}; queued actions wait.` : '';
@@ -1904,9 +1906,9 @@ function setupStatusChanged(snapshot) {
   setupSnapshot = snapshot;
   const ai = snapshot.rows.find(row => row.id === 'ai');
   $('settings-ai-change').hidden = !!ai.forcedOff;
-  $('setup-web').hidden = ai.mode === 'off' || ai.web !== false;
+  $('setup-web').hidden = ai.mode !== 'local' || ai.web !== false;
   if (ai.mode === 'local') $('setup-web').replaceChildren('Web lookups are unavailable in On this Mac mode.');
-  else $('setup-web').replaceChildren('Web search is not installed. ', copyCommand('pi install npm:pi-web-access'));
+  else $('setup-web').replaceChildren();
   renderStatusDot();
 }
 const setupUi = new SetupUI($('setup-settings'), { details: true, onStatus: setupStatusChanged,

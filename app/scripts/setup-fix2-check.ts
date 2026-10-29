@@ -77,7 +77,7 @@ export async function runSetupFix2Checks(check: Check) {
               await page.getByRole('button', { name: 'Other options', exact: true }).click(); await page.getByRole('button', { name: 'Choose…' }).waitFor(); await page.keyboard.press('Escape');
             }
           } else if (id === 6) {
-            await page.evaluate(async () => { const path = '/setup-ui.js'; const { copyCommand } = await import(path); document.getElementById('setup-rows')!.append(copyCommand('pi'), copyCommand('pi install npm:pi-web-access')); });
+            await page.evaluate(async () => { const path = '/setup-ui.js'; const { copyCommand } = await import(path); document.getElementById('setup-rows')!.append(copyCommand('pi'), copyCommand('cd /example/app && pi')); });
             await shot(page, `06-${width}-copy-targets`); await check(page, id);
           } else if (id === 7) {
             await page.locator('[data-setup-row="ai"] button').click(); await page.locator('#su-ai-main').waitFor();

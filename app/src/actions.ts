@@ -674,7 +674,7 @@ export class ActionJobs {
     }
     const action = (retry?.action ?? parent?.action ?? request.action) as ActionKind;
     if (!ACTION_KINDS.includes(action)) throw fail(400, 'Unknown action.');
-    if (ACTIONS[action].needsWeb && this.options.webAvailable && !this.options.webAvailable()) throw fail(400, this.options.webUnavailable?.() ?? 'Web search is not available: the pi-web-access tools were not found.');
+    if (ACTIONS[action].needsWeb && this.options.webAvailable && !this.options.webAvailable()) throw fail(400, this.options.webUnavailable?.() ?? 'Web lookups are not available.');
     const prompt = retry ? retry.prompt : typeof request.prompt === 'string' && request.prompt.trim() ? request.prompt.trim() : null;
     if (prompt && Buffer.byteLength(prompt) > LIMITS.prompt) throw fail(413, `The prompt is too long (limit ${LIMITS.prompt / 1000} KB).`);
     if ((action === 'other' || parent) && !prompt) throw fail(400, parent ? 'Type the follow-up question.' : 'Type what you want done with the selection.');
