@@ -29,8 +29,8 @@ jobs:
           node-version: '22' # Latest 22.x; package.json requires >=22.19.0.
           cache: npm
           cache-dependency-path: app/package-lock.json
-      # Xcode's swiftc (PDF text tool), cupsfilter, git, python3, ps and zsh come with the runner.
-      - run: brew install ffmpeg shellcheck
+      # Xcode's swiftc (PDF text tool), cupsfilter, git, python3, ps and zsh come with the runner. uv runs the offline managed-Python checks.
+      - run: brew install ffmpeg shellcheck uv
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run lint

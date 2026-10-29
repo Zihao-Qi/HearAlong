@@ -48,7 +48,7 @@ import { PlanJobs, planModel } from './plans/jobs.ts';
 import { endLeftoverProcesses } from '../pi-extensions/process-groups.ts';
 
 type Quick = { ask(prompt: string): Promise<{ text: string }>; close?(): Promise<void> };
-type Heavy = (prompt: string, options: { cwd: string; sessionDir: string; signal: AbortSignal }) => Promise<{ text: string; provider?: string; model?: string }>;
+type Heavy = (prompt: string, options: { cwd: string; readRoots: string[]; sessionDir: string; signal: AbortSignal }) => Promise<{ text: string; provider?: string; model?: string }>;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const UUID = /^[a-f0-9-]{36}$/;
@@ -296,7 +296,7 @@ export async function startServer(options: {
     const quick: Quick | null = options.quick !== undefined ? options.quick
       : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, unavailable: () => localLiveUnavailable(), systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
     const heavy: Heavy | null = options.heavy !== undefined ? options.heavy
-      : cloud ? async (prompt, o) => runPiTask(prompt, { model: await ai.require('main'), cwd: o.cwd, sessionDir: o.sessionDir, signal: o.signal, tools: 'read,grep,find,ls', timeoutMs: 600_000 }) : null;
+      : cloud ? async (prompt, o) => runPiTask(prompt, { model: await ai.require('main'), cwd: o.cwd, readRoots: o.readRoots, sessionDir: o.sessionDir, signal: o.signal, tools: 'read,grep,find,ls', timeoutMs: 600_000 }) : null;
     // Notes: one no-tools call on sol; the transcript goes in as a file. Any tool use or non-normal stop is a failure.
     // An explicit `heavy: null` (tests, smoke runs) also disables notes unless a notes runner is injected.
     const notesRunner: NotesRunner | null = options.notes !== undefined ? options.notes
@@ -389,7 +389,7 @@ export async function startServer(options: {
     const webUnavailable = () => ai.mode() === 'local' ? 'Web lookups are unavailable in On this Mac mode.' : null;
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
       rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns,
-      computeReady: realRunner ? () => ensurePython() : undefined });
+      computeReady: realRunner ? () => ensurePython(directory) : undefined });
     await actionJobs.load();
     // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
@@ -440,7 +440,7 @@ export async function startServer(options: {
     // The plans of a meeting (M7b §2b): published versions in data/plans, their to-dos and automatic attempts in the database.
     const planJobs = new PlanJobs({ store, directory, clock, explorations, cooldowns, memory, projects, notes: notesJobs, pdfText,
       versions: new PlanVersions(directory, clock), todos: new PlanTodos(store, memory, clock), auto: new AutoPlanning(store, clock),
-      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython() : undefined, web: () => ai.web, webUnavailable,
+      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython(directory) : undefined, web: () => ai.web, webUnavailable,
       models: async kind => ai.allow(await planModel(kind, () => ai.require('main'))),
       materialEvidence: (path, blocks) => files.evidenceAllowed(path, blocks),
       final: id => !stillComing(id), stale: id => notesJobs.status(id).then(s => s.stale), changed: id => changed(id) });
@@ -530,7 +530,7 @@ export async function startServer(options: {
         const pdfs = (await pdfText.prepare(rootsFor(meetingId), { waitMs: 60_000, view, signal })).filter(p => p.ready).map(p => p.text);
         await writeFile(join(cwd, 'AGENTS.md'), `Attached materials are READ-ONLY. Never create, edit or delete files in:\n${roots.map(r => `- ${r}`).join('\n')}\n`);
         signal.throwIfAborted();
-        const result = await heavy!(glossaryPrompt(roots, pdfs), { cwd, sessionDir: join(directory, 'sessions', meetingId), signal });
+        const result = await heavy!(glossaryPrompt(roots, pdfs), { cwd, readRoots: roots, sessionDir: join(directory, 'sessions', meetingId), signal });
         signal.throwIfAborted();
         projects.saveGlossary(scope, cleanGlossary(extractJson(result.text)), 'generated', result.provider && `${result.provider}/${result.model}`, before);
       } finally { await rm(view, { recursive: true, force: true }).catch(() => {}); }

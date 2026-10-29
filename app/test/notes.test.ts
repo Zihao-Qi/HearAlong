@@ -261,7 +261,7 @@ test('the notes task runs Pi with no tools and the transcript as a file argument
   const args = piTaskArgs('Write notes.', { model: 'm', cwd: '/tmp', tools: null, files: ['/tmp/input.md'] });
   assert.ok(args.includes('--no-tools') && args.includes('--no-skills') && !args.includes('--tools'));
   assert.deepEqual(args.slice(-3), ['--', '@/tmp/input.md', 'Write notes.']);
-  assert.ok(piTaskArgs('x', { model: 'm', cwd: '/tmp', tools: 'read' }).includes('read'));
+  assert.ok(piTaskArgs('x', { model: 'm', cwd: '/tmp', tools: 'read', readRoots: [] }).includes('read'));
 });
 
 test('simultaneous starts: exactly one job runs; close() waits for a job still preparing', async () => {
