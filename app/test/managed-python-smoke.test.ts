@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { MATH_CASES, smokeErrorExcerpt } from '../scripts/managed-python-smoke.ts';
 const exec = promisify(execFile), script = fileURLToPath(new URL('../scripts/managed-python-smoke.ts', import.meta.url));
+const noUv = spawnSync('uv', ['--version']).status === 0 ? false : 'uv is not installed (brew install uv); this check runs real offline uv.';
 
 test('managed math smoke explains its download step and requires an explicit data directory', async () => {
   const help = await exec(process.execPath, ['--experimental-strip-types', script, '--help']);
@@ -22,7 +23,7 @@ test('managed math smoke diagnostics retain the first 20 lines of failed tool ou
   assert.equal(smokeErrorExcerpt(lines.join('\r\n')), lines.slice(0, 20).join('\n'));
 });
 
-test('fresh managed math smoke runs preparation and every real tool call offline, reports failures and removes only its scratch', async t => {
+test('fresh managed math smoke runs preparation and every real tool call offline, reports failures and removes only its scratch', { skip: noUv }, async t => {
   const root = await mkdtemp(join(tmpdir(), 'managed-smoke-check-')), home = join(root, 'home'), data = join(root, 'data');
   await mkdir(home);
   t.after(() => rm(root, { recursive: true, force: true }));

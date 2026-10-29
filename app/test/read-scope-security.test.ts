@@ -1,7 +1,7 @@
 // Security regressions use only fictional files, isolated homes, and real per-process Seatbelt probes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
 import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -169,7 +169,8 @@ test('M4: a fictional foreign uv cache remains unreadable despite environment ov
   assert.equal(stdout.trim(), 'EPERM');
 });
 
-test('M4: real offline uv does not fall back to a system interpreter with an empty managed store', async t => {
+const noUv = spawnSync('uv', ['--version']).status === 0 ? false : 'uv is not installed (brew install uv); this check runs real offline uv.';
+test('M4: real offline uv does not fall back to a system interpreter with an empty managed store', { skip: noUv }, async t => {
   const f = await fixture(t);
   const { UV_ARGS } = await import('../pi-extensions/python-env.ts');
   await assert.rejects(exec('uv', [...UV_ARGS, '--offline', '--no-python-downloads', 'python', '-c', 'print(42)'], { cwd: f.cwd, env: pythonEnv(f.env, f.cwd), timeout: 20_000 }), error => {
