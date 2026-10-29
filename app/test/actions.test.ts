@@ -500,19 +500,23 @@ test('evidence is located exactly: whole web quote, the right transcript line, a
   } finally { await f.close(); }
 });
 
-test('cancel while Python is being prepared releases the job without reaching the runner', async () => {
+test('Compute reaches calculate without preparation and records streamed calculation output', async () => {
   const f = await fixture();
   try {
-    const { runner, calls } = scripted();
-    let warm!: () => void;
-    const ready = new Promise<void>(r => { warm = r; });
-    const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => f.roots, computeReady: () => ready });
+    let call: Parameters<ActionRunner>[0] | undefined;
+    const runner: ActionRunner = async input => {
+      call = input;
+      input.onEvent({ type: 'tool_execution_start', toolCallId: 'calc1', toolName: 'calculate', args: { code: 'console.log(6 * 7)' } });
+      input.onEvent({ type: 'tool_execution_end', toolCallId: 'calc1', toolName: 'calculate', result: { content: [{ type: 'text', text: '42' }], details: { runNumber: 1, script: 'run-1.js', stdout: '42', stderr: '', status: 'exit 0', packages: ['mathjs'] } } });
+      return result('Forty-two buttons.');
+    };
+    const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => f.roots });
     const c = await jobs.submit(f.meeting.id, { action: 'compute', selection: { text: 'How many brass buttons', segmentIds: [f.segments[0].id] } });
-    await until(() => jobs.get(c.job.id)!.status[0] === 'Preparing the Python environment');
-    await jobs.cancel(f.meeting.id, c.job.id);
-    await until(() => jobs.get(c.job.id)!.state === 'cancelled');
-    assert.equal(calls.length, 0, 'never reached the runner');
-    warm();
+    await until(() => jobs.get(c.job.id)!.state === 'done');
+    assert.match(call!.tools, /calculate/);
+    assert.match(call!.instructions, /JavaScript.*mathjs/);
+    assert.doesNotMatch(call!.instructions, /run_python|numpy/);
+    assert.deepEqual(jobs.get(c.job.id)!.result!.compute, [{ script: 'run-1.js', runNumber: 1, code: 'console.log(6 * 7)', output: '42', stderr: '', status: 'exit 0', ok: true, packages: ['mathjs'] }]);
     await jobs.close();
   } finally { await f.close(); }
 });

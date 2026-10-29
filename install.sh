@@ -82,7 +82,7 @@ if [ "${1:-}" = --uninstall ]; then
     done
   fi
   rm -rf "$HELPER"
-  printf 'HearAlong removed. Your data is untouched: %s\nHomebrew, Node, FFmpeg, uv and the Chrome web app were not removed.\n' "$DATA"
+  printf 'HearAlong removed. Your data is untouched: %s\nHomebrew, Node, FFmpeg and the Chrome web app were not removed.\n' "$DATA"
   exit 0
 fi
 
@@ -126,15 +126,6 @@ if ! ffmpeg_ready; then
   export PATH
 fi
 ffmpeg_ready || fail 'FFmpeg >= 4.4 and ffprobe were not found after installation. Check your PATH.'
-
-# Calculations (Compute, Plan, Explore) run Python through uv; HearAlong prepares its own pinned Python on first use.
-if ! command -v uv >/dev/null 2>&1; then
-  echo 'Will install uv with Homebrew; HearAlong uses it to run calculations.'
-  brew install uv
-  PATH="$(brew --prefix uv)/bin:$PATH"
-  export PATH
-fi
-command -v uv >/dev/null 2>&1 || fail 'uv was not found after installation. Check your PATH.'
 
 mkdir -p "$ROOT" "$HOME/Applications"
 acquire_lock

@@ -17,7 +17,7 @@ import { actionOutcomes, recordQuoteChecks } from './quote-metrics.ts';
 
 export type ActionKind = 'explain' | 'answer' | 'compute' | 'findSource' | 'lookUp' | 'other';
 type ActionSpec = { label: string; tools: string; needsMaterials: boolean; needsWeb?: boolean; extensions?: string[]; request: string; rules: string[] };
-const RUN_PYTHON = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pi-extensions', 'run-python.ts');
+const CALCULATE = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pi-extensions', 'calculate.ts');
 const FILE_TOOLS = 'read,grep,find,ls';
 const WEB_TOOLS = 'web_search,fetch_content,get_search_content';
 
@@ -39,11 +39,11 @@ export const ACTIONS: Record<ActionKind, ActionSpec> = {
       'If the materials do not contain it, say so plainly. Do not attribute a result to a person unless the materials or transcript state it.'],
   },
   compute: {
-    label: 'Compute', tools: `${FILE_TOOLS},run_python`, needsMaterials: false, extensions: [RUN_PYTHON],
+    label: 'Compute', tools: `${FILE_TOOLS},calculate`, needsMaterials: false, extensions: [CALCULATE],
     request: 'Do the calculation raised at the selection.',
     rules: ['If a spoken phrase can mean different things (which function, which bound, which set), say which reading you used and ask which one the speaker meant.',
       'State every assumption (independence, range of values, one- or two-sided, confidence per estimate or joint) in the metadata "assumptions" list; it is shown above the answer, so do not repeat it in the text.',
-      'Use run_python for any non-trivial arithmetic and show the formula. Say whether a result is a sufficient budget or a minimum.',
+      'Use calculate with JavaScript and bundled mathjs (global math) for any non-trivial arithmetic and show the formula. Print results with console.log. Numbers are IEEE doubles unless you use mathjs BigNumber or fractions. Say whether a result is a sufficient budget or a minimum.',
       'Small calculations only: never run experiment suites, benchmarks or large simulations. If more is needed, give it as an open point.'],
   },
   findSource: {
@@ -545,7 +545,7 @@ const statusLine = (event: any): string | null => {
     case 'web_search': return `Searching the web: ${short(a.query ?? (Array.isArray(a.queries) ? a.queries[0] : ''))}`;
     case 'fetch_content': return `Reading ${short(a.url ?? (Array.isArray(a.urls) ? a.urls[0] : 'a page'))}`;
     case 'get_search_content': return 'Reading saved search results';
-    case 'run_python': return 'Running a calculation';
+    case 'calculate': return 'Running a calculation';
     default: return event.toolName ? `Using ${event.toolName}` : null;
   }
 };
@@ -581,8 +581,6 @@ export class ActionJobs {
     /** Whether the web tools are available (checked at startup); actions that need them are refused when false. */
     webAvailable?: () => boolean;
     webUnavailable?: () => string | null;
-    /** Resolves when Compute's Python environment is ready (prepared once; not counted against a job's limits). */
-    computeReady?: () => Promise<void>;
     /** The text of PDF materials, for Pi to read and for the quote checks; without it PDFs are not read. */
     pdfText?: PdfText;
     /** Shared with the other sol jobs; omitted (tests): the actions' own. */
@@ -796,9 +794,9 @@ export class ActionJobs {
     // Tool results are kept as they arrive, so a failed or cancelled run still has its calculations on record.
     const starts = new Map<string, unknown>();
     const live: ToolResult[] = [];
-    const computeOf = () => live.filter(r => r.name === 'run_python').map(r => {
+    const computeOf = () => live.filter(r => r.name === 'calculate').map(r => {
       const d = (r.details ?? {}) as { runNumber?: number; script?: string; status?: string; stdout?: string; stderr?: string; packages?: string[] };
-      return { script: d.script ?? 'run.py', runNumber: d.runNumber ?? 0, code: String((r.args as { code?: unknown })?.code ?? '').slice(0, 20_000),
+      return { script: d.script ?? 'run.js', runNumber: d.runNumber ?? 0, code: String((r.args as { code?: unknown })?.code ?? '').slice(0, 20_000),
         output: (d.stdout ?? r.text).slice(0, 20_000), stderr: (d.stderr ?? '').slice(0, 20_000), status: d.status ?? (r.isError ? 'error' : 'exit 0'),
         ok: !r.isError, packages: d.packages ?? [] };
     }).sort((a, b) => a.runNumber - b.runNumber);
@@ -817,15 +815,6 @@ export class ActionJobs {
       if (controller.signal.aborted) throw new Error('cancelled');
       await writeFile(inputPath, actionInput(job, pdfs), { mode: 0o600 });
       if (job.action === 'compute') {
-        if (this.options.computeReady) {
-          job.status = ['Preparing the Python environment'];
-          // Cancel or shutdown must not wait for a shared preparation that other jobs may still need.
-          const aborted = new Promise<never>((_, reject) => {
-            if (controller.signal.aborted) reject(new Error('cancelled'));
-            controller.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
-          });
-          await Promise.race([this.options.computeReady(), aborted]);
-        }
         before = await materialManifest(roots);
       }
       if (controller.signal.aborted) throw new Error('cancelled');

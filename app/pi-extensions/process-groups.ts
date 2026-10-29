@@ -1,5 +1,5 @@
 /**
- * Process groups that must not outlive their job (M7b §4). A worker (Pi, or a run_python script) is started as the leader of a
+ * Process groups that must not outlive their job (M7b §4). A worker (Pi, or a calculation) is started as the leader of a
  * group of its own and recorded in its task's process folder before it starts: a shell holds it until the record is on disk.
  * Whoever finds a record later (the task's own cleanup, or a server start after a crash) ends that whole group, so cleanup never
  * relies on Pi's exit handler, which a SIGKILL never runs.
@@ -9,7 +9,7 @@
  * gate, whose command line names the task's folder, and which lives for a day unless the group is ended. The system never reuses
  * a group's id while any member of it lives, so a group whose leader has gone is ours exactly when our sentinel is still in it.
  * A leaderless group without it cannot be verified and is left alone (and logged). Shared by runPiTask (src/pi-task.ts) and
- * run_python.
+ * calculate.
  */
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import type { Writable } from 'node:stream';
 
 export type ProcessRecord = {
-  /** What runs: 'pi' or 'python'. */
+  /** What runs: 'pi' or 'calc' (older records can say 'python'). */
   kind: string;
   pid: number; pgid: number;
   /** The leader's start time as `ps` gives it ("Fri Oct 16 10:00:00 2026"): with the pid, the group's identity. */
@@ -80,11 +80,9 @@ export type Gated = { child: ChildProcess; record: ProcessRecord; path: string; 
  */
 export async function spawnGated(command: string, args: string[], options: {
   dir: string; kind: string; cwd: string; env?: NodeJS.ProcessEnv; stdio: ['ignore' | 'pipe', 'ignore' | 'pipe', 'ignore' | 'pipe'];
-  /** Trusted owner lifeline on fd 4, separate from the gate's fd 3. Never inherited by calculation code. */
-  lifetime?: boolean;
 }): Promise<Gated> {
   await mkdir(options.dir, { recursive: true, mode: 0o700 });
-  const child = spawn('/bin/sh', ['-c', GATE, SENTINEL, options.dir, command, ...args], { cwd: options.cwd, env: options.env, detached: true, stdio: [...options.stdio, 'pipe', ...(options.lifetime ? ['pipe' as const] : [])] });
+  const child = spawn('/bin/sh', ['-c', GATE, SENTINEL, options.dir, command, ...args], { cwd: options.cwd, env: options.env, detached: true, stdio: [...options.stdio, 'pipe'] });
   const gate = child.stdio[3] as Writable;
   gate.on('error', () => {}); // the shell may be gone already
   try {

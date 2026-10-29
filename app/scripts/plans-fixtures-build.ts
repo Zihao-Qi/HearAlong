@@ -247,7 +247,8 @@ async function world(directory: string, meetingId: string, roots: ReturnType<typ
       await evidence.record(tool('run_python', { code: script }, output, { details: { runNumber: n, script: `run-${n}.py`, status: 'exit 0', stdout: output, stderr: '' } }));
     }
     const pins: PlanPins = { notesVersion: 3, notesWarnings: [], memoryStamp: memoryStamp(memory, PROJECT.id), manifest: 'a7c2', project: PROJECT.id, ...meta.pins };
-    const checked = checkPlans(raw, { run: meta.run, refs: input.refs, evidence: await evidence.read(), pins });
+    // These historical fixtures intentionally retain their saved Python scripts and diagnostics.
+    const checked = checkPlans(raw, { run: meta.run, refs: input.refs, evidence: await evidence.read(), pins, calculationLanguage: 'python' });
     const doc: PlansDocument = plansDocument(checked, { kind: meta.kind ?? 'plan', base: meta.base, plan: meta.plan ?? null, createdAt: meta.at, finished: true, evidenceComplete: true,
       pins: { ...pins, materials: { roots: [], files: {}, complete: true, digest: pins.manifest } }, warnings: meta.warnings });
     if (meta.publish === false) return { doc, version: null };
@@ -302,7 +303,7 @@ export async function buildFixtures(directory: string) {
   await mixed.run(mixedAnswer(), { run: 'r-77b0', base: null, at: T0 - 6 * MIN, pins: { notesWarnings: [
     'Missing speech: 12:40–13:10.', '2 audio chunk(s) were still being transcribed when the notes were written.',
     '3 line(s) had not been checked for misheard terms.', 'The transcript changed after the notes were written.',
-  ] }, warnings: ['The materials changed during this run (R1/paper/section4.tex).', 'Quick checks were off for this run: Python unavailable.',
+  ] }, warnings: ['The materials changed during this run (R1/paper/section4.tex).', 'Quick checks were off for this run: calculation limit reached.',
     '1 older project-memory item was left out to fit.'] });
   const nothing = await make('fx-nothing');
   await nothing.run({ plans: [], deferred: [{ item: 'N1', why: 'Already a clear action item with its owner.' }, { item: 'N2', why: 'Routine scheduling.' }] },

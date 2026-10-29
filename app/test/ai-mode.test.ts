@@ -54,10 +54,10 @@ for (const mode of ['local', 'cloud'] as const) test(`${mode} tasks and RPC have
   await runPiTask('Example', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: null });
   const rpc = new PiRpc({ model, aiMode: mode, cwd: f.cwd, env: f.env });
   try { await rpc.ask('Example'); } finally { await rpc.close(); }
-  const python = fileURLToPath(new URL('../pi-extensions/run-python.ts', import.meta.url));
-  await runPiTask('Example gated', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: 'read,run_python', command: f.command, readRoots: [], extensions: [python], processDir: join(f.directory, 'processes') });
+  const calculate = fileURLToPath(new URL('../pi-extensions/calculate.ts', import.meta.url));
+  await runPiTask('Example gated', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: 'read,calculate', command: f.command, readRoots: [], extensions: [calculate], processDir: join(f.directory, 'processes') });
   const calls = await f.calls();
-  assert.deepEqual(calls[2].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '-e', python, '-e', READ_SCOPE_EXTENSION, '--tools', 'read,run_python', '--no-session', '--', 'Example gated']);
+  assert.deepEqual(calls[2].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '-e', calculate, '-e', READ_SCOPE_EXTENSION, '--tools', 'read,calculate', '--no-session', '--', 'Example gated']);
   assert.deepEqual(calls[0].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '--no-tools', ...(mode === 'cloud' ? ['--no-skills'] : []), '--no-session', '--', 'Example']);
   assert.deepEqual(calls[1].args, [...prefix, '--mode', 'rpc', '--no-session', '--no-tools', '--no-context-files', '--model', model, '--thinking', 'low']);
   for (const call of calls) {

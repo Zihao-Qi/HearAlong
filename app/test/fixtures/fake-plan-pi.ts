@@ -15,7 +15,7 @@ if (stage === -1) await writeFile(session, JSON.stringify({ original: true, conf
 else if (!JSON.parse(await readFile(session, 'utf8')).original) throw new Error('not a copied session');
 // Publish readiness only after SIGTERM is handled, not merely after a process exists.
 process.on('SIGTERM', () => { void writeFile(join(dirname(configPath), `${name}.aborted`), 'aborted').then(() => process.exit(0)); });
-await writeFile(join(dirname(configPath), `${name}.json`), JSON.stringify({ args, pid: process.pid, env: { RUN_PYTHON_MS: process.env.RUN_PYTHON_MS, RUN_PYTHON_MAX_RUNS: process.env.RUN_PYTHON_MAX_RUNS, RUN_PYTHON_USED: process.env.RUN_PYTHON_USED }, recorded: existsSync(join(process.env.MEETING_PROCESS_DIR!, `pi-${process.pid}.json`)) }));
+await writeFile(join(dirname(configPath), `${name}.json`), JSON.stringify({ args, pid: process.pid, env: { CALCULATE_MS: process.env.CALCULATE_MS, CALCULATE_MAX_RUNS: process.env.CALCULATE_MAX_RUNS, CALCULATE_USED: process.env.CALCULATE_USED }, recorded: existsSync(join(process.env.MEETING_PROCESS_DIR!, `pi-${process.pid}.json`)) }));
 const event = (e: unknown) => process.stdout.write(JSON.stringify(e) + '\n');
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const setting = stage === -1 ? config.stage1 ?? {} : config.writers?.[stage] ?? {};
@@ -28,8 +28,8 @@ if (config.material) {
   event({ type: 'tool_execution_end', toolCallId: 'same-id', toolName: 'read', result: { content: [{ type: 'text', text }] } });
 }
 if (stage === -1) {
-  event({ type: 'tool_execution_start', toolCallId: 'python', toolName: 'run_python', args: { code: 'print(2)' } });
-  event({ type: 'tool_execution_end', toolCallId: 'python', toolName: 'run_python', result: { content: [{ type: 'text', text: '2' }], details: { runNumber: 1, script: 'run-1.py', stdout: '2', stderr: '', status: 'exit 0', exitCode: 0 } } });
+  event({ type: 'tool_execution_start', toolCallId: 'calc', toolName: 'calculate', args: { code: 'console.log(2)' } });
+  event({ type: 'tool_execution_end', toolCallId: 'calc', toolName: 'calculate', result: { content: [{ type: 'text', text: '2' }], details: { runNumber: 1, script: 'run-1.js', stdout: '2', stderr: '', status: 'exit 0', exitCode: 0 } } });
 }
 if (setting.gate) while (!existsSync(join(dirname(configPath), `${name}.release`))) await sleep(10);
 if (setting.hang) await new Promise(() => { setInterval(() => {}, 10000); });

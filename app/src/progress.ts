@@ -157,6 +157,6 @@ export function updatePlanProgress(p: PlanProgress, event: any, scanner: ItemSca
     if (p.phase === 'notes') p.phase = 'materials';
     if (event.toolName === 'read' || event.toolName === 'grep') p.files++;
     else if (event.toolName === 'fetch_content' || event.toolName === 'get_search_content') p.pages++;
-    else if (event.toolName === 'run_python') p.checks++;
+    else if (event.toolName === 'calculate') p.checks++;
   }
 }

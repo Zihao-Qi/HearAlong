@@ -231,7 +231,7 @@ export function plansMarkdown(doc, { title = 'Meeting', project = null, notesAt 
     if (good.length) {
       lines.push('**Sources:**');
       for (const e of good) {
-        if (e.kind === 'check') lines.push(`- Quick check (run ${e.pythonRun}): ${e.text}`, '', '```python', e.result.script ?? '', '```', '', '```', e.result.output ?? '', '```');
+        if (e.kind === 'check') lines.push(`- Quick check (run ${e.pythonRun}): ${e.text}`, '', `\`\`\`${e.result.language === 'javascript' ? 'javascript' : 'python'}`, e.result.script ?? '', '```', '', '```', e.result.output ?? '', '```');
         else lines.push(`- ${e.text} — ${e.source?.type === 'web' ? e.source.url : e.source?.type === 'transcript' ? `transcript ${sourceLabel(e)}` : sourceLabel(e)}: “${e.source?.quote ?? ''}”${e.result.changed ? ' (changed since it was read)' : ''}`);
       }
       lines.push('');

@@ -3,7 +3,7 @@
 // an over-long row text is flagged. The checks show that the sources exist and say what is quoted, not that a plan is right.
 import { contains, tokens } from '../notes.ts';
 import { pageAt, pdfQuoteSpan, quoteReadings } from '../pdf-text.ts';
-import { normUrl, type EvidenceItem, type MaterialEvidence, type PythonEvidence, type SavedEvidence, type WebEvidence } from './evidence.ts';
+import { normUrl, type EvidenceItem, type MaterialEvidence, type PythonEvidence, type CalculationEvidence, type SavedEvidence, type WebEvidence } from './evidence.ts';
 import type { InputRefs, NoteRef } from './input.ts';
 
 export const MAX_PLANS = 8;
@@ -35,7 +35,7 @@ export type EvidenceEntry = {
   /** A state item's claim, or what a check showed (the model's words). */
   text: string;
   source: Source | null;
-  /** For a check: the run_python call it names (1 for the first). */
+  /** For a check: the calculation call it names (1 for the first); field retained for saved plans. */
   pythonRun: number | null;
   /** The saved-evidence item it was checked against (`e3`, or `line:<segment>` for a transcript line). */
   evidence: string | null;
@@ -45,7 +45,7 @@ export type EvidenceEntry = {
     line?: number; to?: number; page?: number | null; excerpt?: string; hash?: string;
     /** The file's manifest entry changed after it was read: the quote is checked against what was read. */
     changed?: boolean;
-    script?: string; output?: string; status?: string;
+    script?: string; output?: string; status?: string; language?: 'javascript' | 'python';
   };
 };
 export type Registry = Record<string, EvidenceEntry>;
@@ -79,6 +79,8 @@ export type CheckedRun = {
 };
 export type CheckContext = {
   run: string; refs: InputRefs; evidence: SavedEvidence; pins: PlanPins;
+  /** Revalidating a historical run can specify its language even when its calculation evidence is missing. */
+  calculationLanguage?: 'javascript' | 'python';
   /** Files whose manifest entry changed after the run started ("R1/path"), from compareManifests. */
   changed?: Set<string>;
 };
@@ -316,11 +318,14 @@ export function checkPlans(raw: unknown, context: CheckContext): CheckedRun {
         if (!entry.text) entry.result = { ...entry.result, ok: false, reason: 'no text' };
       } else {
         const n = Number.isInteger(it.run) ? Number(it.run) : null;
-        const call = n === null ? undefined : context.evidence.items.find((e): e is PythonEvidence => e.tool === 'python' && e.run === n);
+        const call = n === null ? undefined : context.evidence.items.find((e): e is PythonEvidence | CalculationEvidence => (e.tool === 'python' || e.tool === 'calc') && e.run === n);
+        const language = call?.tool === 'calc' ? { language: 'javascript' as const } : {};
+        const legacy = call?.tool === 'python' || (!call && (context.calculationLanguage === 'python' || (context.evidence.items.some(e => e.tool === 'python') && !context.evidence.items.some(e => e.tool === 'calc'))));
+        const tool = legacy ? 'run_python' : 'calculate';
         const result: EvidenceEntry['result'] = n === null ? { ok: false, reason: 'no run number' }
-          : !call ? { ok: false, reason: `no run_python call ${n} was recorded` }
-          : !call.ok ? { ok: false, reason: `run_python call ${n} did not finish without error (${call.status})`, script: call.script, output: call.output, status: call.status }
-          : { ok: true, script: call.script, output: call.output, status: call.status };
+          : !call ? { ok: false, reason: `no ${tool} call ${n} was recorded` }
+          : !call.ok ? { ok: false, reason: `${tool} call ${n} did not finish without error (${call.status})`, script: call.script, output: call.output, status: call.status, ...language }
+          : { ok: true, script: call.script, output: call.output, status: call.status, ...language };
         entry = { id: key, run, local, kind, plan: id, text: text(it.showed) ?? '', source: null, pythonRun: n, evidence: call?.id ?? null, result };
       }
       if ((defined.get(local) ?? 0) > 1) entry.result = { ...entry.result, ok: false, reason: `${local} is defined more than once` };

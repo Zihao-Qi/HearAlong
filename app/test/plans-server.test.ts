@@ -181,8 +181,8 @@ test('Plan runs the plan pass as an exploration: pinned input, the frozen prompt
     assert.equal(s.processCalls.length, 1, 'stage-1 plans JSON is published without another writer');
     assert.equal(call.options.model, 'example/main');
     assert.equal(call.options.thinking, 'low');
-    assert.deepEqual([call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['3', '60000']);
-    assert.match(call.options.tools!, /^read,grep,find,ls,.*run_python$/);
+    assert.deepEqual([call.options.env?.CALCULATE_MAX_RUNS, call.options.env?.CALCULATE_MS], ['3', '60000']);
+    assert.match(call.options.tools!, /^read,grep,find,ls,.*calculate$/);
     assert.match(call.input, /# Notes \(N-numbers\)\n## Open questions\nN1 Where should the robot dock during carpet cleaning\?/);
     const folder = join(s.directory, 'explorations', id, first.body.run.id);
     for (const file of ['job.json', 'input.md', 'evidence.json', 'plans.json', 'events.jsonl']) assert.ok(existsSync(join(folder, file)), file);
@@ -349,7 +349,8 @@ test('Explore further: only on a click, its own instruction after the frozen pro
     await s.until(() => s.app.explorations.get(started.body.run.id)?.state === 'done', 'the published exploration to finish');
     const call = s.calls[1];
     assert.ok(call.prompt.startsWith(`${PLAN_PROMPT}\n\n`) && call.prompt === EXPLORE_PROMPT, 'the frozen prompt, then the instruction for one plan');
-    assert.deepEqual([call.options.model, call.options.thinking, call.options.env?.RUN_PYTHON_MAX_RUNS, call.options.env?.RUN_PYTHON_MS], ['example/main', 'high', '8', '120000']);
+    assert.deepEqual([call.options.model, call.options.thinking, call.options.env?.CALCULATE_MAX_RUNS, call.options.env?.CALCULATE_MS], ['example/main', 'high', '8', '120000']);
+    assert.match(call.options.tools!, /calculate$/);
     assert.match(call.input, /# The plan to explore further\nQuestion: Where should the robot dock during carpet cleaning\?/);
     assert.match(call.input, /Further \(this run's deliverable\): Measure the clearance beside the returns chute/);
     assert.equal(s.app.explorations.get(started.body.run.id)!.limitMs, 20 * 60_000);

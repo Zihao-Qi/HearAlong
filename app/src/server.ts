@@ -40,7 +40,6 @@ import { CORRECTION_SYSTEM_PROMPT, Corrector, cleanGlossary, glossaryPrompt } fr
 import { NotesJobs, notesMarkdown, piNotesRunner, type NotesRunner } from './notes.ts';
 import { ActionJobs, piActionRunner, type ActionRunner } from './actions.ts';
 import { Boards, type GateAsk } from './board.ts';
-import { ensurePython, pythonStatus, stopPython } from './python-env.ts';
 import { Cooldowns } from './quota.ts';
 import { Explorations, recoverExplorations } from './explorations.ts';
 import { AutoPlanning, PlanTodos, PlanVersions } from './plans/index.ts';
@@ -348,8 +347,6 @@ export async function startServer(options: {
     // Select-text actions (M3): sol with per-action tools; an explicit `heavy: null` disables them unless a runner is injected.
     const actionRunner: ActionRunner | null = options.actions !== undefined ? options.actions
       : cloud && options.heavy !== null ? piActionRunner(() => ai.require('main')) : null;
-    // Prepare Compute's pinned Python environment on demand, not while AI is Off. Jobs wait outside their time limit.
-    const realRunner = Boolean(actionRunner) && options.actions === undefined;
     // Memory for actions (§7): a snapshot made from the database (never the repo files, which may hold unresolved edits),
     // with the notes of the project's other meetings, in a read-only folder per action so its citations stay checkable.
     const snapshotRoot = join(directory, 'scratch', 'memory-snapshots');
@@ -388,8 +385,7 @@ export async function startServer(options: {
     };
     const webUnavailable = () => ai.mode() === 'local' ? 'Web lookups are unavailable in On this Mac mode.' : null;
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
-      rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns,
-      computeReady: realRunner ? () => ensurePython(directory) : undefined });
+      rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns });
     await actionJobs.load();
     // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
@@ -440,7 +436,7 @@ export async function startServer(options: {
     // The plans of a meeting (M7b §2b): published versions in data/plans, their to-dos and automatic attempts in the database.
     const planJobs = new PlanJobs({ store, directory, clock, explorations, cooldowns, memory, projects, notes: notesJobs, pdfText,
       versions: new PlanVersions(directory, clock), todos: new PlanTodos(store, memory, clock), auto: new AutoPlanning(store, clock),
-      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython(directory) : undefined, web: () => ai.web, webUnavailable,
+      enabled: Boolean(planPi), web: () => ai.web, webUnavailable,
       models: async kind => ai.allow(await planModel(kind, () => ai.require('main'))),
       materialEvidence: (path, blocks) => files.evidenceAllowed(path, blocks),
       final: id => !stillComing(id), stale: id => notesJobs.status(id).then(s => s.stale), changed: id => changed(id) });
@@ -1072,7 +1068,7 @@ export async function startServer(options: {
           res.end(notesMarkdown(status.notes, status.stale, status.coverage)); return;
         }
         if (req.method === 'GET' && action === 'actions') {
-          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled && (options.actions !== undefined || ai.mode() !== 'off'), pausedUntil: actionJobs.paused(), web: ai.web, python: pythonStatus(),
+          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled && (options.actions !== undefined || ai.mode() !== 'off'), pausedUntil: actionJobs.paused(), web: ai.web,
             materials: rootsFor(meetingId).length > 0 }); return;
         }
         if (req.method === 'POST' && action === 'actions') {
@@ -1378,7 +1374,6 @@ export async function startServer(options: {
       await gate?.close();
       await aiClosing;
       await keys.close(); // after the HTTP drain: an admitted key request has finished (a later one was refused)
-      stopPython(); // first, so jobs waiting on preparation are released
       await pdfText.close(); // waits for an extraction being stopped
       await actionJobs.close();
       await quick?.close?.();

@@ -14,7 +14,7 @@ import { RATE_LIMIT, clockTime, modelQuotaMessage, modelRateLimit, webRateLimite
 export type ExplorationKind = 'plan' | 'explore';
 /**
  * Pi's time for a whole run: 5 min for the plan pass, 20 for Explore further (M7b §2). The run itself, preparation included
- * (e.g. the Python environment), may take `prepareMs` more. A stopped run's work gets `stopGraceMs` to end before the run ends
+ * (e.g. PDF text), may take `prepareMs` more. A stopped run's work gets `stopGraceMs` to end before the run ends
  * without it.
  */
 export const EXPLORATION_LIMITS: Record<ExplorationKind, number> & { pollMs: number; prepareMs: number; stopGraceMs: number } = {
@@ -452,7 +452,7 @@ export class Explorations {
     const workers = new Map<number, ProcessRecord>();
     let processNumber = 0;
     const runPi = this.options.runPi ?? runPiTask;
-    // Pi's time is counted from its first start, so preparing (e.g. the Python environment) is not; the run's own limit,
+    // Pi's time is counted from its first start, so preparing (e.g. PDF text) is not; the run's own limit,
     // counted from now, holds whatever the work does.
     let deadline: number | null = null;
     let timedOut = false;

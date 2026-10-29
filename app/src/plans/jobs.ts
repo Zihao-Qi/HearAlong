@@ -29,11 +29,11 @@ import {
 } from './versions.ts';
 import { activeJob, jobData, plansPage, runView, shownJobs, type ListedJob, type PlanJobData, type PlanJobResult } from './view.ts';
 
-const RUN_PYTHON = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'pi-extensions', 'run-python.ts');
-/** Reading is confined to this run's material roots and scratch folder, in both AI modes; Cloud can send tool results and Python output to the provider. */
-export const PLAN_TOOLS = { files: 'read,grep,find,ls', web: 'web_search,fetch_content,get_search_content', python: 'run_python' };
-/** run_python's limits per run (decision 2): 3 runs of 60 s for the plan pass, 8 of 120 s for Explore further. */
-export const PYTHON_LIMITS: Record<ExplorationKind, { ms: number; runs: number }> = { plan: { ms: 60_000, runs: 3 }, explore: { ms: 120_000, runs: 8 } };
+const CALCULATE = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'pi-extensions', 'calculate.ts');
+/** Reading is confined to this run's material roots and scratch folder, in both AI modes; Cloud can send tool results and calculation output to the provider. */
+export const PLAN_TOOLS = { files: 'read,grep,find,ls', web: 'web_search,fetch_content,get_search_content', calc: 'calculate' };
+/** calculate's limits per run: 3 runs of 60 s for the plan pass, 8 of 120 s for Explore further. */
+export const CALCULATE_LIMITS: Record<ExplorationKind, { ms: number; runs: number }> = { plan: { ms: 60_000, runs: 3 }, explore: { ms: 120_000, runs: 8 } };
 /**
  * The model and thinking level: the plan pass as the held-out tests ran it (scripts/plan-probe.ts; PLAN_MODEL overrides it);
  * Explore further, which has 20 minutes, at high thinking (EXPLORE_MODEL overrides it).
@@ -54,8 +54,6 @@ export class PlanJobs {
     memory: Memory; projects: Projects; notes: NotesJobs; pdfText: PdfText;
     /** Plans can be made (cloud models on); off, saved plans stay readable and their to-dos can be added. */
     enabled: boolean;
-    /** Compute's Python environment, prepared before Pi starts (not counted against its time); without it, no quick checks. */
-    python?: () => Promise<void>;
     /** The web tools are installed (pi-web-access). */
     web: () => boolean;
     webUnavailable?: () => string | null;
@@ -299,17 +297,12 @@ export class PlanJobs {
 
   // ---------- The run ----------
 
-  private async tools(kind: ExplorationKind, ctx: ExplorationContext) {
+  private tools(kind: ExplorationKind) {
     const webNotice = this.options.webUnavailable?.();
     const warnings: string[] = webNotice ? [webNotice] : [];
-    let python = true;
-    if (this.options.python) {
-      try { await ctx.wait(this.options.python()); }
-      catch (error) { if (ctx.signal.aborted) throw error; python = false; warnings.push(`Quick checks were off for this run: ${(error as Error).message}`); }
-    }
-    const tools = [PLAN_TOOLS.files, ...(this.options.web() ? [PLAN_TOOLS.web] : []), ...(python ? [PLAN_TOOLS.python] : [])].join(',');
-    const limits = PYTHON_LIMITS[kind];
-    return { tools, extensions: python ? [RUN_PYTHON] : [], env: { RUN_PYTHON_MS: String(limits.ms), RUN_PYTHON_MAX_RUNS: String(limits.runs) }, warnings };
+    const tools = [PLAN_TOOLS.files, ...(this.options.web() ? [PLAN_TOOLS.web] : []), PLAN_TOOLS.calc].join(',');
+    const limits = CALCULATE_LIMITS[kind];
+    return { tools, extensions: [CALCULATE], env: { CALCULATE_MS: String(limits.ms), CALCULATE_MAX_RUNS: String(limits.runs) }, warnings };
   }
   /** The work of one run: from its pins to its publication. Throws on failure; a stop ends it through its Pi call. */
   private work(meetingId: string, kind: ExplorationKind, data: PlanJobData) {
@@ -344,7 +337,7 @@ export class PlanJobs {
         const webNotice = o.webUnavailable?.();
         await ctx.wait(writeFile(inputPath, `${built.text}${further}${webNotice ? `\n${webNotice}\n` : ''}`, { mode: 0o600 }));
         const evidence = new EvidenceRecorder(ctx.folder, { cwd: ctx.cwd, locate: materialLocator({ roots: built.refs.roots, view, pdfs }), eligible: o.materialEvidence });
-        const tools = await this.tools(kind, ctx);
+        const tools = this.tools(kind);
         const model = typeof o.models === 'function' ? await o.models(kind) : o.models?.[kind];
         if (!model) throw new Error('Choose AI models in setup.');
         // Keep legacy environment strings (including their optional :thinking suffix) exactly as supplied.

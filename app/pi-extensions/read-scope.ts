@@ -60,7 +60,7 @@ export function insideRoots(path: string, roots: ReadRoot[]): boolean {
 const TOOL_KEYS: Record<string, string[]> = {
   read: ['path', 'offset', 'limit'], grep: ['pattern', 'path', 'glob', 'ignoreCase', 'literal', 'context', 'limit'],
   find: ['pattern', 'path', 'limit'], ls: ['path', 'limit'], edit: ['path', 'edits'], write: ['path', 'content'],
-  run_python: ['code'], web_search: ['query', 'queries', 'numResults', 'recency', 'domain', 'domains', 'maxResults'],
+  calculate: ['code'], web_search: ['query', 'queries', 'numResults', 'recency', 'domain', 'domains', 'maxResults'],
   fetch_content: ['url', 'urls', 'prompt', 'forceClone', 'maxLength'],
   get_search_content: ['responseId', 'queryIndex', 'resultIndex', 'url', 'urls', 'offset', 'limit'],
 };

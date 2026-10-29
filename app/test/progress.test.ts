@@ -87,7 +87,7 @@ test('plans scripted events: notes, materials, write, counts and latest; write d
   assert.equal(p.phase, 'materials'); assert.deepEqual(p.materials, ['guide.md']);
   updatePlanProgress(p, { type: 'tool_execution_start', toolName: 'grep', args: { path: '/fictional/materials/guide.md' } }, scanner);
   updatePlanProgress(p, { type: 'tool_execution_end', toolName: 'fetch_content' }, scanner);
-  updatePlanProgress(p, { type: 'tool_execution_end', toolName: 'run_python' }, scanner);
+  updatePlanProgress(p, { type: 'tool_execution_end', toolName: 'calculate' }, scanner);
   updatePlanProgress(p, { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '{"plans":[{"label":"Try the small sample"}]}' } }, scanner);
   assert.equal(p.phase, 'write'); assert.equal(p.written, 1); assert.equal(p.latest, 'Try the small sample');
   updatePlanProgress(p, { type: 'tool_execution_start', toolName: 'read', args: { path: 'table.csv' } }, scanner);
