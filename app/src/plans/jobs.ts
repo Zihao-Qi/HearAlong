@@ -134,7 +134,7 @@ export class PlanJobs {
     const jobs = this.jobs(meetingId);
     const { kept } = shownJobs(jobs);
     const keptDoc = kept ? await loadRunPlans(folderOf(this.options.directory, meetingId, kept.id)) : null;
-    const current = latest || keptDoc ? currentPins({ notesVersion: record?.version ?? null, manifest: await this.manifest(meetingId).catch(() => ''),
+    const current = latest || keptDoc ? currentPins({ notesVersion: record?.version ?? null, notesStale: await this.options.stale(meetingId), manifest: await this.manifest(meetingId).catch(() => ''),
       memory: this.options.memory, project: projectId, meetingId, todos: this.options.todos, versions }) : null;
     return plansPage({
       enabled: this.options.enabled, notes: record ? { version: record.version, at: record.createdAt } : null,

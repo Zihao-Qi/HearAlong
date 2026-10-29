@@ -188,6 +188,21 @@ test('Plans folds have plain labels, toggle aria-expanded and stay with the rows
   assert.doesNotMatch(plans, /[▸▾]/, 'disclosure chevrons are visual, never text characters in labels');
 });
 
+for (const change of ['transcript', 'notes'] as const) test(`Plans stale control and Options use the server's ${change} wording`, async () => {
+  const f = await fixture('plans');
+  const label = `Made before the ${change} changed`;
+  f.page.current.plans[0].freshness = { current: false, changed: [change], label };
+  f.page.current.warnings.push('The transcript changed after the notes were written.');
+  await f.view.refresh();
+  const stale = f.host.querySelector('.plans-stale')!;
+  assert.equal(stale.textContent, label);
+  stale.click();
+  const menu = words(f.host.querySelector('#plans-menu')!);
+  assert.ok(menu.includes(`${label}.`));
+  assert.ok(menu.includes('The transcript changed after the notes were written.'), 'Options must not filter the transcript warning as coverage noise');
+  if (change === 'transcript') assert.doesNotMatch(menu, /Made before the notes changed/);
+});
+
 test('Plans stale bar uses any per-plan freshness, not document-level or current notes-version guesses', async () => {
   const f = await fixture('plans');
   f.page.current.freshness = { current: false, label: 'Ignore this aggregate', changed: ['notes'] };
@@ -196,10 +211,11 @@ test('Plans stale bar uses any per-plan freshness, not document-level or current
   f.page.current.plans[1].freshness = { current: false, label: 'Made before the materials changed', changed: ['materials'] };
   await f.view.refresh();
   const stale = f.host.querySelector('.plans-stale')!;
-  assert.equal(stale.textContent, 'Made before the notes changed');
+  assert.equal(stale.textContent, 'Made before the materials changed');
   stale.click();
   assert.equal(f.doc.activeElement?.textContent, 'Plan again');
-  assert.match(words(f.host.querySelector('#plans-menu')!), /Made before the notes changed\. Made before the materials changed\./);
+  assert.match(words(f.host.querySelector('#plans-menu')!), /Made before the materials changed\./);
+  assert.doesNotMatch(words(f.host.querySelector('#plans-menu')!), /Made before the notes changed/);
   assert.doesNotMatch(words(f.host.querySelector('#plans-menu')!), /Ignore this aggregate/);
   f.host.querySelector('#plans-menu')!.onkeydown!(event('Escape'));
   assert.equal(f.doc.activeElement?.dataset.focus, 'plans-stale');

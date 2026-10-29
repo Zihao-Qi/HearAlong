@@ -1083,7 +1083,11 @@ export async function startServer(options: {
           const value = await json(req);
           // "Ask about this" / "Look into it" on a board card bind the job to that card (M4 decision 7).
           const bound = typeof value.cardId === 'string' && await boards.hasCard(meetingId, value.cardId) ? { origin: 'card' as const, cardId: value.cardId } : { origin: 'user' as const, cardId: undefined };
-          try { const { job, merged } = await actionJobs.submit(meetingId, { ...value, ...bound }); send(res, merged ? 200 : 202, { job, merged }); }
+          try {
+            // Card-bound selection actions cannot bypass the Board's revision guard (including Ask about this / Look into it).
+            const selection = bound.cardId && !value.parentId && !value.retryOf ? await boards.selection(meetingId, bound.cardId) : value.selection;
+            const { job, merged } = await actionJobs.submit(meetingId, { ...value, ...bound, selection }); send(res, merged ? 200 : 202, { job, merged });
+          }
           catch (error) { throw new HttpError((error as { status?: number }).status ?? 500, (error as Error).message); }
           return;
         }

@@ -134,26 +134,27 @@ export async function pinRun(options: { notes: Pick<NotesRecord, 'version' | 'in
  * The inputs now, to compare plans with. `memoryStamps` is the memory's stamp per origin run (currentPins): a version carries
  * plans of several runs (Explore further), and each run read memory at its own time.
  */
-export type CurrentPins = { notesVersion: number | null; memoryStamp: string | null; memoryStamps?: Record<string, string | null>; manifest: string };
+export type CurrentPins = { notesVersion: number | null; transcriptStale?: boolean; memoryStamp: string | null; memoryStamps?: Record<string, string | null>; manifest: string };
 
 /**
  * The inputs now for a meeting's plans. The memory's stamp is made per origin run: each leaves out the to-dos added (and not
  * changed since) from the versions that carry that run's plans, which its run cannot have read; every other to-do counts, so a
  * plan whose run read a to-do sees it complete. `versions`: the meeting's published versions (PlanVersions.get).
  */
-export function currentPins(options: { notesVersion: number | null; manifest: string; memory: Memory | null; project: string | null; meetingId: string;
+export function currentPins(options: { notesVersion: number | null; notesStale?: boolean; manifest: string; memory: Memory | null; project: string | null; meetingId: string;
   todos: { addedFrom(meetingId: string, version: number, project: string): Set<string> }; versions: PublishedVersion[] }): CurrentPins {
   const { memory, project } = options;
-  if (!memory || !project) return { notesVersion: options.notesVersion, manifest: options.manifest, memoryStamp: null };
+  const transcript = options.notesStale ? { transcriptStale: true } : {};
+  if (!memory || !project) return { notesVersion: options.notesVersion, ...transcript, manifest: options.manifest, memoryStamp: null };
   const runs = new Set(options.versions.flatMap(v => v.plans.map(p => p.origin.run)));
   const memoryStamps: Record<string, string | null> = {};
   for (const run of runs) {
     const exempt = new Set(options.versions.filter(v => v.plans.some(p => p.origin.run === run)).flatMap(v => [...options.todos.addedFrom(options.meetingId, v.version, project)]));
     memoryStamps[run] = memoryStamp(memory, project, exempt);
   }
-  return { notesVersion: options.notesVersion, manifest: options.manifest, memoryStamp: memoryStamp(memory, project), memoryStamps };
+  return { notesVersion: options.notesVersion, ...transcript, manifest: options.manifest, memoryStamp: memoryStamp(memory, project), memoryStamps };
 }
-const CHANGED = { notes: 'the notes', memory: 'the memory', materials: 'the materials' } as const;
+const CHANGED = { notes: 'the notes', transcript: 'the transcript', memory: 'the memory', materials: 'the materials' } as const;
 /**
  * Whether a plan was made from the current inputs; otherwise what changed since, and its label (with Plan again). `current` is
  * now's (currentPins): the notes version, the memory's stamp for the plan's own origin run, and the manifest's digest.
@@ -162,7 +163,7 @@ export function freshness(plan: Pick<CheckedPlan, 'originPins' | 'origin'>, curr
   const pins = plan.originPins;
   const memoryNow = current.memoryStamps && plan.origin.run in current.memoryStamps ? current.memoryStamps[plan.origin.run] : current.memoryStamp;
   const changed = (Object.keys(CHANGED) as (keyof typeof CHANGED)[]).filter(k =>
-    k === 'notes' ? pins.notesVersion !== current.notesVersion : k === 'memory' ? pins.memoryStamp !== memoryNow : pins.manifest !== current.manifest);
+    k === 'notes' ? pins.notesVersion !== current.notesVersion : k === 'transcript' ? current.transcriptStale === true : k === 'memory' ? pins.memoryStamp !== memoryNow : pins.manifest !== current.manifest);
   const words = changed.map(k => CHANGED[k]);
   const list = words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : words[0];
   return { current: !changed.length, changed, label: changed.length ? `Made before ${list} changed` : null };

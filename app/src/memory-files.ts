@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +10,7 @@ import type { Plan, Proposals } from './proposals.ts';
 import type { Project } from './projects.ts';
 import type { NotesRunner } from './notes.ts';
 import { extractJson } from './pi-task.ts';
+import { memoryPath, readMemoryFile } from './memory-file-io.ts';
 
 /**
  * The memory files in a project's repo (docs/design/M6-memory.md §3.3, §6): generated from the database for people and
@@ -203,29 +204,49 @@ export class MemoryFiles {
       this.status.set(projectId, status);
       return status; // never recreate a repo folder; memory keeps working in the app
     }
-    if (!(await this.ours(project, folder))) {
-      const status: FilesStatus = { folder, state: 'not ours', captured: 0 };
+    const problems: string[] = [];
+    const refused = (error: unknown) => {
+      const message = (error as Error).message;
+      problems.push(message);
+      this.options.log?.(`Memory files: ${message}`);
+    };
+    try {
+      await memoryPath(folder, '');
+      if (!(await this.ours(project, folder))) {
+        const status: FilesStatus = { folder, state: 'not ours', captured: 0 };
+        this.status.set(projectId, status);
+        return status; // a project-memory/ folder the app did not write is left alone (§8.1)
+      }
+      await mkdir(await memoryPath(folder, 'inbox'), { recursive: true });
+      await memoryPath(folder, 'inbox');
+    } catch (error) {
+      refused(error);
+      const status: FilesStatus = { folder, state: 'not ours', captured: this.pendingCaptures(projectId).length, error: problems.join('; ').slice(0, 1000) };
       this.status.set(projectId, status);
-      return status; // a project-memory/ folder the app did not write is left alone (§8.1)
+      return status;
     }
-    await mkdir(join(folder, 'inbox'), { recursive: true });
     // Edits stored but not yet read (the app stopped during the model call) are read now.
     for (const { id } of this.store.db.prepare("SELECT id FROM memory_captures WHERE project=? AND status='processing'").all(projectId) as { id: string }[]) await this.process(project, id);
-    await this.readInbox(project, folder);
+    await this.readInbox(project, folder, refused);
     const files = render(this.memory, projectId, this.options.clock(), this.options.meetingTitle);
-    for (const [file, content] of Object.entries(files)) await this.writeOne(project, folder, file, content);
+    for (const [file, content] of Object.entries(files)) {
+      try { await this.writeOne(project, folder, file, content); } catch (error) { refused(error); }
+    }
     this.watch(projectId, folder);
-    const status: FilesStatus = { folder, state: 'ok', captured: this.pendingCaptures(projectId).length };
+    const status: FilesStatus = { folder, state: 'ok', captured: this.pendingCaptures(projectId).length, ...(problems.length ? { error: problems.join('; ').slice(0, 1000) } : {}) };
     this.status.set(projectId, status);
     return status;
   }
 
   /** The folder is the app's: missing or empty, holding the app's README, or a to-do list the app wrote for this project. */
   private async ours(project: Project, folder: string) {
-    const names = await readdir(folder).catch(() => null);
+    const names = await readdir(folder).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
     if (!names || !names.length) return true;
-    if ((await readFile(join(folder, 'README.md'), 'utf8').catch(() => '')).startsWith('# Project memory\n\nThis folder is written by the Meeting Research Assistant')) return true;
-    const todos = await readFile(join(folder, 'todos.md'), 'utf8').catch(() => null);
+    if ((await readMemoryFile(folder, 'README.md') ?? '').startsWith('# Project memory\n\nThis folder is written by the Meeting Research Assistant')) return true;
+    const todos = await readMemoryFile(folder, 'todos.md');
     return todos !== null && this.known(project.id, 'todos.md', hash(todos));
   }
   private published(projectId: string, file: string) {
@@ -263,8 +284,8 @@ export class MemoryFiles {
    * stale output and is simply rewritten. The hash is checked again just before the rename.
    */
   private async writeOne(project: Project, folder: string, file: string, content: string) {
-    const path = join(folder, file);
-    const current = await readFile(path, 'utf8').catch(() => null);
+    const path = await memoryPath(folder, file);
+    const current = await readMemoryFile(folder, file);
     const published = this.published(project.id, file);
     // A resolved edit still on disk gets one regeneration, not permanent recognition of its bytes.
     const resolved = this.store.db.prepare("SELECT hash, status FROM memory_captures WHERE project=? AND file=? ORDER BY rowid DESC LIMIT 1").get(project.id, file) as { hash: string; status: string } | undefined;
@@ -280,13 +301,18 @@ export class MemoryFiles {
       this.store.db.prepare("UPDATE memory_captures SET status='resolved' WHERE project=? AND file=? AND status='regenerating'").run(project.id, file);
       return;
     }
-    await mkdir(join(folder, 'history'), { recursive: true });
+    await mkdir(await memoryPath(folder, 'history'), { recursive: true });
     const tmp = `${path}.${randomUUID()}.tmp`;
-    await writeFile(tmp, content);
-    const again = await readFile(path, 'utf8').catch(() => null);
-    if (again !== current) { await rm(tmp, { force: true }); return; } // changed while we wrote: the next sync captures it
+    await writeFile(tmp, content, { flag: 'wx', mode: 0o600 });
+    try {
+      const again = await readMemoryFile(folder, file);
+      if (again !== current) { await rm(tmp, { force: true }); return; } // changed while we wrote: the next sync captures it
+    } catch (error) { await rm(tmp, { force: true }); throw error; }
     // Known before the rename: after a crash between the two, these bytes are the app's own output, not an outside edit.
     this.store.db.prepare('INSERT OR IGNORE INTO memory_files (project,file,hash,content,asOf,at,current) VALUES (?,?,?,?,?,?,0)').run(project.id, file, hash(content), content, this.options.clock(), this.options.clock());
+    // The database write above is another interleaving point: refuse a parent replaced since the content check.
+    // Do not remove tmp through an unsafe parent on refusal; that pathname no longer identifies our temporary file.
+    if (await memoryPath(folder, file) !== path) throw new Error('The memory folder changed before publication.');
     await rename(tmp, path);
     const now = this.options.clock();
     transaction(this.store.db, () => {
@@ -374,12 +400,17 @@ export class MemoryFiles {
    * stays in the repo and is retried after 1, 5 and 30 minutes, then only on Retry; it and a note that led to nothing are
    * shown to the user, so no note vanishes unseen.
    */
-  private async readInbox(project: Project, folder: string) {
-    const inbox = join(folder, 'inbox');
-    const names = (await readdir(inbox).catch(() => [] as string[])).filter(n => n.endsWith('.md'));
+  private async readInbox(project: Project, folder: string, refused: (error: unknown) => void) {
+    const inbox = await memoryPath(folder, 'inbox');
+    let names: string[];
+    try { names = (await readdir(inbox)).filter(n => n.endsWith('.md')); }
+    catch (error) { refused(error); return; }
     for (const name of names) {
-      const path = join(inbox, name);
-      const text = (await readFile(path, 'utf8').catch(() => '')).trim();
+      const file = join('inbox', name);
+      let content: string | null;
+      try { content = await readMemoryFile(folder, file); }
+      catch (error) { refused(error); continue; }
+      const text = content?.trim();
       if (!text) continue;
       const h = hash(text);
       const seen = this.store.db.prepare('SELECT state, result FROM memory_inbox WHERE project=? AND name=? AND hash=?').get(project.id, name, h) as { state: string; result: string | null } | undefined;
@@ -410,8 +441,13 @@ export class MemoryFiles {
       // Recorded: archive a copy in the app's data folder, then remove this version from the repo (retried if it fails).
       const archive = join(this.options.directory, 'projects', project.id, 'inbox-read');
       await mkdir(archive, { recursive: true });
-      try { await copyFile(path, join(archive, `${h.slice(0, 12)}-${name}`)); if ((await readFile(path, 'utf8')).trim() === text) await rm(path, { force: true }); }
-      catch (e) { this.options.log?.(`Inbox note ${name} not archived yet: ${(e as Error).message}`); }
+      try {
+        // Archive the admitted bytes, never reopen/copy a path that may have changed during interpretation.
+        await writeFile(join(archive, `${h.slice(0, 12)}-${name}`), content!, { flag: 'wx', mode: 0o600 }).catch(error => {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        });
+        if ((await readMemoryFile(folder, file))?.trim() === text) await rm(await memoryPath(folder, file), { force: true });
+      } catch (error) { refused(error); }
     }
   }
 

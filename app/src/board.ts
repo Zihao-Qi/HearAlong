@@ -459,6 +459,16 @@ export class Boards {
     }).catch(error => this.warnings.set(meetingId, `Could not record an automatic answer: ${(error as Error).message}`));
   }
 
+  /** A card action always pins an occurrence that still exists at its detected revisions. */
+  async selection(meetingId: string, cardId: string) {
+    const card = (await this.load(meetingId)).cards.find(c => c.id === cardId);
+    if (!card) throw Object.assign(new Error('No such card.'), { status: 404 });
+    const now = new Map(this.options.store.visibleSegments(meetingId, this.options.clock()).map(s => [s.id, s.revision]));
+    const occurrence = card.occurrences.find(o => o.lines.every(l => now.get(l.id) === l.revision));
+    if (!occurrence) throw Object.assign(new Error('The cited lines changed since the card was detected.'), { status: 409 });
+    return { text: occurrence.quote, segmentIds: occurrence.lines.map(l => l.id), revisions: Object.fromEntries(occurrence.lines.map(l => [l.id, l.revision])) };
+  }
+
   /** The user's Investigate on a card: the action matrix, the card's evidence as the selection, every attempt kept. */
   async investigate(meetingId: string, cardId: string) {
     if (!this.options.actions) throw Object.assign(new Error('AI models are disabled (MEETING_CLOUD=0).'), { status: 400 });
@@ -467,9 +477,8 @@ export class Boards {
     if (!card) throw Object.assign(new Error('No such card.'), { status: 404 });
     const plan = investigation(card);
     if (!plan) throw Object.assign(new Error('This card has nothing to investigate; use "Ask about this" instead.'), { status: 400 });
-    const occurrence = card.occurrences[0];
-    const { job } = await this.options.actions.submit(meetingId, { action: plan.action, prompt: plan.prompt, origin: 'card', cardId,
-      selection: { text: occurrence.quote, segmentIds: occurrence.lines.map(l => l.id) } });
+    const selection = await this.selection(meetingId, cardId);
+    const { job } = await this.options.actions.submit(meetingId, { action: plan.action, prompt: plan.prompt, origin: 'card', cardId, selection });
     await this.mutate(meetingId, latest => { const c = latest.cards.find(x => x.id === cardId); if (c && !c.attempts.includes(job.id)) c.attempts.push(job.id); });
     return job;
   }

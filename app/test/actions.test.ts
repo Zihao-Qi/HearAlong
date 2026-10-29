@@ -18,21 +18,25 @@ const LINES = ['How many brass buttons are in the costume cupboard?', 'Count the
   'Did anyone water the lobby fern?', 'Find a repair shop for the sewing machine.'];
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), 'meeting-actions-'));
+  const folder = await mkdtemp(join(tmpdir(), 'meeting-actions-'));
+  const directory = join(folder, 'data');
+  await mkdir(directory);
   const store = new MeetingStore(directory);
   const meeting = store.createMeeting('Community theatre wardrobe count');
   for (const [i, line] of LINES.entries()) {
     const chunk = await store.addPcm(meeting.id, 'mic:t', i, i * 60_000, 16000, Buffer.alloc(16000 * 4, i + 1));
     store.completeChunk(chunk.id, recognition(line));
   }
-  const materials = join(directory, 'materials');
+  // Attached materials live outside protected app data, just as they must for the file tools.
+  const materials = join(folder, 'materials');
   await mkdir(join(materials, 'inventory'), { recursive: true });
   await writeFile(join(materials, 'inventory', 'stock.txt'), ['Costume cupboard stock sheet', 'Rail C holds the blue parade jackets.',
     'Brass buttons: 7 packets of 8 = 56 buttons, counted on Thursday.', 'Spare thread is stored in the green tin.'].join('\n'));
-  await writeFile(join(directory, 'outside.txt'), 'secret words that are outside the materials root');
+  const outside = join(folder, 'outside.txt');
+  await writeFile(outside, 'secret words that are outside the materials root');
   const roots: Material[] = [{ id: 'R1', scope: `meeting:${meeting.id}`, path: materials, kind: 'folder', label: 'materials' }];
   const segments = store.segments(meeting.id);
-  return { directory, store, meeting, roots, materials, segments, async close() { store.close(); await rm(directory, { recursive: true, force: true }); } };
+  return { directory, store, meeting, roots, materials, outside, segments, async close() { store.close(); await rm(folder, { recursive: true, force: true }); } };
 }
 const result = (text: string, extra: Partial<PiTaskResult> = {}): PiTaskResult => ({
   text, ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 0, toolResults: [], provider: 'openai-codex', model: 'gpt-6.1-sol', ...extra,
@@ -97,7 +101,7 @@ test('file citations: inside the root, real lines, quote found; traversal and sy
     const changedNumber = await checkFileSource({ id: 4, rootId: 'R1', path: 'inventory/stock.txt', lines: '3', quote: '7 packets of 8 = 57 buttons, counted on Thursday' }, f.roots);
     assert.equal(changedNumber.status, 'quote not found');
     assert.equal((await checkFileSource({ id: 5, rootId: 'R1', path: '../outside.txt', lines: '1', quote: 'secret words that are outside' }, f.roots)).detail, 'outside the attached materials');
-    await symlink(join(f.directory, 'outside.txt'), join(f.materials, 'link.txt'));
+    await symlink(f.outside, join(f.materials, 'link.txt'));
     assert.equal((await checkFileSource({ id: 6, rootId: 'R1', path: 'link.txt', lines: '1', quote: 'secret words that are outside' }, f.roots)).detail, 'outside the attached materials');
     assert.equal((await checkFileSource({ id: 7, rootId: 'R1', path: 'inventory/missing.txt', lines: '1', quote: 'a b c' }, f.roots)).detail, 'file not found');
     assert.match((await checkFileSource({ id: 8, rootId: 'R1', path: 'inventory/stock.txt', lines: '40-50', quote: 'a b c' }, f.roots)).detail!, /not inside the file/);
