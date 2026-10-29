@@ -5,13 +5,15 @@ import { createServer } from 'node:net';
 import { createSocket } from 'node:dgram';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import childProcess, { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { readRoots, READ_SCOPE_ENV } from '../pi-extensions/read-scope.ts';
 
-async function fixture(t: any, ms = 2000, runs = 6) {
+// Startup includes Seatbelt, Node permissions and loading mathjs; it is not the subject of most tests.
+const RUN_MS = 20_000;
+async function fixture(t: any, ms = RUN_MS, runs = 6) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'calculate-'))), cwd = join(root, 'data', 'scratch', 'job');
   await mkdir(cwd, { recursive: true });
   const saved = { ...process.env }, previous = process.cwd();
@@ -28,7 +30,7 @@ async function fixture(t: any, ms = 2000, runs = 6) {
 }
 
 test('calculate prints output, is sequential, starts fresh, and limits runs', async t => {
-  const f = await fixture(t, 2000, 2);
+  const f = await fixture(t, RUN_MS, 2);
   assert.equal(f.tool.name, 'calculate'); assert.equal(f.tool.executionMode, 'sequential');
   const a = await f.run('globalThis.fictional = 42; console.log(6 * 7)');
   assert.equal(a.isError, undefined, JSON.stringify(a)); assert.equal(a.details.stdout, '42\n');
@@ -52,7 +54,7 @@ test('calculate times out and kills its recorded group', async t => {
 });
 
 test('calculate cancellation kills an active process and rejects a pre-cancelled call', async t => {
-  const f = await fixture(t, 10000), controller = new AbortController();
+  const f = await fixture(t), controller = new AbortController();
   const pending = f.run('while (true) {}', controller.signal);
   let record: any;
   for (let n = 0; n < 200 && !record; n++) {
@@ -69,7 +71,7 @@ test('calculate cancellation kills an active process and rejects a pre-cancelled
 });
 
 test('calculate exposes no lexical require; permission model denies indirect native APIs and filesystem', async t => {
-  const f = await fixture(t, 3000, 20), outside = join(f.root, 'outside.txt'), inside = join(f.cwd, 'inside.txt');
+  const f = await fixture(t, RUN_MS, 20), outside = join(f.root, 'outside.txt'), inside = join(f.cwd, 'inside.txt');
   await writeFile(outside, 'FICTIONAL_OUTSIDE'); await writeFile(inside, 'FICTIONAL_INSIDE');
   for (const code of ["require('child_process')", "require('fs')", "require('worker_threads')"]) assert.equal((await f.run(code)).isError, true);
   // Indirect global access must obey the same OS/Node boundary as direct access.
@@ -90,7 +92,7 @@ test('calculate exposes no lexical require; permission model denies indirect nat
 });
 
 test('calculate same-realm globals and CommonJS entry cannot bypass permissions', async t => {
-  const f = await fixture(t, 3000, 12);
+  const f = await fixture(t, RUN_MS, 12);
   const globals = await f.run('console.log(typeof process, globalThis.process === process, typeof require, typeof module); console.log(process.env.OPENAI_API_KEY, process.env.NODE_OPTIONS)');
   assert.equal(globals.isError, undefined, JSON.stringify(globals));
   assert.equal(globals.details.stdout, 'object true undefined undefined\nundefined undefined\n');
@@ -144,7 +146,7 @@ test('calculate environment is an allowlist, not a credential-name filter', asyn
 });
 
 test('calculate Seatbelt denies SQLite task/material/snapshot/home reads and database creation', { skip: !existsSync('/usr/bin/sandbox-exec') ? 'sandbox-exec unavailable; SQLite denial requires the real Seatbelt path.' : false }, async t => {
-  const f = await fixture(t, 3000, 12), material = join(f.root, 'materials'), snapshot = join(f.root, 'data', 'scratch', 'memory-snapshots', 'job'), home = join(f.root, 'home');
+  const f = await fixture(t, RUN_MS, 12), material = join(f.root, 'materials'), snapshot = join(f.root, 'data', 'scratch', 'memory-snapshots', 'job'), home = join(f.root, 'home');
   for (const dir of [material, snapshot, home]) await mkdir(dir, { recursive: true });
   process.env[READ_SCOPE_ENV] = JSON.stringify(readRoots([f.cwd, material, snapshot, home]));
   for (const folder of [f.cwd, material, snapshot, home, f.root]) {
@@ -188,30 +190,64 @@ test('calculate returns labelled capped stderr on success, including stderr-only
 });
 
 test('calculate has a bounded heap and stops external memory growth before its time limit', async t => {
-  const f = await fixture(t, 15000);
+  const f = await fixture(t);
   const heap = await f.run("console.log(process.getBuiltinModule('node:v8').getHeapStatistics().heap_size_limit)");
   assert.equal(heap.isError, undefined, JSON.stringify(heap));
   assert.ok(Number(heap.details.stdout) <= 320 * 1024 * 1024, heap.details.stdout);
+  assert.equal(heap.details.oldSpaceLimitMb, 256);
+  assert.equal(heap.details.physicalFootprintLimitMb, 512);
+  const external = [
+    // Explicitly dirty pages before zeroing them: untouched demand-zero pages need not count as footprint.
+    'Buffer.alloc(8*1024*1024,1).fill(0)',
+    "process.getBuiltinModule('node:crypto').randomFillSync(Buffer.alloc(8*1024*1024))",
+    'new Uint8Array(new ArrayBuffer(8*1024*1024)).fill(1).fill(0)',
+    "process.getBuiltinModule('node:crypto').randomFillSync(new Uint8Array(new ArrayBuffer(8*1024*1024)))",
+  ];
   for (const code of [
     "const kept=[]; for(let i=0;i<48;i++) kept.push(new Array(1000000).fill(i)); console.log('allocation ceiling reached')",
-    // Touch bounded external chunks slowly instead of risking unbounded allocation even on a regressed runner.
-    "const kept=[]; const timer=setInterval(()=>{kept.push(Buffer.alloc(8*1024*1024,1)); if(kept.length===72){clearInterval(timer);console.log('allocation ceiling reached');}},25)",
-    "const kept=[]; const timer=setInterval(()=>{kept.push(new Uint8Array(new ArrayBuffer(8*1024*1024)).fill(1)); if(kept.length===72){clearInterval(timer);console.log('allocation ceiling reached');}},25)",
+    // Bound even a regressed runner, but leave >2x the limit and several seconds for slow samples.
+    ...external.map(allocation => `const kept=[]; const timer=setInterval(()=>{kept.push(${allocation}); if(kept.length===160){clearInterval(timer);console.log('allocation ceiling reached');}},25)`),
   ]) {
     const started = performance.now(), result = await f.run(code);
     assert.equal(result.isError, true, JSON.stringify(result));
     assert.match(result.content[0].text, /memory limit exceeded/i);
     assert.equal(result.details.timedOut, false);
     assert.equal(result.details.memoryExceeded, true);
+    assert.doesNotMatch(result.details.stdout, /allocation ceiling reached/);
     assert.ok(performance.now() - started < 10000);
     assert.deepEqual(await readdir(join(f.root, 'processes')), []);
+  }
+});
+
+test('calculate monitors physical footprint and fails closed when the probe fails', async t => {
+  const f = await fixture(t), execFile = childProcess.execFile;
+  for (const probe of ['excess', 'malformed', 'failed']) {
+    let samples = 0;
+    const mocked = t.mock.method(childProcess, 'execFile', (command: string, args: string[], options: any, callback: any) => {
+      if (command !== '/usr/bin/top') return execFile(command, args, options, callback);
+      assert.deepEqual(args.slice(0, -1), ['-l', '1', '-F', '-R', '-stats', 'pid,mem', '-pid']);
+      samples++;
+      // A live process can be omitted during the initial exec transition; the next sample must still enforce the limit.
+      const output = probe === 'excess' ? samples === 1 ? 'Processes: 1 total\n' : `PID MEM\n${args.at(-1)} 513M\n` : 'PID MEM\n';
+      return execFile(probe === 'failed' ? '/usr/bin/false' : '/usr/bin/printf', probe === 'failed' ? [] : ['%s', output], options, callback);
+    });
+    syncBuiltinESMExports();
+    try {
+      const result = await f.run('while (true) {}');
+      assert.equal(result.isError, true, JSON.stringify(result));
+      assert.equal(result.details.timedOut, false);
+      assert.equal(result.details.memoryExceeded, probe === 'excess');
+      assert.equal(samples, probe === 'excess' ? 2 : 1);
+      assert.match(result.details.status, probe === 'excess' ? /memory limit exceeded \(512 MB physical footprint\)/ : /could not monitor calculation memory/);
+      assert.deepEqual(await readdir(join(f.root, 'processes')), []);
+    } finally { mocked.mock.restore(); syncBuiltinESMExports(); }
   }
 });
 
 let mathAvailable = false;
 try { createRequire(import.meta.url).resolve('mathjs'); mathAvailable = true; } catch { /* installed by release owner later */ }
 test('calculate accepts mathjs options/config and scope objects in the snippet realm', { skip: mathAvailable ? false : 'mathjs is not installed; real options/config regression requires the pinned dependency.' }, async t => {
-  const f = await fixture(t, 3000);
+  const f = await fixture(t);
   for (const [code, output] of [
     ["console.log(math.unit(42, 'km').to('mile').format({ precision: 5 }))", '26.098 mile\n'],
     ["const m = math.create(math.all, { number: 'BigNumber', precision: 64 }); console.log(m.evaluate('0.1 + 0.2').toString())", '0.3\n'],
@@ -227,7 +263,7 @@ test('calculate accepts mathjs options/config and scope objects in the snippet r
 });
 
 test('calculation memory limits comfortably allow small mathjs matrix work', { skip: mathAvailable ? false : 'mathjs is not installed; matrix work requires the pinned dependency.' }, async t => {
-  const f = await fixture(t, 3000);
+  const f = await fixture(t);
   const result = await f.run('const a=math.ones(128,128); const product=math.multiply(a,a); console.log(product.get([0,0]), product.size().join("x"))');
   assert.equal(result.isError, undefined, JSON.stringify(result));
   assert.equal(result.details.stdout, '128 128x128\n');

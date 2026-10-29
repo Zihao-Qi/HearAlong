@@ -14,9 +14,14 @@ if (mode === 'gate') {
   process.chdir(directory);
   const extensionPath = '../../pi-extensions/calculate.ts';
   const { default: extension } = await import(extensionPath);
-  let tool: any;
-  extension({ registerTool: (definition: any) => { tool = definition; } } as any);
-  const success = await tool.execute('success', { code: 'console.log(42)' });
-  const timeout = await tool.execute('timeout', { code: 'while (true) {}' });
+  const getTool = () => {
+    let tool: any;
+    extension({ registerTool: (definition: any) => { tool = definition; } } as any);
+    return tool;
+  };
+  const success = await getTool().execute('success', { code: 'console.log(42)' });
+  // The success path needs time to start Node and mathjs on a busy host; only this run tests the time limit.
+  process.env.CALCULATE_MS = '300';
+  const timeout = await getTool().execute('timeout', { code: 'while (true) {}' });
   await writeFile(out, JSON.stringify({ success, timeout }));
 }

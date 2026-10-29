@@ -43,8 +43,8 @@ test('Pi 7: calculation finishes successfully and an over-limit run times out', 
   try {
     const home = join(directory, 'home');
     const out = join(directory, 'result.json');
-    child = spawn(process.execPath, ['--experimental-strip-types', worker, 'calc', directory, out], { detached: true, env: { ...process.env, HOME: home, CALCULATE_MS: '1500', MEETING_PROCESS_DIR: join(directory, 'processes') }, stdio: 'ignore' });
-    const deadline = setTimeout(() => { if (child?.pid) signalGroup(child.pid, 'SIGKILL'); }, 15_000);
+    child = spawn(process.execPath, ['--experimental-strip-types', worker, 'calc', directory, out], { detached: true, env: { ...process.env, HOME: home, CALCULATE_MS: '20000', MEETING_PROCESS_DIR: join(directory, 'processes') }, stdio: 'ignore' });
+    const deadline = setTimeout(() => { if (child?.pid) signalGroup(child.pid, 'SIGKILL'); }, 30_000);
     try { await stopped(child); } finally { clearTimeout(deadline); }
     assert.equal(child.exitCode, 0);
     const { success, timeout } = JSON.parse(await readFile(out, 'utf8'));
