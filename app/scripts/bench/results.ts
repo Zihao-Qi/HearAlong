@@ -7,7 +7,14 @@ export type MachineInfo = {
   macos: string;
   chip: string;
   ramBytes: number;
+  // Optional only for legacy files. New runners always write these.
+  logicalCores?: number;
+  dirty?: boolean;
+  nodeVersion?: string;
+  modelIdentity?: ModelIdentity;
 };
+
+export type ModelIdentity = { basename: string; sha256: string; bytes: number };
 
 export type CountSummary = {
   mean: number;
@@ -29,6 +36,7 @@ export type WerSession = {
   referenceWords: number;
   wer: number;
   failedChunks: number;
+  unfinishedChunks?: number;
 };
 
 export type WerFile = MachineInfo & {
@@ -37,6 +45,8 @@ export type WerFile = MachineInfo & {
   runLabel: string | null;
   model: string;
   error: string | null;
+  /** Requested condition, not just the sessions reached before a failure. */
+  condition?: { sessions: string[]; mics: string[] };
   sessions: WerSession[];
   totals: {
     substitutions: number;
@@ -58,6 +68,8 @@ export type LiveFile = MachineInfo & {
   error: string | null;
   /** Set when a headline median is more than 250 ms below its diagnostic. The run still finishes. Missing on older files means none. */
   warning: string | null;
+  failedChunks?: number;
+  unfinishedChunks?: number;
   meetingId: string;
   mic: string;
   fromSec: number;
@@ -100,15 +112,27 @@ export function resultPath(directory: string, prefix: 'wer' | 'live', date = new
 
 export function parseResult(value: unknown): BenchResult {
   const row = record(value, 'result');
-  if (row.kind === 'wer') return parseWer(row);
-  if (row.kind === 'live') return parseLive(row);
+  if (row.kind === 'wer') return validateCompletion(parseWer(row));
+  if (row.kind === 'live') return validateCompletion(parseLive(row));
   throw new Error('Invalid benchmark result: kind must be "wer" or "live".');
+}
+
+export function chunkCompletionError(failed: number, unfinished: number): string | null {
+  return failed || unfinished ? `${failed} failed chunks; ${unfinished} unfinished chunks.` : null;
+}
+
+/** Also applied by the report to programmatically supplied runs, not only parsed JSON. */
+export function validateCompletion<T extends BenchResult>(run: T): T {
+  const failed = run.kind === 'wer' ? run.sessions.reduce((n, s) => n + s.failedChunks, 0) : run.failedChunks ?? 0;
+  const unfinished = run.kind === 'wer' ? run.sessions.reduce((n, s) => n + (s.unfinishedChunks ?? 0), 0) : run.unfinishedChunks ?? 0;
+  const error = run.error || chunkCompletionError(failed, unfinished) || (run.kind === 'live' && run.final.n === 0 ? 'No final samples were observed.' : null);
+  return { ...run, error };
 }
 
 function parseWer(row: Record<string, unknown>): WerFile {
   const totals = record(row.totals, 'totals');
   const sessions = Array.isArray(row.sessions) ? row.sessions.map((item, index) => parseSession(item, index)) : bad('sessions must be an array');
-  return { ...machine(row), kind: 'wer', createdAt: needString(row.createdAt, 'createdAt'), runLabel: label(row.runLabel), model: needString(row.model, 'model'), error: errorOf(row.error), sessions, totals: {
+  return { ...machine(row), kind: 'wer', createdAt: needString(row.createdAt, 'createdAt'), runLabel: label(row.runLabel), model: needString(row.model, 'model'), error: errorOf(row.error), condition: condition(row.condition), sessions, totals: {
     substitutions: needCount(totals.substitutions, 'totals.substitutions'),
     deletions: needCount(totals.deletions, 'totals.deletions'),
     insertions: needCount(totals.insertions, 'totals.insertions'),
@@ -134,6 +158,7 @@ function parseSession(value: unknown, index: number): WerSession {
     referenceWords: needCount(row.referenceWords, `sessions[${index}].referenceWords`),
     wer: needRatio(row.wer, `sessions[${index}].wer`),
     failedChunks: needCount(row.failedChunks, `sessions[${index}].failedChunks`),
+    unfinishedChunks: optionalCount(row.unfinishedChunks, `sessions[${index}].unfinishedChunks`),
   };
 }
 
@@ -145,6 +170,7 @@ function parseLive(row: Record<string, unknown>): LiveFile {
   const diagnostic = record(row.diagnostic, 'diagnostic');
   return {
     ...machine(row), kind: 'live', createdAt: needString(row.createdAt, 'createdAt'), runLabel: label(row.runLabel), model: needString(row.model, 'model'), error: errorOf(row.error), warning: warningOf(row.warning),
+    failedChunks: optionalCount(row.failedChunks, 'failedChunks'), unfinishedChunks: optionalCount(row.unfinishedChunks, 'unfinishedChunks'),
     meetingId: needString(row.meetingId, 'meetingId'), mic: needString(row.mic, 'mic'),
     fromSec: needNumber(row.fromSec, 'fromSec'), minutes: needNumber(row.minutes, 'minutes'), audioSeconds: needNumber(row.audioSeconds, 'audioSeconds'),
     clockOffsetMs: offset(row.clockOffsetMs),
@@ -163,7 +189,33 @@ function parseLive(row: Record<string, unknown>): LiveFile {
 }
 
 function machine(row: Record<string, unknown>): MachineInfo {
-  return { commit: needString(row.commit, 'commit'), macos: needString(row.macos, 'macos'), chip: needString(row.chip, 'chip'), ramBytes: needNumber(row.ramBytes, 'ramBytes') };
+  if (row.dirty !== undefined && typeof row.dirty !== 'boolean') bad('dirty must be a boolean');
+  let modelIdentity: ModelIdentity | undefined;
+  if (row.modelIdentity !== undefined) {
+    const model = record(row.modelIdentity, 'modelIdentity');
+    const sha256 = needString(model.sha256, 'modelIdentity.sha256');
+    if (!/^[a-f0-9]{64}$/.test(sha256)) bad('modelIdentity.sha256 must be a SHA-256 hex digest');
+    modelIdentity = { basename: needString(model.basename, 'modelIdentity.basename'), sha256, bytes: needCount(model.bytes, 'modelIdentity.bytes') };
+  }
+  return {
+    commit: needString(row.commit, 'commit'), macos: needString(row.macos, 'macos'), chip: needString(row.chip, 'chip'), ramBytes: needNumber(row.ramBytes, 'ramBytes'),
+    logicalCores: optionalCount(row.logicalCores, 'logicalCores'), dirty: row.dirty as boolean | undefined,
+    nodeVersion: row.nodeVersion === undefined ? undefined : needString(row.nodeVersion, 'nodeVersion'), modelIdentity,
+  };
+}
+
+function optionalCount(value: unknown, label: string): number | undefined {
+  return value === undefined ? undefined : needCount(value, label);
+}
+
+function condition(value: unknown): WerFile['condition'] {
+  if (value === undefined) return undefined;
+  const row = record(value, 'condition');
+  const strings = (value: unknown, label: string): string[] => {
+    if (!Array.isArray(value) || !value.length) bad(`${label} must be a nonempty array`);
+    return value.map(item => needString(item, label));
+  };
+  return { sessions: strings(row.sessions, 'condition.sessions'), mics: strings(row.mics, 'condition.mics') };
 }
 
 function summary(value: unknown, label: string): CountSummary {

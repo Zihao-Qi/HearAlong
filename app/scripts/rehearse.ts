@@ -13,7 +13,7 @@ const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The optional observer drives lifecycle/UI checks; the command itself always uses the real UI unmodified. */
-export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>) {
+export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>, benchmark?: { modelPath: string; terminalTimeoutMs: number }) {
   const args = parseArgs(argv);
   // All input validation precedes starting a server or Chrome (or creating a run).
   const mic = args.mic ? await loadWav(resolve(args.mic), args.from, args.minutes) : undefined;
@@ -31,7 +31,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
   } else {
     // A new run starts after onboarding, with the speech model the app itself would find (MEETING_MODEL_PATH or Pi voice settings).
     const { discoverModel } = await import('../src/config.ts');
-    const speech = await discoverModel();
+    const speech = await discoverModel(benchmark?.modelPath);
     if (!speech.available || !speech.path) throw new Error(speech.error ?? 'No speech model is available.');
     speechModelPath = speech.path;
     await mkdir(RUNS, { recursive: true, mode: 0o700 });
@@ -168,7 +168,12 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     if (mic && page.isClosed()) for (const source of app.store.openRecordings()) await app.capture.end(source.meetingId, source.source, null);
     // Stop seals the tail; let local finals settle before shutting down their worker. No cloud work is awaited.
     // A signal can interrupt this wait too (the recognizer has its own bounded shutdown).
-    if (!cancelled) await Promise.race([app.jobs?.wait(), new Promise<void>(resolve => { releaseSettlement = resolve; })]);
+    if (!cancelled) {
+      const settlement = benchmark
+        ? app.jobs?.waitUntilTerminal(Date.now() + benchmark.terminalTimeoutMs).catch(error => { errors.push(error instanceof Error ? error.message : String(error)); })
+        : app.jobs?.wait();
+      await Promise.race([settlement, new Promise<void>(resolve => { releaseSettlement = resolve; })]);
+    }
   } catch (error) {
     if (!cancelled && !page?.isClosed()) throw error;
     reason = cancelled ? 'interrupted' : 'window closed';
@@ -183,6 +188,8 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
           from: args.from, seconds: mic.seconds, url: app.url, pid: process.pid, temporary,
           reason, startedAt, stoppedAt, meetingId, finalsWhileRecording, visibleFinalsWhileRecording,
           finals: meetingId ? app.store.segments(meetingId).length : 0,
+          failedChunks: meetingId ? app.store.chunks(meetingId).filter(chunk => chunk.status === 'failed' || chunk.status === 'cancelled').length : 0,
+          unfinishedChunks: meetingId ? app.store.chunks(meetingId).filter(chunk => chunk.status === 'queued' || chunk.status === 'running').length : 0,
           frames, ends, errors,
         }, null, 2));
       }

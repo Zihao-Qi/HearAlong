@@ -58,6 +58,19 @@ export class JobManager {
     }
   }
   async wait() { await this.drained; }
+  /** Wait for all chunks, including future retries. Call after sealing input; terminal failures/cancellations still need inspection.
+   * Unlike wait(), this keeps the process alive and bounds even an unavailable or hung recognizer. Deadline is wall-clock ms.
+   */
+  async waitUntilTerminal(deadline: number): Promise<void> {
+    if (!Number.isFinite(deadline)) throw new Error('A finite settlement deadline is required.');
+    while (true) {
+      if (this.stopped) throw new Error('Transcription queue closed before settlement.');
+      if (this.store.queuedCount() === 0) return;
+      if (this.clock() >= deadline) throw new Error('Transcription settlement deadline exceeded.');
+      this.kick();
+      await new Promise<void>(resolve => { this.setTimer(resolve, Math.min(100, deadline - this.clock())); });
+    }
+  }
   async close() {
     this.stopped = true;
     if (this.retryTimer) { this.clearTimer(this.retryTimer); this.retryTimer = undefined; }

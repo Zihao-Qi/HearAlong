@@ -15,6 +15,8 @@ export type FileTranscript = {
   /** Final segment text, in time order, joined by spaces. */
   text: string;
   modelPath: string;
+  /** Benchmark-only settlement outcome; not part of the CLI's printed/written summary. */
+  settlementError?: string;
   summary: {
     media: string; durationSeconds: number; chunkCount: number;
     failed: { sequence: number; status: string; error: string | null }[];
@@ -26,10 +28,10 @@ export type FileTranscript = {
 };
 
 /** Transcribe `media` into `directory` (created). Same queue and recognizer as the command-line tool. */
-export async function transcribeMedia(mediaPath: string, directory: string): Promise<FileTranscript> {
+export async function transcribeMedia(mediaPath: string, directory: string, options: { modelPath?: string; terminalTimeoutMs?: number } = {}): Promise<FileTranscript> {
   const media = resolve(mediaPath);
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  const config = await discoverModel();
+  const config = await discoverModel(options.modelPath);
   if (!config.available || !config.path) throw new Error(config.error ?? 'Model unavailable.');
   const store = new MeetingStore(directory);
   const recognizer = new LocalRecognizer(config.path);
@@ -47,7 +49,11 @@ export async function transcribeMedia(mediaPath: string, directory: string): Pro
       console.log(`${done}/${total} chunks · ${((performance.now() - started) / 1000).toFixed(0)}s elapsed`);
     }, 30_000);
     jobs.kick();
-    await jobs.wait();
+    let settlementError: string | undefined;
+    if (options.terminalTimeoutMs !== undefined) {
+      try { await jobs.waitUntilTerminal(Date.now() + options.terminalTimeoutMs); }
+      catch (error) { settlementError = error instanceof Error ? error.message : String(error); }
+    } else await jobs.wait(); // Preserve the command-line tool's existing behavior and output.
     clearInterval(progress);
 
     const chunks = store.chunks(meeting.id);
@@ -72,7 +78,7 @@ export async function transcribeMedia(mediaPath: string, directory: string): Pro
       summary, chunks: chunks.map(c => ({ sequence: c.sequence, startMs: c.startMs, seconds: c.seconds, status: c.status, text: c.text })), words,
     }, null, 2));
     console.log(JSON.stringify(summary, null, 2));
-    return { directory, meetingId: meeting.id, text, modelPath: config.path, summary };
+    return { directory, meetingId: meeting.id, text, modelPath: config.path, summary, ...(settlementError ? { settlementError } : {}) };
   } finally {
     if (progress) clearInterval(progress);
     try { await jobs.close(); }

@@ -374,16 +374,16 @@ test('report generation replaces the marker section, keeps the outside, and is i
     assert.match(twice, /99\.0/);
     assert.match(twice, /Fictional Chip/);
     assert.match(twice, /2026-01-0[123]T03:04:05\.000Z/);
-    assert.match(twice, /Median WER across 3 runs: 50\.00% \(min 25\.00%, max 75\.00%\)\./);
+    assert.match(twice, /Median custom-normalized WER across 3 eligible runs: 50\.00% \(min 25\.00%, max 75\.00%\)\./);
     assert.match(twice, /Spoken to visible\./);
-    assert.match(twice, /Median preview p50 across 3 runs: 2\.00 s \(min 1\.00 s, max 3\.00 s\)\./);
-    assert.match(twice, /Median final p50 across 3 runs: 4\.00 s \(min 3\.00 s, max 5\.00 s\)\./);
+    assert.match(twice, /Median preview p50 across 3 eligible runs: 2\.00 s \(min 1\.00 s, max 3\.00 s\)\./);
+    assert.match(twice, /Median final p50 across 3 eligible runs: 4\.00 s \(min 3\.00 s, max 5\.00 s\)\./);
     const headline = twice.indexOf('Spoken to visible.');
     const diagnostic = twice.indexOf('reached server to available on server');
     assert.ok(headline >= 0 && diagnostic > headline);
-    assert.match(twice, /Clock offset \(page minus Node\), recorded and not used in the lag: 1\.0 ms, 2\.0 ms, 3\.0 ms\./);
-    assert.match(twice, /Median diagnostic preview p50 across 3 runs: 0\.50 s \(min 0\.40 s, max 0\.60 s\)\./);
-    assert.match(twice, /Median diagnostic final p50 across 3 runs: 0\.80 s \(min 0\.70 s, max 0\.90 s\)\./);
+    assert.match(twice, /Clock offset \(page minus Node\), recorded and not used in the lag: 3\.0 ms, 2\.0 ms, 1\.0 ms\./);
+    assert.match(twice, /Median diagnostic preview p50 across 3 eligible runs: 0\.50 s \(min 0\.40 s, max 0\.60 s\)\./);
+    assert.match(twice, /Median diagnostic final p50 across 3 eligible runs: 0\.80 s \(min 0\.70 s, max 0\.90 s\)\./);
     assert.equal(twice.includes('lag warning'), false);
     assert.match(twice, /each saved segment/);
     const warned: LiveFile = {
@@ -401,7 +401,7 @@ test('report generation replaces the marker section, keeps the outside, and is i
     delete dropped.warning;
     const parsed = parseResult(dropped);
     assert.equal(parsed.kind === 'live' && parsed.warning, null);
-    assert.match(twice, /Median server CPU mean across 3 runs: 10\.0% \(min 5\.0%, max 15\.0%\)\./);
+    assert.match(twice, /Median server CPU mean across 3 eligible runs: 10\.0% \(min 5\.0%, max 15\.0%\)\./);
     assert.match(twice, /XX0000a/);
     assert.throws(() => parseResult({ kind: 'wer' }), /Invalid benchmark result/);
     writeFileSync(join(directory, 'broken.json'), '{');
@@ -411,7 +411,8 @@ test('report generation replaces the marker section, keeps the outside, and is i
   }
 });
 
-const machine = { commit: 'abcdef1234567890', macos: '99.0', chip: 'Fictional Chip', ramBytes: 16 * 2 ** 30 };
+const machine = { commit: 'abcdef1234567890', macos: '99.0', chip: 'Fictional Chip', ramBytes: 16 * 2 ** 30,
+  logicalCores: 8, dirty: false, nodeVersion: 'v22.0.0', modelIdentity: { basename: 'fiction.gguf', sha256: 'a'.repeat(64), bytes: 123 } };
 const point = (value: number) => ({ mean: value, p50: value, p95: value, max: value, n: 4 });
 
 function writeWer(directory: string, index: number): string {
@@ -422,7 +423,7 @@ function writeWer(directory: string, index: number): string {
   };
   const result: WerFile = {
     ...machine, kind: 'wer', createdAt: `2026-01-0${index + 1}T03:04:05.000Z`, runLabel: 'pilot', model: 'fiction.gguf', error: null,
-    sessions: [session],
+    condition: { sessions: ['XX0000a'], mics: ['Mix-Headset'] }, sessions: [session],
     totals: { substitutions: session.substitutions, deletions: 0, insertions: 0, hits: 4, referenceWords: 4, wer: werRate, audioSeconds: 60, wallSeconds: 20 },
   };
   const path = join(directory, `wer-${index}.json`);

@@ -10,12 +10,13 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Page } from 'playwright-core';
 import { runRehearsal } from '../rehearse.ts';
+import { discoverModel } from '../../src/config.ts';
 import { LagMeter } from '../lag-meter.ts';
 import { benchPaths, reference, referenceText } from './ami.ts';
 import { parseLiveArgs } from './cli.ts';
-import { machineInfo } from './machine.ts';
+import { machineInfo, modelIdentity } from './machine.ts';
 import { readPs, serverUsage, speechWorkerUsage } from './ps.ts';
-import { resultPath, type CountSummary, type LiveFile } from './results.ts';
+import { chunkCompletionError, resultPath, type CountSummary, type LiveFile } from './results.ts';
 import { applySnapshot, domSight, frameEndMs, headlineLagWarning, mergeSights, rememberSegmentEnds, spokenFrame, visibleLags, type DomSight, type SpokenFrame } from './snapshot.ts';
 import { summarize } from './stats.ts';
 import { wer } from './wer.ts';
@@ -111,7 +112,10 @@ async function main(): Promise<void> {
   const paths = benchPaths();
   const wav = paths.wav(args.session, args.mic);
   if (!existsSync(wav)) throw new Error(`Missing audio: ${wav}. Run npm run bench:fetch first.`);
-  const machine = machineInfo();
+  const machine = machineInfo(args.allowDirty);
+  const config = await discoverModel();
+  if (!config.available || !config.path) throw new Error(config.error ?? 'Model unavailable.');
+  const identity = await modelIdentity(config.path);
   const started = new Date();
   const meter = new LagMeter();
   const serverPreview: number[] = [];
@@ -124,7 +128,6 @@ async function main(): Promise<void> {
   let pcmUploads = 0;
   let clockOffsetMs: number | null = null;
   const fallback = { source: undefined as string | undefined };
-  let model = '';
   let idle = Promise.resolve();
   let sightsIdle = Promise.resolve();
   let stop = () => {};
@@ -171,16 +174,13 @@ async function main(): Promise<void> {
           const body = await page.evaluate(async () => {
             const statusResponse = await fetch('/api/status');
             if (!statusResponse.ok) return null;
-            const status = await statusResponse.json() as { meetings?: { id: string; title: string }[]; config?: { path?: string | null; name?: string | null } };
+            const status = await statusResponse.json() as { meetings?: { id: string; title: string }[] };
             const meeting = status.meetings?.find(item => item.title.startsWith('Rehearsal:')) ?? status.meetings?.[0];
-            const path = status.config?.path ?? '';
-            const name = status.config?.name || path.split(/[/\\]/).pop() || '';
-            if (!meeting) return { model: name, segments: null as unknown };
+            if (!meeting) return { segments: null as unknown };
             const segmentsResponse = await fetch(`/api/meetings/${meeting.id}/segments`);
-            return { model: name, meetingId: meeting.id, segments: segmentsResponse.ok ? await segmentsResponse.json() : null };
+            return { meetingId: meeting.id, segments: segmentsResponse.ok ? await segmentsResponse.json() : null };
           });
           if (!body) return;
-          if (body.model) model = body.model;
           if (!body.segments) return;
           rememberSegmentEnds(body.segments, segmentEnds);
           const sample = applySnapshot(meter, body.segments, Date.now(), fallback.source);
@@ -205,7 +205,7 @@ async function main(): Promise<void> {
       if (first) resources.push(first);
       tick();
       takeSights();
-    }, attach);
+    }, attach, { modelPath: config.path, terminalTimeoutMs: 30 * 60_000 });
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);
   } finally {
@@ -220,17 +220,23 @@ async function main(): Promise<void> {
   let fromSec = args.fromSec;
   let audioSeconds = args.minutes * 60;
   let transcript = '';
+  let failedChunks = 0;
+  let unfinishedChunks = 0;
   let scored = wer('', '');
   if (directory) {
     try {
       const report = JSON.parse(await readFile(join(directory, 'rehearsal.json'), 'utf8')) as {
         url?: string; from?: number; seconds?: number; meetingId?: string; reason?: string; errors?: string[];
+        failedChunks?: number; unfinishedChunks?: number;
       };
       if (report.url && new URL(report.url).port === '4318') failure = 'The live run bound port 4318. It must use an ephemeral port.';
       if (typeof report.from === 'number') fromSec = report.from;
       if (typeof report.seconds === 'number') audioSeconds = report.seconds;
       if (report.reason && report.reason !== 'audio ended') failure ??= `Rehearsal ended: ${report.reason}.`;
       if (report.errors?.length) failure ??= report.errors.join('; ');
+      failedChunks = report.failedChunks ?? 0;
+      unfinishedChunks = report.unfinishedChunks ?? 0;
+      failure ??= chunkCompletionError(failedChunks, unfinishedChunks);
       if (report.meetingId) {
         transcript = finalText(directory, report.meetingId);
         const words = reference(args.session, { fromSec, toSec: fromSec + audioSeconds, root: paths.root });
@@ -244,6 +250,7 @@ async function main(): Promise<void> {
   if ((serverPreview.length || serverFinal.length) && sights.length === 0) failure ??= 'Server snapshots had text, but the transcript DOM recorded no preview or final line.';
   const preview = counts(headline.preview);
   const final = counts(headline.final);
+  if (final.n === 0) failure ??= 'No final samples were observed.';
   const diagnostic = { preview: counts(serverPreview), final: counts(serverFinal) };
   const warning = (['preview', 'final'] as const).flatMap(kind => {
     const text = headlineLagWarning(kind, kind === 'preview' ? preview : final, diagnostic[kind]);
@@ -251,7 +258,8 @@ async function main(): Promise<void> {
   }).join(' ') || null;
   if (warning) console.warn(warning);
   const result: LiveFile = {
-    ...machine, kind: 'live', createdAt: started.toISOString(), runLabel: args.label, model: model || 'unavailable', error: failure, warning,
+    ...machine, kind: 'live', createdAt: started.toISOString(), runLabel: args.label, model: identity.basename, modelIdentity: identity, error: failure, warning,
+    failedChunks, unfinishedChunks,
     meetingId: args.session, mic: args.mic, fromSec, minutes: args.minutes, audioSeconds, clockOffsetMs,
     preview, final, diagnostic,
     wer: {

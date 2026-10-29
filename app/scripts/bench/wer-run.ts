@@ -2,23 +2,26 @@
 // Usage: npm run bench:wer -- [--sessions ES2004a,ES2004b] [--mic Mix-Headset] [--run-label text]
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transcribeMedia } from '../transcribe-file.ts';
+import { discoverModel } from '../../src/config.ts';
 import { benchPaths, reference, referenceText } from './ami.ts';
 import { parseWerArgs } from './cli.ts';
-import { machineInfo } from './machine.ts';
-import { fileStamp, resultPath, type WerFile, type WerSession } from './results.ts';
+import { machineInfo, modelIdentity } from './machine.ts';
+import { chunkCompletionError, fileStamp, resultPath, type WerFile, type WerSession } from './results.ts';
 import { corpusWer, wer } from './wer.ts';
 
 async function main(): Promise<void> {
   const args = parseWerArgs(process.argv.slice(2));
   const paths = benchPaths();
-  const machine = machineInfo();
+  const machine = machineInfo(args.allowDirty);
+  const config = await discoverModel();
+  if (!config.available || !config.path) throw new Error(config.error ?? 'Model unavailable.');
+  const identity = await modelIdentity(config.path);
   const started = new Date();
   const sessions: WerSession[] = [];
   const pairs: { reference: string; hypothesis: string }[] = [];
-  let model = '';
   let error: string | null = null;
   for (const meetingId of args.sessions) {
     for (const mic of args.mics) {
@@ -29,16 +32,19 @@ async function main(): Promise<void> {
       }
       try {
         const work = join(paths.work, 'wer', fileStamp(started), meetingId, mic);
-        const transcript = await transcribeMedia(wav, work);
+        const transcript = await transcribeMedia(wav, work, { modelPath: config.path, terminalTimeoutMs: 30 * 60_000 });
         const spoken = referenceText(reference(meetingId, { root: paths.root }));
         const scored = wer(spoken, transcript.text);
-        model ||= basename(transcript.modelPath);
+        const unfinishedChunks = transcript.summary.failed.filter(chunk => chunk.status === 'queued' || chunk.status === 'running').length;
+        const failedChunks = transcript.summary.failed.length - unfinishedChunks;
+        error = transcript.settlementError || chunkCompletionError(failedChunks, unfinishedChunks);
         pairs.push({ reference: spoken, hypothesis: transcript.text });
         sessions.push({
           meetingId, mic, audioSeconds: transcript.summary.durationSeconds, wallSeconds: transcript.summary.wallSeconds,
           substitutions: scored.substitutions, deletions: scored.deletions, insertions: scored.insertions, hits: scored.hits,
-          referenceWords: scored.referenceWords, wer: scored.wer, failedChunks: transcript.summary.failed.length,
+          referenceWords: scored.referenceWords, wer: scored.wer, failedChunks, unfinishedChunks,
         });
+        if (error) break;
       } catch (caught) {
         error = caught instanceof Error ? caught.message : String(caught);
         break;
@@ -48,8 +54,8 @@ async function main(): Promise<void> {
   }
   const scored = corpusWer(pairs);
   const result: WerFile = {
-    ...machine, kind: 'wer', createdAt: started.toISOString(), runLabel: args.label, model: model || 'unavailable', error,
-    sessions,
+    ...machine, kind: 'wer', createdAt: started.toISOString(), runLabel: args.label, model: identity.basename, modelIdentity: identity, error,
+    condition: { sessions: args.sessions, mics: args.mics }, sessions,
     totals: {
       substitutions: scored.substitutions, deletions: scored.deletions, insertions: scored.insertions, hits: scored.hits,
       referenceWords: scored.referenceWords, wer: scored.wer,
