@@ -87,7 +87,7 @@ This removes the code and helper, **not your data**. Delete `~/Library/Applicati
 
 ### Run from source
 
-Requirements: macOS, Google Chrome, Node.js 22.19 or later, and FFmpeg. AI features are optional: use Ollama or LM Studio on this Mac, or explicitly opt in to a cloud provider through Pi. Without them, recording and transcription still work fully on the Mac.
+Requirements: macOS, Google Chrome, and Node.js 22.19 or later. FFmpeg and ffprobe are needed only to import audio/video files, not to record or transcribe HearAlong recordings. AI features are optional: use Ollama or LM Studio on this Mac, or explicitly opt in to a cloud provider through Pi. Without them, recording and transcription still work fully on the Mac.
 
 ```sh
 git clone https://github.com/Zihao-Qi/HearAlong.git

@@ -646,7 +646,7 @@ export async function startServer(options: {
           if (['/', '/setup', '/setup.html', '/mini.html'].includes(url.pathname)) res.setHeader('Set-Cookie', `meeting_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
           if (url.pathname === '/') {
             const speech = speechSetup.status().rows.find(row => row.id === 'speech')!;
-            const neededReady = speech.state === 'ready' && !speechSetup.pending && speechSetup.ffmpeg.found;
+            const neededReady = speech.state === 'ready' && !speechSetup.pending;
             if (!settings.setupSeen || (!neededReady && appStore.meetings().length === 0)) {
               res.writeHead(302, { Location: '/setup', 'Cache-Control': 'no-store' }).end(); return;
             }
@@ -1255,6 +1255,7 @@ export async function startServer(options: {
           send(res, 200, result); return;
         }
         if (req.method === 'POST' && action === 'upload') {
+          if (!speechSetup.ffmpeg.found) throw new HttpError(400, 'Importing audio/video files needs FFmpeg. Open Settings › This Mac › Setup to check FFmpeg. Recording and transcription do not need it.');
           if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
           if (uploading) throw new HttpError(409, 'Another audio file is uploading.');
           importing.add(meetingId);

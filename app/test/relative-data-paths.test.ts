@@ -10,7 +10,7 @@ import { MeetingStore, type Chunk } from '../src/store.ts';
 import { JobManager } from '../src/jobs.ts';
 import { LiveCapture } from '../src/live.ts';
 import type { LiveDrafts } from '../src/drafts.ts';
-import { decodeChunk } from '../src/audio.ts';
+import { decodeChunk, readRecordingChunk } from '../src/audio.ts';
 import { AudioRetention, AUDIO_RETENTION } from '../src/audio-retention.ts';
 import type { Recognition } from '../src/recognizer.ts';
 
@@ -39,7 +39,7 @@ function makeLegacy(store: MeetingStore, directory = store.directory) {
   store.db.exec('PRAGMA user_version=2');
 }
 async function decode(store: MeetingStore, chunk: Chunk) {
-  const samples = await decodeChunk(store.resolvePath(chunk.path), chunk.decodeStart, chunk.seconds, chunk.sampleRate ?? undefined);
+  const samples = await (chunk.sampleRate ? readRecordingChunk : decodeChunk)(store.resolvePath(chunk.path), chunk.decodeStart, chunk.seconds);
   assert.equal(samples.length, Math.round(chunk.seconds * 16000));
   assert.ok(samples.every(sample => Math.abs(sample - 0.25) < 0.0001));
 }

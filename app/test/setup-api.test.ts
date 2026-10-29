@@ -30,7 +30,7 @@ async function waitFor(test: () => Promise<boolean>) { const deadline = Date.now
 test('setup API returns keyed rows and stable status config fields', async t => {
   const f = await fixture(t, {}, async directory => { await model(join(directory, 'models/example.gguf')); });
   const setup = await f.get(); assert.equal(setup.seen, false); assert.equal(setup.restartNeeded, false);
-  assert.deepEqual(setup.rows.map((r: any) => [r.id, r.needed, r.state]), [['speech', true, 'ready'], ['ffmpeg', true, 'found'], ['ai', false, 'signed-out']]);
+  assert.deepEqual(setup.rows.map((r: any) => [r.id, r.needed, r.state]), [['speech', true, 'ready'], ['ffmpeg', false, 'found'], ['ai', false, 'signed-out']]);
   const { config } = await f.get('/api/status');
   assert.equal(config.available, true); assert.equal(config.name, 'Example speech'); assert.equal(config.streaming, true);
   for (const key of ['available', 'path', 'source', 'bytes', 'error']) assert.ok(key in config);

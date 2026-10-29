@@ -269,7 +269,7 @@ export class SpeechSetup {
         source: config.source, path: config.path, streaming: config.streaming, downloadTargetPath: this.download.path,
         ...(this.pending ? { pending: { ...this.pending } } : {}), ...(this.switchError ? { switchError: this.switchError } : {}),
         ...(this.scan.missingPath ? { missingPath: this.scan.missingPath } : {}), download },
-      { id: 'ffmpeg', needed: true, state: this.ffmpeg.found ? 'found' : 'missing', ...(this.ffmpeg.ffmpeg ? { path: this.ffmpeg.ffmpeg } : {}) },
+      { id: 'ffmpeg', needed: false, state: this.ffmpeg.found ? 'found' : 'missing', ...(this.ffmpeg.ffmpeg ? { path: this.ffmpeg.ffmpeg } : {}) },
     ] };
   }
   models() { return { models: this.scan.models.map(model => ({ ...model, inUse: model.files.some(file => file.path === this.runningPath) })), truncated: this.scan.truncated }; }

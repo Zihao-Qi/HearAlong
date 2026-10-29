@@ -84,6 +84,8 @@ sequenceDiagram
 
 ### Windows and transcription
 
+HearAlong records 16 kHz mono float32 PCM and reads its saved samples directly for transcription, live drafts and playback; recording and transcribing recordings do not need FFmpeg. Only importing audio/video files needs FFmpeg/ffprobe, for duration probing and media decoding ([`audio.ts`](../app/src/audio.ts), [`listen-imports.ts`](../app/src/listen-imports.ts)). Missing FFmpeg does not block speech setup or recording readiness.
+
 Saved frames are held until they are grouped into a transcription window. Once 24 seconds are held, [`LiveCapture.sealIfDue`](../app/src/live.ts) cuts at the quietest frame boundary between 16 and 24 seconds ([`chooseCut`](../app/src/live.ts)). A source that ends, or is silent on the network for 10 seconds, is sealed whole.
 
 [`MeetingStore.sealWindow`](../app/src/store.ts) writes and syncs the window's audio, then inserts the chunk row and links the frames to it in one transaction. A crash leaves either held frames, which are sealed again, or a complete window. Frame files are deleted only after the commit; [`removeSealedFrameFiles`](../app/src/store.ts) finishes interrupted cleanup at startup, and only if the window file exists.

@@ -2003,7 +2003,7 @@ function renderStatusDot() {
   const failed = (detail?.chunks ?? []).filter(c => c.status === 'failed').length;
   const speech = setupSnapshot?.rows.find(row => row.id === 'speech');
   const speechReady = speech ? speech.state === 'ready' && !speech.pending : status.config.available;
-  const [kind, word, label] = !speechReady || setupSnapshot?.rows.some(row => row.id === 'ffmpeg' && row.state !== 'found') ? ['error', 'Speech off', 'Speech needs setup on this Mac']
+  const [kind, word, label] = !speechReady ? ['error', 'Speech off', 'Speech needs setup on this Mac']
     : failed ? ['warn', `${failed} failed`, `${failed} piece(s) of audio failed to transcribe`]
     // A queue is normal (each 16–24 s piece passes through it; a replay queues its whole file): only a live backlog is a problem.
     : capture && status.queued > 3 ? ['warn', `${status.queued} waiting`, `Transcription is falling behind: ${status.queued} pieces of audio waiting`]

@@ -8,8 +8,8 @@ const open = document.getElementById('open-app'), error = document.getElementByI
 const showError = e => { error.hidden = !e; error.textContent = e?.message.replace(/'/g, '’') ?? ''; };
 const ui = new SetupUI(document.getElementById('setup-rows'), {
   onStatus(status) {
-    const speech = status.rows.find(r => r.id === 'speech'), ff = status.rows.find(r => r.id === 'ffmpeg');
-    open.disabled = speech.state !== 'ready' || !!speech.pending || ff.state !== 'found';
+    const speech = status.rows.find(r => r.id === 'speech');
+    open.disabled = speech.state !== 'ready' || !!speech.pending;
   },
   onError: showError,
 });

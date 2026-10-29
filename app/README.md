@@ -9,7 +9,7 @@ For the one-command release installer, upgrades and uninstall instructions, see 
 Requirements:
 - Node.js ≥ 22.19.0 and npm.
 - Google Chrome for the app. Browser checks and rehearsals require `MEETING_TEST_CHROME` pointing to a disposable Chromium executable; they never default to the user's browser.
-- FFmpeg and ffprobe on PATH for audio import and recognition.
+- FFmpeg and ffprobe on PATH only to import audio/video files. Recording and transcription of HearAlong recordings do not need them.
 - A compatible speech model for `transcribe-cpp`; the setup page finds installed models or downloads Parakeet.
 - Optional AI: Ollama or LM Studio on this Mac, or explicit consent to cloud models through Pi. A pinned Pi is included and always used for tool-using tasks; metadata/no-tools commands may still use Pi on PATH. Accounts and enabled user extensions retain their existing agent-directory configuration. Calculations run JavaScript on HearAlong's bundled Node with bundled mathjs; nothing is installed or downloaded for them. Web lookup needs Pi's `pi-web-access` package enabled.
 
@@ -24,7 +24,7 @@ The setup page finds or downloads a speech model, checks FFmpeg, and offers opti
 
 Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and origin). Starting the server does not start recording. Use the microphone button only with everyone's consent; Ctrl+C stops the server. The root-level `Start HearAlong.command` starts the same server and opens Chrome; set `MEETING_CLOUD=0` in its environment to force AI Off for that start.
 
-If a speech model or FFmpeg goes missing later, existing meetings remain readable; use Settings › This Mac › Setup to restore speech. Advanced options: `MEETING_MODEL_PATH=/path/to/model.gguf` overrides the saved speech choice; Pi Voice settings are also discovered read-only. The unit tests and `app-check` below need neither speech weights nor a cloud account.
+If a speech model goes missing later, existing meetings remain readable; use Settings › This Mac › Setup to restore speech. Missing FFmpeg only prevents importing audio/video files; recording and transcription still work. Advanced options: `MEETING_MODEL_PATH=/path/to/model.gguf` overrides the saved speech choice; Pi Voice settings are also discovered read-only. The unit tests and `app-check` below need neither speech weights nor a cloud account.
 
 ## Use
 
