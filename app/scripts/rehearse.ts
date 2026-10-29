@@ -13,7 +13,7 @@ const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The optional observer drives lifecycle/UI checks; the command itself always uses the real UI unmodified. */
-export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>) {
+export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>) {
   const args = parseArgs(argv);
   // All input validation precedes starting a server or Chrome (or creating a run).
   const mic = args.mic ? await loadWav(resolve(args.mic), args.from, args.minutes) : undefined;
@@ -21,7 +21,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
   const executable = testBrowser();
   try { await access(executable); }
   catch { throw new Error(`Google Chrome is not installed at ${executable}.`); }
-  let directory: string;
+  let directory: string, speechModelPath: string | undefined;
   if (args.open) {
     directory = await realpath(resolve(args.open)).catch(() => { throw new Error(`Run folder not found: ${args.open}`); });
     // Never let --open turn into an alias for the user's app data. Only this worktree's rehearsal runs are accepted.
@@ -29,6 +29,11 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     if (!(await stat(join(directory, 'meetings.sqlite')).catch(() => null))?.isFile()) throw new Error(`No meeting database in ${directory}.`);
     await validateRunFiles(directory);
   } else {
+    // A new run starts after onboarding, with the speech model the app itself would find (MEETING_MODEL_PATH or Pi voice settings).
+    const { discoverModel } = await import('../src/config.ts');
+    const speech = await discoverModel();
+    if (!speech.available || !speech.path) throw new Error(speech.error ?? 'No speech model is available.');
+    speechModelPath = speech.path;
     await mkdir(RUNS, { recursive: true, mode: 0o700 });
     if (await realpath(RUNS) !== RUNS) throw new Error('The rehearsal runs folder must not be a symlink.');
     const date = new Date();
@@ -40,6 +45,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
       try { await mkdir(directory, { mode: 0o700 }); break; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     }
+    await writeFile(join(directory, 'settings.json'), JSON.stringify({ setupSeen: true, speechModelPath }));
   }
   process.env.MEETING_DATA_DIR = directory;
   process.env.MEETING_CLOUD = args.withModels ? '1' : '0';
@@ -89,6 +95,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     context.on('close', () => finish('window closed'));
     checkpoint();
     page = context.pages()[0] ?? await context.newPage();
+    await prepare?.(page); // Before navigation, so a benchmark can see every upload. A returned promise is waited for. Callers that omit it are unchanged.
     page.on('close', () => finish('window closed'));
     page.on('dialog', dialog => void dialog.accept()); // Closing a recording window must not get stuck on beforeunload.
     page.on('pageerror', error => errors.push(error.message));

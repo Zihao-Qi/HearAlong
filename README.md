@@ -38,6 +38,8 @@ Speech recognition runs entirely on your Mac. You follow the conversation as it 
 
 How these work, with links to the code: [Architecture](docs/architecture.md).
 
+Public accuracy, latency, and resource numbers, and how to rerun them: [Benchmarks](docs/benchmarks.md).
+
 ## Engineering process
 
 HearAlong is my project. I set its direction and requirements, made the product decisions and approved the major engineering ones, and tested it on real meetings and lectures. The code was written by AI agents, working within a process I set up and kept refining: written contracts, independent reviews and explicit acceptance checks.
