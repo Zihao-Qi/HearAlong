@@ -37,7 +37,7 @@ test('Pi 1: changing project clears old rows immediately and rendered mutations 
     noteRecent() {}, focusItem() {}, renderMemoryLists() {},
     post: async (url: string) => { calls.push(url); await pending; return { items: [item] }; }, send: async () => {}, api: async () => ({}),
   };
-  const source = section('const projectBase =', 'async function loadProjects')
+  const source = section('let projectEpoch = 0;', 'async function loadProjects')
     + section('function setProject(project)', 'async function refreshProject')
     + section('function itemActions(item)', '/**\n * Inline form');
   runInNewContext(source + '\nif (typeof bindProjectData === "function") bindProjectData(projectView.data); globalThis.box = itemActions(projectView.data.items[0]); globalThis.switchTo = setProject;', context);
