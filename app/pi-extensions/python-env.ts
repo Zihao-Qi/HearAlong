@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-export const PACKAGES = ['numpy==2.2.6', 'scipy==1.15.3', 'sympy==1.14.0'];
+export const PACKAGES = ['numpy==2.2.6', 'scipy==1.17.1', 'sympy==1.14.0'];
 export const UV_ARGS = ['run', '--no-config', '--no-project', '--quiet', '--python', '3.12', ...PACKAGES.flatMap(p => ['--with', p])];
 
 /** Pin uv's runtime locations for preparation and execution alike; no user uv configuration is loaded. */

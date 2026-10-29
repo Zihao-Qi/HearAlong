@@ -55,7 +55,7 @@ for name, path in ${JSON.stringify({ attached: join(f.materials, 'guide.txt'), s
 print(json.dumps(out))
 ` });
   assert.equal(result.isError, undefined, result.content[0].text);
-  assert.deepEqual(JSON.parse(result.content[0].text), { versions: ['2.2.6', '1.15.3', '1.14.0'], sum: 10, integral: '2', attached: 'fictional attached material', snapshot: 'fictional snapshot', ssh: 'denied', escape: 'denied', otherMeeting: 'denied' });
+  assert.deepEqual(JSON.parse(result.content[0].text), { versions: ['2.2.6', '1.17.1', '1.14.0'], sum: 10, integral: '2', attached: 'fictional attached material', snapshot: 'fictional snapshot', ssh: 'denied', escape: 'denied', otherMeeting: 'denied' });
 });
 
 test('real offline pinned Python runs scipy native linear algebra too', {
@@ -73,5 +73,5 @@ for name, path in ${JSON.stringify({ attached: join(f.materials, 'guide.txt'), s
 print(json.dumps(out))
 ` });
   assert.equal(result.isError, undefined, result.content[0].text);
-  assert.deepEqual(JSON.parse(result.content[0].text), { versions: ['2.2.6', '1.15.3', '1.14.0'], sum: 10, det: 1, integral: '2', attached: 'fictional attached material', snapshot: 'fictional snapshot', ssh: 'denied', escape: 'denied', otherMeeting: 'denied' });
+  assert.deepEqual(JSON.parse(result.content[0].text), { versions: ['2.2.6', '1.17.1', '1.14.0'], sum: 10, det: 1, integral: '2', attached: 'fictional attached material', snapshot: 'fictional snapshot', ssh: 'denied', escape: 'denied', otherMeeting: 'denied' });
 });

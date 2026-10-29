@@ -8,8 +8,8 @@ import { toolEnv } from '../pi-extensions/tool-sandbox.ts';
 
 export const MATH_CASES = [
   { name: 'numpy', code: `import numpy as np\nassert np.__version__ == '2.2.6'\na = np.array([[1., 2.], [3., 4.]])\nassert np.allclose(a @ np.array([2., 1.]), [4., 10.])\nprint('PASS numpy')` },
-  { name: 'scipy.linalg.solve', code: `import numpy as np\nfrom scipy.linalg import solve\nimport scipy\nassert scipy.__version__ == '1.15.3'\na = np.array([[3., 1.], [1., 2.]])\nx = solve(a, np.array([9., 8.]))\nassert np.allclose(x, [2., 3.])\nprint('PASS scipy.linalg.solve')` },
-  { name: 'scipy.sparse.linalg.svds', code: `import numpy as np\nfrom scipy.sparse import diags\nfrom scipy.sparse.linalg import svds\nimport scipy\nassert scipy.__version__ == '1.15.3'\na = diags([1., 2., 4., 8.], format='csr')\ns = svds(a, k=1, return_singular_vectors=False, v0=np.ones(4))\nassert np.allclose(s, [8.])\nprint('PASS scipy.sparse.linalg.svds')` },
+  { name: 'scipy.linalg.solve', code: `import numpy as np\nfrom scipy.linalg import solve\nimport scipy\nassert scipy.__version__ == '1.17.1'\na = np.array([[3., 1.], [1., 2.]])\nx = solve(a, np.array([9., 8.]))\nassert np.allclose(x, [2., 3.])\nprint('PASS scipy.linalg.solve')` },
+  { name: 'scipy.sparse.linalg.svds', code: `import numpy as np\nfrom scipy.sparse import diags\nfrom scipy.sparse.linalg import svds\nimport scipy\nassert scipy.__version__ == '1.17.1'\na = diags([1., 2., 4., 8.], format='csr')\ns = svds(a, k=1, return_singular_vectors=False, v0=np.ones(4))\nassert np.allclose(s, [8.])\nprint('PASS scipy.sparse.linalg.svds')` },
   { name: 'sympy', code: `import sympy as sp\nassert sp.__version__ == '1.14.0'\nx = sp.Symbol('x')\nassert sp.integrate(x**2, (x, 0, 3)) == 9\nassert sp.solve(x**2 - 4, x) == [-2, 2]\nprint('PASS sympy')` },
 ] as const;
 
