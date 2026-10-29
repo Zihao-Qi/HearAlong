@@ -6,6 +6,7 @@ import { resolveReadPath, resolveToCwd } from '../node_modules/@earendil-works/p
 
 import { homedir } from 'node:os';
 import { excluded } from './material-exclusions.ts';
+import { safeWebUrl } from './web-url.ts';
 
 export const READ_SCOPE_ENV = 'MEETING_READ_SCOPE';
 export type ReadRoot = { path: string; directory: boolean; identity: string };
@@ -83,10 +84,8 @@ export function allowedPath(path: string, cwd: string, roots: ReadRoot[], env: N
     const snapshot = data && roots.some(root => within(root.path, join(data, 'scratch', 'memory-snapshots')) && within(target, root.path));
     if (blocked !== data || (!within(target, scratch) && !snapshot)) return false;
   }
-  if (within(target, scratch)) {
-    try { const info = statSync(target); if (info.isFile() && info.nlink > 1) return false; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  }
+  try { const info = statSync(target); if (info.isFile() && info.nlink > 1) return false; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   return roots.some(root => insideRoots(target, [root]) && !relative(root.path, target).split(sep).filter(Boolean).some(excluded));
 }
 const selectedPath = (tool: string, path: string, cwd: string) => tool === 'read' ? resolveReadPath(path, cwd) : resolveToCwd(path, cwd);
@@ -95,11 +94,9 @@ export function pathDecision(tool: string, input: Record<string, unknown>, cwd: 
   const block = { block: true as const, reason: `${PATH_TOOLS.has(tool) ? path : tool} is outside this task's materials.` };
   if (!Object.hasOwn(TOOL_KEYS, tool) || Object.keys(input).some(key => !TOOL_KEYS[tool].includes(key))) return block;
   if (!PATH_TOOLS.has(tool)) {
-    for (const value of [input.url, ...(Array.isArray(input.urls) ? input.urls : input.urls === undefined ? [] : [input.urls])]) {
-      if (value === undefined) continue;
-      try { if (typeof value !== 'string' || !['http:', 'https:'].includes(new URL(value).protocol)) return block; } catch { return block; }
-    }
-    if (tool === 'fetch_content' && input.url === undefined && !Array.isArray(input.urls)) return block;
+    if (input.urls !== undefined && (!Array.isArray(input.urls) || input.urls.length === 0)) return block;
+    const urls = [...(input.url === undefined ? [] : [input.url]), ...(Array.isArray(input.urls) ? input.urls : [])];
+    if (urls.some(value => !safeWebUrl(value)) || (tool === 'fetch_content' && urls.length === 0)) return block;
     return;
   }
   try {

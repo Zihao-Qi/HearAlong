@@ -30,6 +30,9 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
   finally { closeSync(fd); }
   let roots: ReturnType<typeof scopeFromEnv> = [];
   try { roots = scopeFromEnv(env).filter(root => insideRoots(root.path, [root])); } catch { /* No scope means scratch only, never read-everything. */ }
+  for (const path of [folder, ...roots.flatMap(root => [root.path, real(root.path)])]) {
+    if (/["\\\r\n]/.test(path)) throw new Error("This folder's name can't be used for calculations because its real path contains a quote, backslash or newline. Rename or detach the folder.");
+  }
   const params: Record<string, string> = {
     PI_HOME: join(home, '.pi'), PI_AGENT: real(env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
     KEYCHAINS: join(home, 'Library', 'Keychains'), DATA: data, CWD: folder, CACHE: real(runtime.UV_CACHE_DIR!), CACHE_BUILDS: real(join(runtime.UV_CACHE_DIR!, 'builds-v0')), PYTHON: real(runtime.UV_PYTHON_INSTALL_DIR!), PYTHON_PARENT: real(dirname(runtime.UV_PYTHON_INSTALL_DIR!)),
@@ -44,9 +47,12 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
   };
   const allowed = [filter('/', false), ...SYSTEM.map(path => filter(path)), filter(runtime.UV_CACHE_DIR!), filter(runtime.UV_PYTHON_INSTALL_DIR!),
     filter(realpathSync(executable), false), filter(process.execPath, false), ...roots.map(root => filter(root.path, root.directory))];
-  const scratch = roots.filter(root => root.path.startsWith(join(data, 'scratch', 'memory-snapshots') + '/')).map(root => filter(root.path, root.directory));
+  const snapshots = roots.filter(root => root.path.startsWith(join(data, 'scratch', 'memory-snapshots') + '/'));
+  const scratch = snapshots.map(root => filter(root.path, root.directory));
   const excluded = roots.filter(root => root.directory && root.path !== folder).map(root => `(regex #${JSON.stringify(excludedDescendants(root.path))})`);
-  // Code cannot rewrite the policy, helper executables or installed packages. uv needs only its markers/locks and build temp.
+  const exclusions = excluded.length ? `(deny file-read-data file-read-xattr ${excluded.join(' ')})` : '';
+  const snapshotExclusions = snapshots.length ? `(deny file-read-data file-read-xattr ${snapshots.map(root => `(regex #${JSON.stringify(excludedDescendants(root.path))})`).join(' ')})` : '';
+  // Code cannot rewrite the policy, helper executables or installed packages. Prepared runs need only uv's markers/locks.
   const profile = `(version 1)
 (allow default)
 (deny file-read-data file-read-xattr)
@@ -59,21 +65,23 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
 (deny file-write-create (vnode-type SYMLINK))
 (deny file-write*)
 (allow file-write-data (literal "/dev/null"))
-(allow file-write* (subpath (param "CACHE_BUILDS")) (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
+(allow file-write* (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
 (allow file-read-data file-read-xattr ${allowed.join(' ')})
 (deny network*)
 (deny network-outbound (literal "/private/var/run/mDNSResponder"))
 (deny file-read* file-read-data file-read-xattr file-write* (subpath (param "DATA")))
-${excluded.length ? `(deny file-read-data file-read-xattr ${excluded.join(' ')})` : ''}
+${exclusions}
 ; uv canonicalizes its minor-version interpreter alias through these parents. Metadata only: no directory listing or sibling reads.
 (allow file-read-metadata (literal (param "DATA")) (literal (param "PYTHON_PARENT")))
 (allow file-read* file-read-data file-read-xattr (subpath (param "CACHE")) (subpath (param "PYTHON")))
-(allow file-write* (subpath (param "CACHE_BUILDS")) (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
+(allow file-write* (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
 ${scratch.length ? `(allow file-read-data ${scratch.join(' ')})` : ''}
+${snapshotExclusions}
 (allow file-read* file-read-data file-read-xattr file-write* (subpath (param "CWD")))
 (deny file-link)
 (deny file-write-create (vnode-type SYMLINK))
 (deny file-write* (subpath (param "PROJECT_PI")) (subpath (param "PROJECT_AGENTS")) (literal (param "AGENTS")) (literal (param "CLAUDE")))
+(deny file-read* file-read-data file-read-xattr file-write* (subpath (param "CACHE_BUILDS")))
 (deny process-exec file-read* file-read-data (literal "/usr/bin/security"))
 (deny mach-lookup (global-name "com.apple.pasteboard.1") (global-name-prefix "com.apple.metadata.mds") (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc") (global-name "com.apple.security.agent"))
 (deny file-read* file-read-data file-read-xattr file-write* (subpath (param "PI_HOME")) (subpath (param "PI_AGENT")) (subpath (param "KEYCHAINS")))`;
