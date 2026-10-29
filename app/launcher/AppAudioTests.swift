@@ -17,6 +17,37 @@ import Foundation
         try require(groupAudioApps([fictional, child] + excluded) == [AudioApp(id: fictional.bundle, name: fictional.name)], "grouping/filtering")
         print("PASS app grouping: child processes, Chrome, own/server processes, no bundle, inactive outputs")
 
+        let safari = AudioApp(id: "com.apple.Safari", name: "Safari")
+        let raycast = AudioApp(id: "com.raycast.macos", name: "Raycast")
+        let safariOwner = AudioAppOwner(app: safari, excluded: false), raycastOwner = AudioAppOwner(app: raycast, excluded: false)
+        let gpu = AudioProcess(object: 20, pid: 200, bundle: "com.apple.WebKit.GPU", name: "Raycast Graphics and Media", running: true, excluded: false)
+        let otherGPU = AudioProcess(object: 21, pid: 201, bundle: gpu.bundle, name: gpu.name, running: true, excluded: false)
+        let idleHelper = AudioProcess(object: 22, pid: 202, bundle: gpu.bundle, name: gpu.name, running: false, excluded: false)
+        let owners = [gpu.pid: safariOwner, otherGPU.pid: raycastOwner, idleHelper.pid: safariOwner]
+        let attributed = [gpu, otherGPU, idleHelper].map { attributeAudioProcess($0, responsibleApp: owners[$0.pid]) }
+        try require(groupAudioApps(attributed) == [raycast, safari], "WebKit GPU helpers must form separate named client-app rows")
+        try require(audioProcesses(for: safari, in: attributed).map(\.object) == [20, 22], "Safari tap must contain only Safari-owned HAL objects, including idle helpers")
+        try require(audioProcesses(for: raycast, in: attributed).map(\.object) == [21], "Raycast tap must not contain Safari's GPU")
+        try require(attributed[0].pid == gpu.pid && attributed[0].running == gpu.running, "attribution must retain the actual audio process")
+        try require(attributeAudioProcess(gpu, responsibleApp: nil) == gpu, "missing responsibility must preserve bundle/path fallback")
+        let unknownOwner = AudioAppOwner(app: AudioApp(id: "", name: "Unknown"), excluded: false)
+        try require(attributeAudioProcess(gpu, responsibleApp: unknownOwner) == gpu, "unresolved responsible app must preserve fallback")
+        print("PASS WebKit attribution: Safari/Raycast GPU helpers give separate app names and disjoint tap process sets; missing owner falls back")
+
+        let forbiddenOwners = [
+            AudioAppOwner(app: AudioApp(id: "com.google.Chrome", name: "Chrome"), excluded: false),
+            AudioAppOwner(app: AudioApp(id: "local.meeting-research-assistant.helper", name: "HearAlong"), excluded: false),
+            AudioAppOwner(app: safari, excluded: true), // Responsible pid is this helper or in the server's group.
+        ]
+        let remappedExcluded = excluded.filter { $0.excluded || $0.bundle.hasPrefix("com.google.Chrome") || $0.bundle.hasPrefix("local.meeting-research-assistant") }
+            .map { attributeAudioProcess($0, responsibleApp: safariOwner) }
+            + forbiddenOwners.map { attributeAudioProcess(gpu, responsibleApp: $0) }
+        try require(groupAudioApps(remappedExcluded).isEmpty, "raw or responsible-app exclusions must survive attribution")
+        for owner in [safari, raycast] + forbiddenOwners.map(\.app) {
+            try require(audioProcesses(for: owner, in: remappedExcluded).isEmpty, "excluded processes must never reach a tap")
+        }
+        print("PASS attribution exclusions: raw and mapped Chrome, HearAlong and server-group processes stay out of rows and taps")
+
         let clock = 1_000_000.0, first = clock + 2375.5
         let timeline = AppTimeline(clockStart: clock, firstWallMs: first)
         for second in 0...3600 {
