@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, createHash } from 'node:crypto';
-import { access, mkdir, open, readFile, rm } from 'node:fs/promises';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { access, lstat, mkdir, open, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { dataRelativeRecordingPath, repairedRecordingPath } from './recording-paths.ts';
 import { CHUNK_SECONDS } from './audio.ts';
 import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
@@ -9,6 +9,7 @@ import { buildSegments, type Timing } from './segments.ts';
 import type { Recognition } from './recognizer.ts';
 import { ROLE_LABEL, compareSegments, rolesFor, type Role, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
+import { CaptureConflict } from './capture-error.ts';
 import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/capture-gaps.js';
 
 export type Mode = 'periodic' | 'manual' | 'questions';
@@ -180,6 +181,20 @@ export class MeetingStore {
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
+  /** Own a new file until its row commits. A failed write/sync/publication must not strand audio on disk. */
+  private async writeAudio(table: 'frames' | 'chunks', id: string, path: string, pcm: Buffer, publish: () => void) {
+    const directory = dirname(path), file = await openAudioFile(directory, path);
+    try {
+      try { await file.writeFile(pcm); await file.sync(); } finally { await file.close(); }
+      await syncDirectory(directory);
+      publish();
+    } catch (error) {
+      // Never delete a file whose publication did commit. If the database cannot be read, startup reconciliation decides.
+      try { if (!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(id)) await rm(path, { force: true }); }
+      catch { /* Best effort while storage is failing; removeOrphanAudioFiles retries at startup. */ }
+      throw error;
+    }
+  }
   private publishSegments(chunk: Chunk, text: string, metrics: Partial<Recognition> & { segments?: { text: string; t0Ms: number; t1Ms: number }[] } | null) {
     const insert = this.db.prepare(`INSERT INTO segments (id,meetingId,chunkId,source,ord,startMs,endMs,text,originalText,timing)
       VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -330,6 +345,9 @@ export class MeetingStore {
     return generation ? `g${generation}-${name}` : name;
   }
   claimRecording(meetingId: string, source: string, pageId: string | null) {
+    const previous = this.db.prepare('SELECT state FROM recording_sources WHERE meetingId=? AND source=?').get(meetingId, source) as { state: string } | undefined;
+    // Early HTTP admission may precede body validation; never reopen a finished source just to reject its frame later.
+    if (previous?.state === 'ended') return;
     this.recordingStarted(meetingId);
     this.db.prepare(`INSERT INTO recording_sources(meetingId,source,pageId,state) VALUES (?,?,?,'open')
       ON CONFLICT(meetingId,source) DO UPDATE SET pageId=excluded.pageId, state='open'`).run(meetingId, source, pageId);
@@ -341,9 +359,6 @@ export class MeetingStore {
     return Boolean(this.db.prepare("SELECT 1 FROM recording_sources WHERE meetingId=? AND state IN ('open','recovering') LIMIT 1").get(meetingId));
   }
   recoverRecordings() { this.db.exec("UPDATE recording_sources SET state='recovering' WHERE state='open'"); }
-  reconnectRecordingPage(pageId: string) {
-    this.db.prepare("UPDATE recording_sources SET state='open' WHERE pageId=? AND state='recovering'").run(pageId);
-  }
   finishRecordingSource(meetingId: string, source: string, state: 'ended' | 'abandoned', now: number) {
     this.db.prepare('UPDATE recording_sources SET state=? WHERE meetingId=? AND source=?').run(state, meetingId, source);
     if (!this.recordingUnended(meetingId) && !this.heldFrames(meetingId).length) this.recordingEnded(meetingId, now);
@@ -352,7 +367,7 @@ export class MeetingStore {
     this.db.prepare('UPDATE meetings SET recordingEndedAt=? WHERE id=?').run(now, meetingId);
   }
   private assertNotReplay(meetingId: string) {
-    if (this.meeting(meetingId).replay) throw new Error('This meeting is a replay; create a new meeting to record or import.');
+    if (this.meeting(meetingId).replay) throw new CaptureConflict('This meeting is a replay; create a new meeting to record or import.');
   }
   /**
    * Saves one live frame before it is acknowledged. A repeat with the same bytes returns the saved frame (`added: false`);
@@ -360,40 +375,39 @@ export class MeetingStore {
    */
   async addFrame(meetingId: string, source: string, sequence: number, startMs: number, pcm: Buffer, timing?: CaptureTiming): Promise<{ frame: Frame; added: boolean }> {
     this.assertNotReplay(meetingId);
+    const recording = this.db.prepare('SELECT state FROM recording_sources WHERE meetingId=? AND source=?').get(meetingId, source) as { state: string } | undefined;
+    if (recording?.state === 'ended') throw new CaptureConflict('This audio source has ended; start a new recording.');
     const samples = pcm.length / 4;
-    if (!samples || !Number.isInteger(samples) || samples > FRAME_SAMPLES) throw new Error('A live audio frame holds at most 1 s of float32 samples.');
+    if (!samples || !Number.isInteger(samples) || samples > FRAME_SAMPLES) throw new CaptureConflict('A live audio frame holds at most 1 s of float32 samples.');
     const hash = createHash('sha256').update(pcm).digest('hex');
     const previous = this.db.prepare('SELECT * FROM frames WHERE meetingId=? AND source=? AND sequence=?').get(meetingId, source, sequence) as Frame | undefined;
     if (previous) {
-      if (!previous.path) throw new Error('This audio source was removed; start a new recording source.');
-      if (previous.hash !== hash || previous.startMs !== startMs) throw new Error('A different audio frame already uses this source and sequence.');
+      if (!previous.path) throw new CaptureConflict('This audio source was removed; start a new recording source.');
+      if (previous.hash !== hash || previous.startMs !== startMs) throw new CaptureConflict('A different audio frame already uses this source and sequence.');
       return { frame: previous, added: false };
     }
     const last = this.db.prepare('SELECT * FROM frames WHERE meetingId=? AND source=? ORDER BY sequence DESC LIMIT 1').get(meetingId, source) as Frame | undefined;
     const expected = last ? last.sequence + 1 : 0;
-    if (sequence !== expected) throw new Error(`Audio frame ${sequence} arrived out of order; expected ${expected}.`);
-    if (last && last.samples < FRAME_SAMPLES) throw new Error('This source already sent its last (partial) frame.');
-    if (last && Math.abs(startMs - (last.startMs + last.samples * 1000 / FRAME_RATE)) > 1) throw new Error('This frame does not start where the previous one ended.');
+    if (sequence !== expected) throw new CaptureConflict(`Audio frame ${sequence} arrived out of order; expected ${expected}.`);
+    if (last && last.samples < FRAME_SAMPLES) throw new CaptureConflict('This source already sent its last (partial) frame.');
+    if (last && Math.abs(startMs - (last.startMs + last.samples * 1000 / FRAME_RATE)) > 1) throw new CaptureConflict('This frame does not start where the previous one ended.');
     this.recordingStarted(meetingId);
     const id = randomUUID();
     const directory = join(this.directory, 'audio', meetingId);
     await mkdir(directory, { recursive: true });
     const path = join(directory, this.audioName(meetingId, `${id}.frame.f32`));
-    const file = await openAudioFile(directory, path);
-    try { await file.writeFile(pcm); await file.sync(); } finally { await file.close(); }
-    await syncDirectory(directory);
-    try { this.assertNotReplay(meetingId); } catch (error) { await rm(path, { force: true }); throw error; }
-    this.recordingStarted(meetingId);
-    // The metadata and frame row commit together; a retry after a lost reply cannot duplicate or lose the note.
-    const { gaps, endWallMs } = detectFrameCaptureGaps(last, timing, startMs, samples, FRAME_RATE);
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
-      this.db.prepare('INSERT INTO frames (id,meetingId,source,sequence,path,startMs,samples,hash,savedAt,captureWallMs,captureEndWallMs) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-        .run(id, meetingId, source, sequence, this.storedPath(path), startMs, samples, hash, Date.now(), timing?.captureWallMs ?? null, endWallMs);
-      for (const gap of gaps) this.db.prepare('INSERT INTO capture_gaps (meetingId,source,atMs,fromWallMs,toWallMs,reason) VALUES (?,?,?,?,?,?)')
-        .run(meetingId, source, gap.atMs, gap.fromWallMs, gap.toWallMs, gap.reason);
-      this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    await this.writeAudio('frames', id, path, pcm, () => {
+      this.assertNotReplay(meetingId);
+      this.recordingStarted(meetingId);
+      // The metadata and frame row commit together; a retry after a lost reply cannot duplicate or lose the note.
+      const { gaps, endWallMs } = detectFrameCaptureGaps(last, timing, startMs, samples, FRAME_RATE);
+      this.transaction(() => {
+        this.db.prepare('INSERT INTO frames (id,meetingId,source,sequence,path,startMs,samples,hash,savedAt,captureWallMs,captureEndWallMs) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+          .run(id, meetingId, source, sequence, this.storedPath(path), startMs, samples, hash, Date.now(), timing?.captureWallMs ?? null, endWallMs);
+        for (const gap of gaps) this.db.prepare('INSERT INTO capture_gaps (meetingId,source,atMs,fromWallMs,toWallMs,reason) VALUES (?,?,?,?,?,?)')
+          .run(meetingId, source, gap.atMs, gap.fromWallMs, gap.toWallMs, gap.reason);
+      });
+    });
     return { frame: this.db.prepare('SELECT * FROM frames WHERE id=?').get(id) as Frame, added: true };
   }
   /** Merged only for presentation; the durable evidence remains per source. */
@@ -438,10 +452,7 @@ export class MeetingStore {
     const hash = createHash('sha256').update(pcm).digest('hex');
     const id = randomUUID();
     const path = join(this.directory, 'audio', meetingId, this.audioName(meetingId, `${id}.f32`));
-    const file = await open(path, 'wx', 0o600);
-    try { await file.writeFile(pcm); await file.sync(); } finally { await file.close(); }
-    await syncDirectory(join(this.directory, 'audio', meetingId));
-    try {
+    await this.writeAudio('chunks', id, path, pcm, () => {
       this.transaction(() => {
         const held = this.db.prepare(`SELECT COUNT(*) AS n FROM frames WHERE meetingId=? AND source=? AND sequence BETWEEN ? AND ? AND windowChunkId IS NULL`)
           .get(meetingId, source, frames[0].sequence, frames.at(-1)!.sequence) as { n: number };
@@ -451,10 +462,27 @@ export class MeetingStore {
         this.db.prepare('UPDATE frames SET windowChunkId=? WHERE meetingId=? AND source=? AND sequence BETWEEN ? AND ?')
           .run(id, meetingId, source, frames[0].sequence, frames.at(-1)!.sequence);
       });
-    } catch (error) { await rm(path, { force: true }); throw error; }
+    });
     // Committed: the window is queued whatever happens next. Frame files are only cleanup (retried at startup).
     await Promise.allSettled(frames.map(f => rm(this.resolvePath(f.path), { force: true })));
     return this.chunk(id)!;
+  }
+  /** Startup only, under the server lock and before jobs/capture: reclaim writes interrupted before publication. */
+  async removeOrphanAudioFiles() {
+    const data = await realpath(this.directory), root = join(data, 'audio');
+    if (!(await lstat(root).catch(() => null))?.isDirectory() || await realpath(root) !== root) return;
+    const referenced = new Set((this.db.prepare("SELECT path FROM frames WHERE path<>'' UNION SELECT path FROM chunks WHERE path<>''").all() as { path: string }[])
+      .map(row => { const path = resolve(this.resolvePath(row.path)), relative = this.relativePath(path); return relative === null ? path : join(data, relative); }));
+    for (const meeting of await readdir(root)) {
+      if (!/^[a-f0-9-]{36}$/.test(meeting)) continue;
+      const folder = join(root, meeting);
+      if (!(await lstat(folder)).isDirectory() || await realpath(folder) !== folder) continue;
+      for (const name of await readdir(folder)) {
+        if (!/^(?:g[1-9]\d*-)?[a-f0-9-]{36}(?:\.frame)?\.f32$/.test(name)) continue;
+        const path = join(folder, name);
+        if (!referenced.has(path) && (await lstat(path)).isFile()) await rm(path, { force: true });
+      }
+    }
   }
   /** Removes frame files whose audio is already in a window (a crash between the seal and the cleanup). */
   async removeSealedFrameFiles() {
@@ -496,13 +524,13 @@ export class MeetingStore {
     const directory = join(this.directory, 'audio', meetingId);
     await mkdir(directory, { recursive: true });
     const path = join(directory, this.audioName(meetingId, `${id}.f32`));
-    const file = await openAudioFile(directory, path);
-    try { await file.writeFile(pcm); await file.sync(); } finally { await file.close(); }
-    // A replay may have started while the audio was being written; re-check right before the insert.
-    try { this.assertNotReplay(meetingId); } catch (error) { await rm(path, { force: true }); throw error; }
-    this.recordingStarted(meetingId);
-    this.db.prepare(`INSERT INTO chunks (id,meetingId,source,sequence,path,decodeStart,startMs,seconds,sampleRate,status,hash)
-      VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, sequence, this.storedPath(path), startMs, pcm.length / 4 / sampleRate, sampleRate, hash);
+    await this.writeAudio('chunks', id, path, pcm, () => {
+      // A replay may have started while the audio was being written; re-check right before the insert.
+      this.assertNotReplay(meetingId);
+      this.recordingStarted(meetingId);
+      this.db.prepare(`INSERT INTO chunks (id,meetingId,source,sequence,path,decodeStart,startMs,seconds,sampleRate,status,hash)
+        VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, sequence, this.storedPath(path), startMs, pcm.length / 4 / sampleRate, sampleRate, hash);
+    });
     return this.chunk(id)!;
   }
   addMedia(meetingId: string, path: string, duration: number) {

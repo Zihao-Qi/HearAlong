@@ -26,6 +26,14 @@ test('the fixture data is what the real domain and projection give now (run scri
   } finally { await b.close(); }
 });
 
+test('fixture quick-check warnings describe calculations, not an unavailable Python runtime', async () => {
+  for (const file of ['../scripts/plans-fixtures-build.ts', '../public/plans-fixtures-data.js']) {
+    const text = await readFile(new URL(file, import.meta.url), 'utf8');
+    assert.doesNotMatch(text, /Quick checks were off for this run: Python unavailable/);
+    assert.match(text, /Quick checks were off for this run: calculation limit reached/);
+  }
+});
+
 type Outcome = { status: number; code?: string; current?: unknown; result?: unknown; todo?: unknown };
 /** What a route answers, as the page sees it: the status and code of a refusal, or the result and the step's state now. */
 const outcome = (r: any): Outcome => r.status !== 200 ? { status: r.status, code: r.code, ...(r.current !== undefined ? { current: r.current } : {}) }

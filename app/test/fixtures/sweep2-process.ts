@@ -1,4 +1,4 @@
-// Local-only harness: no Pi executable, uv download or model. The schema stub is unused by the tool execution.
+// Local-only harness: no Pi executable, downloads or model. The schema stub is unused by the tool execution.
 import { registerHooks } from 'node:module';
 import { writeFile } from 'node:fs/promises';
 import { spawnGated } from '../../pi-extensions/process-groups.ts';
@@ -12,11 +12,16 @@ if (mode === 'gate') {
     load(url, context, next) { return url === 'sweep2:typebox' ? { format: 'module', source: 'export const Type = { Object: x => x, String: x => x };', shortCircuit: true } : next(url, context); },
   });
   process.chdir(directory);
-  const extensionPath = '../../pi-extensions/run-python.ts';
+  const extensionPath = '../../pi-extensions/calculate.ts';
   const { default: extension } = await import(extensionPath);
-  let tool: any;
-  extension({ registerTool: (definition: any) => { tool = definition; } } as any);
-  const success = await tool.execute('success', { code: 'import subprocess, sys\nsubprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])\nprint(42, flush=True)\n' });
-  const timeout = await tool.execute('timeout', { code: 'import time\ntime.sleep(20)\n' });
+  const getTool = () => {
+    let tool: any;
+    extension({ registerTool: (definition: any) => { tool = definition; } } as any);
+    return tool;
+  };
+  const success = await getTool().execute('success', { code: 'console.log(42)' });
+  // The success path needs time to start Node and mathjs on a busy host; only this run tests the time limit.
+  process.env.CALCULATE_MS = '300';
+  const timeout = await getTool().execute('timeout', { code: 'while (true) {}' });
   await writeFile(out, JSON.stringify({ success, timeout }));
 }

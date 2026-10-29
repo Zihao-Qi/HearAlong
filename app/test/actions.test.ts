@@ -18,26 +18,44 @@ const LINES = ['How many brass buttons are in the costume cupboard?', 'Count the
   'Did anyone water the lobby fern?', 'Find a repair shop for the sewing machine.'];
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), 'meeting-actions-'));
+  const folder = await mkdtemp(join(tmpdir(), 'meeting-actions-'));
+  const directory = join(folder, 'data');
+  await mkdir(directory);
   const store = new MeetingStore(directory);
   const meeting = store.createMeeting('Community theatre wardrobe count');
   for (const [i, line] of LINES.entries()) {
     const chunk = await store.addPcm(meeting.id, 'mic:t', i, i * 60_000, 16000, Buffer.alloc(16000 * 4, i + 1));
     store.completeChunk(chunk.id, recognition(line));
   }
-  const materials = join(directory, 'materials');
+  // Attached materials live outside protected app data, just as they must for the file tools.
+  const materials = join(folder, 'materials');
   await mkdir(join(materials, 'inventory'), { recursive: true });
   await writeFile(join(materials, 'inventory', 'stock.txt'), ['Costume cupboard stock sheet', 'Rail C holds the blue parade jackets.',
     'Brass buttons: 7 packets of 8 = 56 buttons, counted on Thursday.', 'Spare thread is stored in the green tin.'].join('\n'));
-  await writeFile(join(directory, 'outside.txt'), 'secret words that are outside the materials root');
+  const outside = join(folder, 'outside.txt');
+  await writeFile(outside, 'secret words that are outside the materials root');
   const roots: Material[] = [{ id: 'R1', scope: `meeting:${meeting.id}`, path: materials, kind: 'folder', label: 'materials' }];
   const segments = store.segments(meeting.id);
-  return { directory, store, meeting, roots, materials, segments, async close() { store.close(); await rm(directory, { recursive: true, force: true }); } };
+  return { directory, store, meeting, roots, materials, outside, segments, async close() { store.close(); await rm(folder, { recursive: true, force: true }); } };
 }
 const result = (text: string, extra: Partial<PiTaskResult> = {}): PiTaskResult => ({
   text, ms: 1, tools: [], aborted: false, stopReason: 'stop', exitCode: 0, exitSignal: null, settled: true, toolEvents: 0, toolResults: [], provider: 'openai-codex', model: 'gpt-6.1-sol', ...extra,
 });
 const META = (sources: unknown[]) => `\n<<<META\n${JSON.stringify({ sources, assumptions: ['all packets are unopened'], openPoints: [] })}\nMETA>>>`;
+
+test('missing web refuses Look up with a plain message and no model call', async () => {
+  const f = await fixture();
+  let calls = 0;
+  const jobs = new ActionJobs({ store: f.store, directory: f.directory, clock: Date.now,
+    runner: async () => { calls++; return result('Unexpected'); }, rootsFor: () => f.roots,
+    glossaryFor: async () => null, webAvailable: () => false });
+  try {
+    await assert.rejects(jobs.submit(f.meeting.id, { action: 'lookUp', selection: { text: LINES[0], segmentIds: [f.segments[0].id] } }),
+      { status: 400, message: 'Web lookups are not available.' });
+    assert.equal(calls, 0);
+    assert.equal(jobs.list(f.meeting.id).length, 0);
+  } finally { await jobs.close(); await f.close(); }
+});
 
 test('context is captured once around the selection, with limits', async () => {
   const f = await fixture();
@@ -83,7 +101,7 @@ test('file citations: inside the root, real lines, quote found; traversal and sy
     const changedNumber = await checkFileSource({ id: 4, rootId: 'R1', path: 'inventory/stock.txt', lines: '3', quote: '7 packets of 8 = 57 buttons, counted on Thursday' }, f.roots);
     assert.equal(changedNumber.status, 'quote not found');
     assert.equal((await checkFileSource({ id: 5, rootId: 'R1', path: '../outside.txt', lines: '1', quote: 'secret words that are outside' }, f.roots)).detail, 'outside the attached materials');
-    await symlink(join(f.directory, 'outside.txt'), join(f.materials, 'link.txt'));
+    await symlink(f.outside, join(f.materials, 'link.txt'));
     assert.equal((await checkFileSource({ id: 6, rootId: 'R1', path: 'link.txt', lines: '1', quote: 'secret words that are outside' }, f.roots)).detail, 'outside the attached materials');
     assert.equal((await checkFileSource({ id: 7, rootId: 'R1', path: 'inventory/missing.txt', lines: '1', quote: 'a b c' }, f.roots)).detail, 'file not found');
     assert.match((await checkFileSource({ id: 8, rootId: 'R1', path: 'inventory/stock.txt', lines: '40-50', quote: 'a b c' }, f.roots)).detail!, /not inside the file/);
@@ -500,19 +518,23 @@ test('evidence is located exactly: whole web quote, the right transcript line, a
   } finally { await f.close(); }
 });
 
-test('cancel while Python is being prepared releases the job without reaching the runner', async () => {
+test('Compute reaches calculate without preparation and records streamed calculation output', async () => {
   const f = await fixture();
   try {
-    const { runner, calls } = scripted();
-    let warm!: () => void;
-    const ready = new Promise<void>(r => { warm = r; });
-    const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => f.roots, computeReady: () => ready });
+    let call: Parameters<ActionRunner>[0] | undefined;
+    const runner: ActionRunner = async input => {
+      call = input;
+      input.onEvent({ type: 'tool_execution_start', toolCallId: 'calc1', toolName: 'calculate', args: { code: 'console.log(6 * 7)' } });
+      input.onEvent({ type: 'tool_execution_end', toolCallId: 'calc1', toolName: 'calculate', result: { content: [{ type: 'text', text: '42' }], details: { runNumber: 1, script: 'run-1.js', stdout: '42', stderr: '', status: 'exit 0', packages: ['mathjs'] } } });
+      return result('Forty-two buttons.');
+    };
+    const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => f.roots });
     const c = await jobs.submit(f.meeting.id, { action: 'compute', selection: { text: 'How many brass buttons', segmentIds: [f.segments[0].id] } });
-    await until(() => jobs.get(c.job.id)!.status[0] === 'Preparing the Python environment');
-    await jobs.cancel(f.meeting.id, c.job.id);
-    await until(() => jobs.get(c.job.id)!.state === 'cancelled');
-    assert.equal(calls.length, 0, 'never reached the runner');
-    warm();
+    await until(() => jobs.get(c.job.id)!.state === 'done');
+    assert.match(call!.tools, /calculate/);
+    assert.match(call!.instructions, /JavaScript.*mathjs/);
+    assert.doesNotMatch(call!.instructions, /run_python|numpy/);
+    assert.deepEqual(jobs.get(c.job.id)!.result!.compute, [{ script: 'run-1.js', runNumber: 1, code: 'console.log(6 * 7)', output: '42', stderr: '', status: 'exit 0', ok: true, packages: ['mathjs'] }]);
     await jobs.close();
   } finally { await f.close(); }
 });

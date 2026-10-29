@@ -243,8 +243,8 @@ try {
     await page.locator('#setup-settings [data-setup-row="ai"]').getByRole('button', { name: 'Change' }).click();
     await page.locator('#su-ai-main').waitFor(); await shot(page, `${width}-settings-ai-dialog`); await page.keyboard.press('Escape');
     await page.locator('.settings-nav [data-section="speech"]').click(); assert.equal(await page.locator('#model').count(), 0); await shot(page, `${width}-settings-speech`);
-    await page.locator('.settings-nav [data-section="cloud"]').click(); await page.locator('#setup-web').getByText('Web search is not installed.', { exact: false }).waitFor(); await shot(page, `${width}-settings-web`);
-    await page.getByRole('button', { name: 'Copy pi install npm:pi-web-access', exact: true }).click(); await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
+    await page.locator('.settings-nav [data-section="cloud"]').click(); await page.locator('#setup-web').waitFor({ state: 'hidden' }); await shot(page, `${width}-settings-web`);
+    assert.equal(await page.locator('#setup-web').textContent(), '');
     await page.locator('#close-settings').click();
     const meeting = app.store.createMeeting('Example returning meeting'); ffFound = false; await api('/api/setup/recheck', 'POST'); await page.goto(app.url);
     await page.locator('#meeting-button').waitFor(); await page.locator('#status-dot.error:not([hidden])').waitFor(); await page.locator('#open-system').click();

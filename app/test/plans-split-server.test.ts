@@ -69,25 +69,26 @@ test('copied-session processes preserve arguments/cache, merge, coverage and col
     await writeFile(join(s.directory, 'p2.release'), 'release');
     assert.equal((await s.terminal()).state, 'done');
     const page = await s.page(); const doc = await loadRunPlans(s.folder);
-    assert.equal(doc!.prompt, '1.8'); assert.deepEqual(doc!.notCovered, []);
+    assert.equal(doc!.prompt, '1.9'); assert.deepEqual(doc!.notCovered, []);
     assert.deepEqual(doc!.deferred.map(d => d.item), ['N3']);
     assert.deepEqual(page.current.plans.map((p: any) => p.label), ['Lantern shelf', 'Painted crates']);
     assert.match(page.current.plans[0].answer.text, /“Painted crates”/);
     const evidence = await readJson(join(s.folder, 'evidence.json'));
+    assert.ok(evidence.items.some((e: any) => e.tool === 'calc' && e.language === 'javascript' && e.script === 'console.log(2)'));
     const reads = evidence.items.filter((e: any) => e.tool === 'read');
     assert.equal(reads.length, 3); assert.equal(new Set(reads.map((e: any) => e.call)).size, 3);
     assert.deepEqual(reads.map((e: any) => e.requested.offset).sort(), [1, 2, 3]);
-    assert.ok(Object.values(page.current.evidence).every((e: any) => e.result.ok), 'writer reads and stage-1 Python checks are real evidence');
+    assert.ok(Object.values(page.current.evidence).every((e: any) => e.result.ok), 'writer reads and stage-1 JavaScript checks are real evidence');
     const a = await readJson(join(s.directory, 'stage1.json'));
     for (const name of ['p1', 'p2']) {
       const b = await readJson(join(s.directory, `${name}.json`));
       assert.equal(b.recorded, true); assert.equal(a.recorded, true);
       assert.deepEqual(a.args.slice(0, a.args.indexOf('--session-dir')), b.args.slice(0, b.args.indexOf('--session')));
-      assert.deepEqual(b.env, { ...a.env, RUN_PYTHON_USED: '1' });
+      assert.deepEqual(b.env, { ...a.env, CALCULATE_USED: '1' });
     }
     const usage = await readJson(join(s.folder, 'usage.json'));
     assert.deepEqual(usage.map((u: any) => [u.model, u.usage.input, u.usage.cacheRead]), [['fiction/model', 45000, 0], ['fiction/model', 290, 38000], ['fiction/model', 290, 38000]]);
-    assert.ok(usage.every((u: any) => u.durationMs > 0 && u.passVersion === '1.8'));
+    assert.ok(usage.every((u: any) => u.durationMs > 0 && u.passVersion === '1.9'));
   } finally { await s.close(); }
 });
 test('partial writer failure publishes a warning and leaves its notes uncovered; all failures publish nothing', async () => {

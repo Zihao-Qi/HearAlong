@@ -2,7 +2,8 @@
 // The checks are mechanical (cited files exist inside the materials and contain the quoted words; cited web pages were
 // actually returned by this run's tools); they do not prove the answer is right, so cards are labelled as drafts.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCompleted, runPiTask, taskModel, toolResultOf, type TaskModel, type PiTaskResult, type ToolResult } from './pi-task.ts';
@@ -14,10 +15,11 @@ import { isPdf, pageAt, pdfQuoteSpan, quoteReadings, type PdfRoot, type PdfText 
 import { speakerPrefix } from './speakers.ts';
 import { Cooldowns, RATE_LIMIT, toolErrors } from './quota.ts';
 import { actionOutcomes, recordQuoteChecks } from './quote-metrics.ts';
+import { allowedPath, readRoots } from '../pi-extensions/read-scope.ts';
 
 export type ActionKind = 'explain' | 'answer' | 'compute' | 'findSource' | 'lookUp' | 'other';
 type ActionSpec = { label: string; tools: string; needsMaterials: boolean; needsWeb?: boolean; extensions?: string[]; request: string; rules: string[] };
-const RUN_PYTHON = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pi-extensions', 'run-python.ts');
+const CALCULATE = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pi-extensions', 'calculate.ts');
 const FILE_TOOLS = 'read,grep,find,ls';
 const WEB_TOOLS = 'web_search,fetch_content,get_search_content';
 
@@ -39,11 +41,11 @@ export const ACTIONS: Record<ActionKind, ActionSpec> = {
       'If the materials do not contain it, say so plainly. Do not attribute a result to a person unless the materials or transcript state it.'],
   },
   compute: {
-    label: 'Compute', tools: `${FILE_TOOLS},run_python`, needsMaterials: false, extensions: [RUN_PYTHON],
+    label: 'Compute', tools: `${FILE_TOOLS},calculate`, needsMaterials: false, extensions: [CALCULATE],
     request: 'Do the calculation raised at the selection.',
     rules: ['If a spoken phrase can mean different things (which function, which bound, which set), say which reading you used and ask which one the speaker meant.',
       'State every assumption (independence, range of values, one- or two-sided, confidence per estimate or joint) in the metadata "assumptions" list; it is shown above the answer, so do not repeat it in the text.',
-      'Use run_python for any non-trivial arithmetic and show the formula. Say whether a result is a sufficient budget or a minimum.',
+      'Use calculate with JavaScript and bundled mathjs (global math) for any non-trivial arithmetic and show the formula. Print results with console.log. Numbers are IEEE doubles unless you use mathjs BigNumber or fractions. Say whether a result is a sufficient budget or a minimum.',
       'Small calculations only: never run experiment suites, benchmarks or large simulations. If more is needed, give it as an open point.'],
   },
   findSource: {
@@ -268,7 +270,7 @@ async function pdfAlias(path: string, rootId: unknown, roots: Material[], pdf: P
  * (with 2 lines of context), so the preview shows the evidence that earned the badge. With `pdf`, a PDF is checked against
  * its extracted text (lines are that text's lines, hyphenated line breaks are joined) and the check names its page.
  */
-export async function checkFileSource(source: any, roots: Material[], maxLines = 60, pdf?: PdfCheck): Promise<SourceCheck> {
+export async function checkFileSource(source: any, roots: Material[], maxLines = 60, pdf?: PdfCheck, cwd = process.cwd()): Promise<SourceCheck> {
   const id = Number(source?.id);
   let path = typeof source?.path === 'string' ? source.path.trim() : '';
   let rootId = source?.rootId;
@@ -287,16 +289,38 @@ export async function checkFileSource(source: any, roots: Material[], maxLines =
     target = root.kind === 'file' ? rootReal : await realpath(resolve(rootReal, path));
     if (root.kind === 'file' ? !(path === '' || path === basename(rootReal) || path === '.') : !within(rootReal, target)) return { ...base, detail: 'outside the attached materials' };
   } catch { return { ...base, detail: 'file not found' }; }
+  // Citations and previews are reads too: never reopen something the task's file tools would refuse.
+  // The task cwd identifies protected app data; explicit memory-snapshot roots keep their narrow exception.
+  let authorized: { dev: bigint; ino: bigint };
+  let permitted: ReturnType<typeof readRoots>;
+  try {
+    const info = await lstat(target, { bigint: true });
+    authorized = info;
+    permitted = readRoots([root.path]);
+    if (!allowedPath(target, cwd, permitted)) return { ...base, detail: 'outside this task\'s permitted materials' };
+    if (!info.isFile()) return { ...base, detail: 'not a file' };
+  } catch { return { ...base, detail: 'file not readable' }; }
   let content: string;
   let read: Awaited<ReturnType<PdfText['read']>> | null = null;
   const asPdf = Boolean(pdf) && isPdf(target);
   try {
-    if (!(await stat(target)).isFile()) return { ...base, detail: 'not a file' };
-    if (asPdf) {
-      read = await pdf!.text.read(target, { waitMs: (pdf!.deadline ?? Infinity) - Date.now(), signal: pdf!.signal });
-      if ('problem' in read) return { ...base, detail: `no text from this PDF: ${read.problem}` };
-      content = read.text;
-    } else content = await readFile(target, 'utf8');
+    const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      // O_NOFOLLOW protects the leaf; compare the opened inode too, since a parent or a regular file can be replaced.
+      const current = async () => {
+        const opened = await file.stat({ bigint: true }), path = await lstat(target, { bigint: true });
+        return opened.isFile() && opened.nlink === 1n && !path.isSymbolicLink()
+          && opened.dev === authorized.dev && opened.ino === authorized.ino && opened.dev === path.dev && opened.ino === path.ino
+          && allowedPath(target, cwd, permitted);
+      };
+      if (!await current()) return { ...base, detail: 'file changed before it could be read' };
+      if (asPdf) {
+        read = await pdf!.text.read(target, { waitMs: (pdf!.deadline ?? Infinity) - Date.now(), signal: pdf!.signal });
+        if ('problem' in read) return { ...base, detail: `no text from this PDF: ${read.problem}` };
+        content = read.text;
+      } else content = await file.readFile('utf8');
+      if (!await current()) return { ...base, detail: 'file changed while it was read' };
+    } finally { await file.close(); }
   } catch { return { ...base, detail: 'file not readable' }; }
   const fileLines = content.split('\n');
   // One range ("120-135") or up to eight ("3-9, 23-28"); both ends of each must be inside the file.
@@ -499,7 +523,7 @@ export function checkTranscriptSource(source: any, lines: ContextLine[]): Source
   };
 }
 
-export async function checkAnswer(text: string, roots: Material[], evidence: WebEvidence, lines: ContextLine[] = [], pdf?: PdfCheck) {
+export async function checkAnswer(text: string, roots: Material[], evidence: WebEvidence, lines: ContextLine[] = [], pdf?: PdfCheck, cwd?: string) {
   const { markdown, meta, error } = parseAnswer(text);
   const checks: SourceCheck[] = [];
   const ids = new Map<number, number>();
@@ -507,7 +531,7 @@ export async function checkAnswer(text: string, roots: Material[], evidence: Web
   for (const [index, source] of (meta?.sources ?? []).entries()) {
     const problem = malformed(source, ids);
     if (problem) { checks.push({ id: Number.isSafeInteger(source?.id) ? source.id : -(index + 1), type: source?.type === 'web' || source?.type === 'transcript' ? source.type : 'file', label: String(source?.path ?? source?.url ?? source?.title ?? `source ${index + 1}`).slice(0, 200), status: 'invalid', detail: `malformed source: ${problem}` }); continue; }
-    checks.push(source.type === 'web' ? checkWebSource(source, evidence) : source.type === 'transcript' ? checkTranscriptSource(source, lines) : await checkFileSource(source, roots, 60, pdf));
+    checks.push(source.type === 'web' ? checkWebSource(source, evidence) : source.type === 'transcript' ? checkTranscriptSource(source, lines) : await checkFileSource(source, roots, 60, pdf, cwd));
   }
   const valid = new Set(checks.filter(c => c.status !== 'invalid' || !c.detail?.startsWith('malformed')).map(c => c.id));
   const refs = [...new Set([...markdown.matchAll(/\[(\d+)\]/g)].map(m => Number(m[1])))];
@@ -545,7 +569,7 @@ const statusLine = (event: any): string | null => {
     case 'web_search': return `Searching the web: ${short(a.query ?? (Array.isArray(a.queries) ? a.queries[0] : ''))}`;
     case 'fetch_content': return `Reading ${short(a.url ?? (Array.isArray(a.urls) ? a.urls[0] : 'a page'))}`;
     case 'get_search_content': return 'Reading saved search results';
-    case 'run_python': return 'Running a calculation';
+    case 'calculate': return 'Running a calculation';
     default: return event.toolName ? `Using ${event.toolName}` : null;
   }
 };
@@ -581,8 +605,6 @@ export class ActionJobs {
     /** Whether the web tools are available (checked at startup); actions that need them are refused when false. */
     webAvailable?: () => boolean;
     webUnavailable?: () => string | null;
-    /** Resolves when Compute's Python environment is ready (prepared once; not counted against a job's limits). */
-    computeReady?: () => Promise<void>;
     /** The text of PDF materials, for Pi to read and for the quote checks; without it PDFs are not read. */
     pdfText?: PdfText;
     /** Shared with the other sol jobs; omitted (tests): the actions' own. */
@@ -676,7 +698,7 @@ export class ActionJobs {
     }
     const action = (retry?.action ?? parent?.action ?? request.action) as ActionKind;
     if (!ACTION_KINDS.includes(action)) throw fail(400, 'Unknown action.');
-    if (ACTIONS[action].needsWeb && this.options.webAvailable && !this.options.webAvailable()) throw fail(400, this.options.webUnavailable?.() ?? 'Web search is not available: the pi-web-access tools were not found.');
+    if (ACTIONS[action].needsWeb && this.options.webAvailable && !this.options.webAvailable()) throw fail(400, this.options.webUnavailable?.() ?? 'Web lookups are not available.');
     const prompt = retry ? retry.prompt : typeof request.prompt === 'string' && request.prompt.trim() ? request.prompt.trim() : null;
     if (prompt && Buffer.byteLength(prompt) > LIMITS.prompt) throw fail(413, `The prompt is too long (limit ${LIMITS.prompt / 1000} KB).`);
     if ((action === 'other' || parent) && !prompt) throw fail(400, parent ? 'Type the follow-up question.' : 'Type what you want done with the selection.');
@@ -690,7 +712,16 @@ export class ActionJobs {
         question: parent.prompt ?? ACTIONS[parent.action].request, answer: parent.result?.markdown ?? '',
         assumptions: parent.result?.assumptions ?? [], openPoints: parent.result?.openPoints ?? [],
         notes: [...(parent.result?.notes ?? []), ...(parent.result?.manifest && parent.result.manifest.status !== 'no change seen' ? [`Material files: ${parent.result.manifest.status} (who changed them is not known)`] : [])],
-        sources: (parent.result?.checks ?? []).map(c => ({ id: c.id, type: c.type, status: c.status, detail: c.detail, rootId: c.rootId, path: c.path, lines: c.ranges,
+        sources: (parent.result?.checks ?? []).filter(c => {
+          if (c.type !== 'file') return true;
+          // Old saved answers may predate the read policy. Do not forward their excluded excerpts either.
+          const root = parent.context.roots.find(r => r.id === c.rootId && (roots.some(now => now.id === r.id && now.path === r.path)
+            || this.options.memory?.root(meetingId, r.id)?.path === r.path));
+          try {
+            return c.status !== 'invalid' && root && allowedPath(root.kind === 'file' ? root.path : resolve(root.path, c.path ?? ''),
+              join(this.options.directory, 'scratch', 'actions', parent.id), readRoots([root.path]));
+          } catch { return false; }
+        }).map(c => ({ id: c.id, type: c.type, status: c.status, detail: c.detail, rootId: c.rootId, path: c.path, lines: c.ranges,
           url: c.url, time: c.type === 'transcript' ? c.label : undefined, excerpt: c.excerpt?.slice(0, 1_500), inherited: c.inherited })),
       };
       if (Buffer.byteLength(JSON.stringify(parentData)) > LIMITS.parent) throw fail(413, 'The earlier answer is too long to follow up on.');
@@ -705,7 +736,8 @@ export class ActionJobs {
     // From here on synchronous: merge identical pending requests, enforce the queue bound, reserve.
     const pending = [...this.jobs.values()].filter(j => j.meetingId === meetingId && (j.state === 'queued' || j.state === 'running'));
     const same = pending.find(j => !retry && j.action === action && j.prompt === prompt && j.parentId === (parent?.id ?? null)
-      && j.context.selection.text === context.selection.text && j.context.selection.segmentIds.join() === context.selection.segmentIds.join());
+      && j.context.selection.text === context.selection.text && j.context.selection.segmentIds.join() === context.selection.segmentIds.join()
+      && context.selection.segmentIds.every(id => j.context.lines.find(l => l.id === id)?.revision === context.lines.find(l => l.id === id)?.revision));
     if (same) {
       if ((request.origin ?? 'user') !== 'auto' && same.origin === 'auto') same.userInterest = true;
       const newCard = request.cardId && same.cardId !== request.cardId && !same.cardIds?.includes(request.cardId);
@@ -796,9 +828,9 @@ export class ActionJobs {
     // Tool results are kept as they arrive, so a failed or cancelled run still has its calculations on record.
     const starts = new Map<string, unknown>();
     const live: ToolResult[] = [];
-    const computeOf = () => live.filter(r => r.name === 'run_python').map(r => {
+    const computeOf = () => live.filter(r => r.name === 'calculate').map(r => {
       const d = (r.details ?? {}) as { runNumber?: number; script?: string; status?: string; stdout?: string; stderr?: string; packages?: string[] };
-      return { script: d.script ?? 'run.py', runNumber: d.runNumber ?? 0, code: String((r.args as { code?: unknown })?.code ?? '').slice(0, 20_000),
+      return { script: d.script ?? 'run.js', runNumber: d.runNumber ?? 0, code: String((r.args as { code?: unknown })?.code ?? '').slice(0, 20_000),
         output: (d.stdout ?? r.text).slice(0, 20_000), stderr: (d.stderr ?? '').slice(0, 20_000), status: d.status ?? (r.isError ? 'error' : 'exit 0'),
         ok: !r.isError, packages: d.packages ?? [] };
     }).sort((a, b) => a.runNumber - b.runNumber);
@@ -817,15 +849,6 @@ export class ActionJobs {
       if (controller.signal.aborted) throw new Error('cancelled');
       await writeFile(inputPath, actionInput(job, pdfs), { mode: 0o600 });
       if (job.action === 'compute') {
-        if (this.options.computeReady) {
-          job.status = ['Preparing the Python environment'];
-          // Cancel or shutdown must not wait for a shared preparation that other jobs may still need.
-          const aborted = new Promise<never>((_, reject) => {
-            if (controller.signal.aborted) reject(new Error('cancelled'));
-            controller.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
-          });
-          await Promise.race([this.options.computeReady(), aborted]);
-        }
         before = await materialManifest(roots);
       }
       if (controller.signal.aborted) throw new Error('cancelled');
@@ -855,7 +878,7 @@ export class ActionJobs {
       // Saved beside the job (own plus inherited pages), so follow-ups of follow-ups can check against every ancestor's pages.
       await writeFile(join(this.jobDir(job.meetingId), `${job.id}.evidence`), JSON.stringify(evidence), { mode: 0o600 });
       const checked = await checkAnswer(result.text, roots, evidence, job.context.lines,
-        this.options.pdfText && { text: this.options.pdfText, view, deadline: Date.now() + 60_000, signal: controller.signal });
+        this.options.pdfText && { text: this.options.pdfText, view, deadline: Date.now() + 60_000, signal: controller.signal }, cwd);
       const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null;
       await recordQuoteChecks(this.options.directory, 'actions', model, actionOutcomes(checked.checks), this.options.clock());
       const webCalls = results.filter(r => ['web_search', 'fetch_content', 'get_search_content'].includes(r.name) && !r.isError).length;
@@ -917,7 +940,7 @@ export class ActionJobs {
   async preview(meetingId: string, rootId: string, path: string, from: number, to: number) {
     const memoryRoot = this.options.memory?.root(meetingId, rootId);
     const check = await checkFileSource({ id: 0, rootId, path, lines: `${from}-${Math.min(to, from + 199)}`, quote: '' }, [...this.options.rootsFor(meetingId), ...(memoryRoot ? [memoryRoot] : [])], 200,
-      this.options.pdfText && { text: this.options.pdfText, deadline: Date.now() + 10_000 });
+      this.options.pdfText && { text: this.options.pdfText, deadline: Date.now() + 10_000 }, join(this.options.directory, 'scratch', 'actions', 'preview'));
     if (check.status === 'invalid') throw fail(404, check.detail ?? 'Not available.');
     return { path: check.path, from: check.excerptFrom, to: check.excerptTo, text: check.excerpt, fileHash: check.fileHash };
   }

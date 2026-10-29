@@ -1,33 +1,32 @@
-/** Model-written code loses credentials and can read only task roots and its Python runtime. Metadata stays readable. */
+/** Model-written code loses credentials; Seatbelt confines task roots and the selected runtime. Metadata stays readable. */
 import { homedir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
-import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs';
-import { pythonEnv } from './python-env.ts';
+import { delimiter, join, resolve } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
 import { excludedDescendants } from './material-exclusions.ts';
 import { insideRoots, realPath, scopeFromEnv } from './read-scope.ts';
 
 // Pi's documented credentials (*_API_KEY, *_TOKEN, AWS/Azure/Cloudflare/Google keys, Anthropic's tokens) and their usual shapes.
 const CREDENTIAL = /(?:^|_)(?:KEY|API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)|^(?:ANTHROPIC|AWS|AZURE_OPENAI|CLOUDFLARE)_/i;
 export function toolEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !CREDENTIAL.test(name)));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => !CREDENTIAL.test(name) && !/^(NODE_|LD_|DYLD_)/.test(name)));
 }
 const real = (path: string) => realPath(resolve(path));
-/** The system libraries/configuration used by uv, CPython, and native math packages (including Homebrew installations). */
+/** System libraries/configuration used by Node (including Homebrew installations). */
 const SYSTEM = ['/usr/bin', '/usr/lib', '/usr/libexec', '/usr/share', '/System', '/Library/Apple', '/Library/Developer/CommandLineTools', '/bin', '/sbin', '/opt/homebrew/Cellar', '/private/var/db/dyld', '/private/var/db/timezone', '/private/etc', '/dev'];
+const CALCULATION_SYSTEM = ['/usr/lib', '/System/Library', '/Library/Apple', '/private/var/db/dyld', '/private/var/db/timezone', '/private/etc/localtime', '/dev/null', '/dev/urandom', '/dev/random'];
+
+/** Calculations inherit locale only, never shell configuration, home/scope paths or credential-shaped variables. */
+export function calculationEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([name]) => /^(?:LANG|LC_[A-Z_]+|TZ)$/.test(name)));
+}
 
 /** Last matching Seatbelt rule wins. Data stays closed except explicitly supplied scratch roots; credential denies stay last. */
-export function sandboxed(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env): [string, string[]] {
+export function sandboxed(command: string, args: string[], cwd: string, env: NodeJS.ProcessEnv = process.env, runtimeReads: string[] = [], mode: 'task' | 'calculation' = 'task'): [string, string[]] {
   const home = real(env.HOME || homedir()), folder = real(cwd);
   const at = folder.lastIndexOf('/scratch/');
   const data = at > 0 ? folder.slice(0, at) : join(folder, '.no-data-folder');
-  const runtime = pythonEnv(env, folder);
   const executable = command.includes('/') ? resolve(cwd, command) : (env.PATH ?? '').split(delimiter).map(dir => resolve(dir, command)).find(path => existsSync(path));
   if (!executable) throw new Error(`Cannot find ${command}.`);
-  // Only a trusted fake-uv shebang needs Node; production uv is native and must not grant unrelated interpreters.
-  const header = Buffer.alloc(512), fd = openSync(executable, 'r');
-  let nodeInterpreter = false;
-  try { nodeInterpreter = header.subarray(0, readSync(fd, header, 0, header.length, 0)).toString().split('\n')[0] === `#!${process.execPath}`; }
-  finally { closeSync(fd); }
   let roots: ReturnType<typeof scopeFromEnv> = [];
   try { roots = scopeFromEnv(env).filter(root => insideRoots(root.path, [root])); } catch { /* No scope means scratch only, never read-everything. */ }
   for (const path of [folder, ...roots.flatMap(root => [root.path, real(root.path)])]) {
@@ -35,9 +34,9 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
   }
   const params: Record<string, string> = {
     PI_HOME: join(home, '.pi'), PI_AGENT: real(env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
-    KEYCHAINS: join(home, 'Library', 'Keychains'), DATA: data, CWD: folder, CACHE: real(runtime.UV_CACHE_DIR!), CACHE_BUILDS: real(join(runtime.UV_CACHE_DIR!, 'builds-v0')), PYTHON: real(runtime.UV_PYTHON_INSTALL_DIR!), PYTHON_PARENT: real(dirname(runtime.UV_PYTHON_INSTALL_DIR!)),
+    HOME: home, KEYCHAINS: join(home, 'Library', 'Keychains'), DATA: data, CWD: folder,
     PROJECT_PI: join(folder, '.pi'), PROJECT_AGENTS: join(folder, '.agents'), AGENTS: join(folder, 'AGENTS.md'), CLAUDE: join(folder, 'CLAUDE.md'),
-    EXECUTABLE: real(executable), NODE: real(process.execPath),
+    EXECUTABLE: real(executable),
   };
   let number = 0;
   const filter = (path: string, directory = true) => {
@@ -45,14 +44,20 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
     params[key] = real(path);
     return `(${directory ? 'subpath' : 'literal'} (param "${key}"))`;
   };
-  const allowed = [filter('/', false), ...SYSTEM.map(path => filter(path)), filter(runtime.UV_CACHE_DIR!), filter(runtime.UV_PYTHON_INSTALL_DIR!),
-    filter(realpathSync(executable), false), filter(process.execPath, false), ...roots.map(root => filter(root.path, root.directory))];
+  const calculation = mode === 'calculation';
+  const executableRead = filter(realpathSync(executable), false);
+  // The child uses this same Node binary. Permit its loaded shared libraries individually, never the whole Cellar.
+  const nodeLibraries = calculation ? ((process.report.getReport() as { sharedObjects?: string[] }).sharedObjects ?? [])
+    .filter(path => path.endsWith('.dylib')).map(path => filter(path, false)) : [];
+  const allowed = calculation ? [filter('/', false), ...CALCULATION_SYSTEM.map(path => filter(path))]
+    : [filter('/', false), ...SYSTEM.map(path => filter(path)), executableRead, ...roots.map(root => filter(root.path, root.directory))];
+  const runtime = runtimeReads.map(path => filter(path));
   const snapshots = roots.filter(root => root.path.startsWith(join(data, 'scratch', 'memory-snapshots') + '/'));
   const scratch = snapshots.map(root => filter(root.path, root.directory));
   const excluded = roots.filter(root => root.directory && root.path !== folder).map(root => `(regex #${JSON.stringify(excludedDescendants(root.path))})`);
   const exclusions = excluded.length ? `(deny file-read-data file-read-xattr ${excluded.join(' ')})` : '';
   const snapshotExclusions = snapshots.length ? `(deny file-read-data file-read-xattr ${snapshots.map(root => `(regex #${JSON.stringify(excludedDescendants(root.path))})`).join(' ')})` : '';
-  // Code cannot rewrite the policy, helper executables or installed packages. Prepared runs need only uv's markers/locks.
+  // Code cannot rewrite the policy, runtime or installed packages.
   const profile = `(version 1)
 (allow default)
 (deny file-read-data file-read-xattr)
@@ -60,28 +65,25 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
 (deny signal)
 (allow signal (target self))
 (deny process-exec)
-(allow process-exec (literal (param "EXECUTABLE")) ${nodeInterpreter ? '(literal (param "NODE"))' : ''} (subpath (param "PYTHON")) (literal "/bin/sh") (literal "/bin/bash"))
+(allow process-exec (literal (param "EXECUTABLE")))
 (deny file-link)
 (deny file-write-create (vnode-type SYMLINK))
 (deny file-write*)
 (allow file-write-data (literal "/dev/null"))
-(allow file-write* (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
 (allow file-read-data file-read-xattr ${allowed.join(' ')})
 (deny network*)
 (deny network-outbound (literal "/private/var/run/mDNSResponder"))
 (deny file-read* file-read-data file-read-xattr file-write* (subpath (param "DATA")))
 ${exclusions}
-; uv canonicalizes its minor-version interpreter alias through these parents. Metadata only: no directory listing or sibling reads.
-(allow file-read-metadata (literal (param "DATA")) (literal (param "PYTHON_PARENT")))
-(allow file-read* file-read-data file-read-xattr (subpath (param "CACHE")) (subpath (param "PYTHON")))
-(allow file-write* (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
-${scratch.length ? `(allow file-read-data ${scratch.join(' ')})` : ''}
+(allow file-read-metadata (literal (param "DATA")))
+${calculation ? `(deny file-read-data file-read-xattr (subpath (param "HOME")) (subpath (param "CWD")))` : ''}
+${!calculation && scratch.length ? `(allow file-read-data ${scratch.join(' ')})` : ''}
 ${snapshotExclusions}
-(allow file-read* file-read-data file-read-xattr file-write* (subpath (param "CWD")))
+${runtime.length || calculation ? `(allow file-read-data file-read-xattr ${[...runtime, ...(calculation ? [executableRead, ...nodeLibraries] : [])].join(' ')})` : ''}
+${calculation ? '' : '(allow file-read* file-read-data file-read-xattr file-write* (subpath (param "CWD")))'}
 (deny file-link)
 (deny file-write-create (vnode-type SYMLINK))
 (deny file-write* (subpath (param "PROJECT_PI")) (subpath (param "PROJECT_AGENTS")) (literal (param "AGENTS")) (literal (param "CLAUDE")))
-(deny file-read* file-read-data file-read-xattr file-write* (subpath (param "CACHE_BUILDS")))
 (deny process-exec file-read* file-read-data (literal "/usr/bin/security"))
 (deny mach-lookup (global-name "com.apple.pasteboard.1") (global-name-prefix "com.apple.metadata.mds") (global-name "com.apple.SecurityServer") (global-name "com.apple.securityd.xpc") (global-name "com.apple.security.agent"))
 (deny file-read* file-read-data file-read-xattr file-write* (subpath (param "PI_HOME")) (subpath (param "PI_AGENT")) (subpath (param "KEYCHAINS")))`;

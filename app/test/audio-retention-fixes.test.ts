@@ -77,7 +77,7 @@ test('goodbye abandons only its page recording durably and only after sources ar
   } finally { await f.close(); }
 });
 
-for (const reconnect of [false, true]) test(`restart abandonment waits for sealing and no reconnect: reconnect=${reconnect}`, async () => {
+for (const reconnect of [false, true]) test(`restart abandonment waits for sealing and no capture reconnect: reconnect=${reconnect}`, async () => {
   const f = await serverFixture();
   try {
     const m = f.app.store.createMeeting(), source = `mic:${randomUUID()}`;
@@ -85,14 +85,14 @@ for (const reconnect of [false, true]) test(`restart abandonment waits for seali
     await f.restart();
     await f.app.jobs!.wait(); await f.app.audioRetention.run();
     assert.equal(f.app.store.meeting(m.id).audioDoneAt, null, 'a restart alone must not declare Stop');
-    if (reconnect) assert.equal((await f.request('/api/status')).status, 200);
+    if (reconnect) assert.equal((await f.frame(m.id, source, 1)).status, 201, 'a real frame, not a page heartbeat, reclaims the source');
     f.advance(61_000); await f.app.capture.sweep(); await f.app.jobs!.wait(); f.app.audioRetention.observe();
     assert.equal(f.app.store.heldFrames(m.id).length, 0);
     assert.equal(f.app.store.recordingUnended(m.id), reconnect);
     if (reconnect) {
       f.advance(AUDIO_RETENTION.day + 1); await f.app.audioRetention.run();
       assert.equal(f.app.store.meeting(m.id).audioRemovedAt, null);
-      assert.equal((await f.frame(m.id, source, 1)).status, 201);
+      assert.equal((await f.frame(m.id, source, 2)).status, 201);
     } else {
       assert.equal(f.app.store.meeting(m.id).audioDoneAt, f.now());
       await f.restart(); // abandonment and its done clock survive another restart

@@ -49,7 +49,7 @@ export type PiTaskOptions = {
   readRoots?: string[];
   /** Files whose contents Pi puts into the first message (`@path`), so large inputs stay off the command line. */
   files?: string[];
-  /** Extension files loaded for this task only (`-e path`), e.g. the Compute action's run_python tool. */
+  /** Extension files loaded for this task only (`-e path`), e.g. the Compute action's calculate tool. */
   extensions?: string[];
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -65,11 +65,11 @@ export type PiTaskOptions = {
   localNotesThinking?: boolean;
   /** `false` turns the user's skills off for this task (`--no-skills`); omitted: Pi's default, skills on. */
   skills?: boolean;
-  /** Environment for this task's Pi on top of the server's (e.g. RUN_PYTHON_MAX_RUNS for its run_python). */
+  /** Environment for this task's Pi on top of the server's (e.g. CALCULATE_MAX_RUNS for its calculate tool). */
   env?: NodeJS.ProcessEnv;
   /**
    * Process ownership (M7b §4): Pi runs as the leader of a process group of its own, recorded in this folder before it
-   * starts, and run_python records each script's group here too (MEETING_PROCESS_DIR). The time limit, Cancel and Pi's exit
+   * starts, and calculate records each script's group here too (MEETING_PROCESS_DIR). The time limit, Cancel and Pi's exit
    * end Pi's group and every group recorded; the folder is removed once that is confirmed. A server start ends what a crash
    * (or a cleanup that could not be confirmed) left here. Omitted: Pi is an ordinary child process, as before.
    */
@@ -197,7 +197,7 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
     const stop = () => {
       if (!processDir) { child!.kill('SIGTERM'); setTimeout(() => child!.kill('SIGKILL'), 3000).unref(); return; }
       if (group === undefined || !live()) return; // not recorded yet (stopped as soon as it is), or already ended
-      // Pi gets a moment to stop; its Python scripts do not need one.
+      // Pi gets a moment to stop; its calculations do not need one.
       signalGroup(group, 'SIGTERM');
       void endRecorded(processDir, record => record.kind !== 'pi', { keepUnverified: true }).catch(() => {});
       const pgid = group;

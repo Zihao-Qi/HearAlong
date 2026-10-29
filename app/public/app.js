@@ -5,7 +5,8 @@ import { createListenPlayer } from '/listen.js';
 import { createSegmentsPoll } from '/segments-poll.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
-import { SetupUI, setupRequest, copyCommand, aiDialog } from '/setup-ui.js';
+import { createRecordingEnds } from '/recording-end.js';
+import { SetupUI, setupRequest, aiDialog } from '/setup-ui.js';
 import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
 
 const $ = id => document.getElementById(id);
@@ -137,6 +138,9 @@ function closeSelectionMenu() {
   $('selection-hint').hidden = true;
   menuSelection = null;
 }
+function renderSelectionActions() {
+  $('selection-menu').querySelector('[data-action="lookUp"]').hidden = actionsView.web !== true;
+}
 function placeSelectionMenu() {
   const menu = $('selection-menu');
   if (menu.contains(document.activeElement)) return; // typing in "Other…" must not close the menu
@@ -151,6 +155,7 @@ function placeSelectionMenu() {
   const text = fragment.textContent.replace(/\s+/g, ' ').trim();
   if (!ids.length || !text) { closeSelectionMenu(); return; }
   menuSelection = { owner: meetingId, text, segmentIds: ids };
+  renderSelectionActions();
   const rect = range.getBoundingClientRect();
   const pane = box.parentElement.getBoundingClientRect();
   const boxTop = box.getBoundingClientRect().top - pane.top;
@@ -168,7 +173,7 @@ document.addEventListener('selectionchange', () => {
 $('selection-menu').addEventListener('mousedown', event => { if (event.target.tagName !== 'INPUT') event.preventDefault(); });
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('selection-menu').hidden) { closeSelectionMenu(); return; }
-  const buttons = [...$('selection-menu').querySelectorAll('.selection-actions button')];
+  const buttons = [...$('selection-menu').querySelectorAll('.selection-actions button')].filter(button => !button.hidden && !button.disabled);
   const index = buttons.indexOf(document.activeElement);
   if (index >= 0 && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
     event.preventDefault();
@@ -185,11 +190,7 @@ for (const button of $('selection-menu').querySelectorAll('.selection-actions bu
       $('selection-hint').hidden = false;
       return;
     }
-    if (action === 'lookUp' && actionsView.web === false) {
-      $('selection-hint').textContent = 'Web search is not available: the pi-web-access tools were not found in Pi.';
-      $('selection-hint').hidden = false;
-      return;
-    }
+    if (action === 'lookUp' && actionsView.web !== true) return;
     if (action === 'other') { $('selection-other').hidden = false; $('selection-prompt').focus(); return; }
     await startAction(action, menuSelection);
   });
@@ -359,7 +360,7 @@ async function refreshStatus() {
     listen.recording(fresh.recordingAnywhere || capture || requestingMic);
     listen.meeting(fresh.meetings.find(m => m.id === meetingId));
     if (fresh.shuttingDown) quitting(); // also with no meeting selected (no transcript polling)
-    $('connection').textContent = '';
+    $('connection').textContent = fresh.transcriptionStorageError ? `Transcription paused: ${fresh.transcriptionStorageError}. Retrying…` : '';
     // Only a snapshot requested after the current selection may say that meeting no longer exists.
     if (generation === selectionGeneration && !capture && !requestingMic && !status.meetings.some(m => m.id === meetingId)) selectMeeting(status.meetings[0]?.id ?? null);
     renderMeetingMenu();
@@ -464,6 +465,7 @@ function selectMeeting(id) {
   actionsView.cards.forEach(entry => entry.node.remove());
   actionsView.cards.clear();
   Object.assign(actionsView, { owner: null, jobs: [], materials: false, web: null, unseen: false });
+  renderSelectionActions();
   $('board-empty').hidden = false;
   $('actions-status').textContent = '';
   void refreshActions();
@@ -1389,6 +1391,7 @@ async function refreshActions() {
     }
     actionsView.owner = owner;
     Object.assign(actionsView, { jobs: data.jobs, materials: data.materials, enabled: data.enabled, web: data.web });
+    renderSelectionActions();
     $('actions-status').hidden = data.enabled && !data.pausedUntil;
     $('actions-status').textContent = !data.enabled ? ''
       : data.pausedUntil ? `Paused after a rate-limit error until ${new Date(data.pausedUntil).toLocaleTimeString()}; queued actions wait.` : '';
@@ -1904,9 +1907,9 @@ function setupStatusChanged(snapshot) {
   setupSnapshot = snapshot;
   const ai = snapshot.rows.find(row => row.id === 'ai');
   $('settings-ai-change').hidden = !!ai.forcedOff;
-  $('setup-web').hidden = ai.mode === 'off' || ai.web !== false;
+  $('setup-web').hidden = ai.mode !== 'local' || ai.web !== false;
   if (ai.mode === 'local') $('setup-web').replaceChildren('Web lookups are unavailable in On this Mac mode.');
-  else $('setup-web').replaceChildren('Web search is not installed. ', copyCommand('pi install npm:pi-web-access'));
+  else $('setup-web').replaceChildren();
   renderStatusDot();
 }
 const setupUi = new SetupUI($('setup-settings'), { details: true, onStatus: setupStatusChanged,
@@ -2003,7 +2006,7 @@ function renderStatusDot() {
   const failed = (detail?.chunks ?? []).filter(c => c.status === 'failed').length;
   const speech = setupSnapshot?.rows.find(row => row.id === 'speech');
   const speechReady = speech ? speech.state === 'ready' && !speech.pending : status.config.available;
-  const [kind, word, label] = !speechReady || setupSnapshot?.rows.some(row => row.id === 'ffmpeg' && row.state !== 'found') ? ['error', 'Speech off', 'Speech needs setup on this Mac']
+  const [kind, word, label] = !speechReady ? ['error', 'Speech off', 'Speech needs setup on this Mac']
     : failed ? ['warn', `${failed} failed`, `${failed} piece(s) of audio failed to transcribe`]
     // A queue is normal (each 16–24 s piece passes through it; a replay queues its whole file): only a live backlog is a problem.
     : capture && status.queued > 3 ? ['warn', `${status.queued} waiting`, `Transcription is falling behind: ${status.queued} pieces of audio waiting`]
@@ -2166,6 +2169,9 @@ $('mic-test').onclick = guarded(async () => {
 // capture = { owner, path, context, offsetMs, generation, sources: Map<'mic'|'tab', Source>, stopping, drainUntil, startedAt, lastDraftAt }
 let captureGeneration = 0;
 const SOURCE_NAMES = { mic: 'Microphone', tab: 'Meeting tab' };
+const recordingEnds = createRecordingEnds((path, value) => apiWithin(10_000, path, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+}));
 
 function sourceIds() { return capture ? [...capture.sources.values()].map(s => s.sourceId) : []; }
 /** A source's end: stop its input, collect its last frame, save what is queued, and tell the server. Never touches the other source. */
@@ -2186,8 +2192,8 @@ function endSource(session, source, why) {
     try { await source.uploads; } catch { saved = false; /* already reported */ }
     // Always end the source on the server: after a failed upload with an unknown last frame (null), so whatever was saved is
     // transcribed now and its live preview is released.
-    try { await apiWithin(10_000, `${session.path}/pcm/end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: source.sourceId, lastSequence: saved && source.sequence ? source.sequence - 1 : null, stopping: Boolean(session.stopping) }) }); }
-    catch (error) { log(`${SOURCE_NAMES[source.kind]}: the end could not be confirmed (${error.message}); it is transcribed after a short delay instead.`, true); }
+    try { await recordingEnds.end(`${session.path}/pcm/end`, { source: source.sourceId, lastSequence: saved && source.sequence ? source.sequence - 1 : null, stopping: Boolean(session.stopping) }); }
+    catch (error) { log(`${SOURCE_NAMES[source.kind]}: the end could not be confirmed (${error.message}); saved audio is transcribed after a short delay and confirming Stop will keep retrying.`, true); }
     if (why) log(why);
     session.sources.delete(source.kind);
     if (source.kind === 'tab' && !session.stopping) session.tabEnded = true;

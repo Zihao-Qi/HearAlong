@@ -231,7 +231,7 @@ export function plansMarkdown(doc, { title = 'Meeting', project = null, notesAt 
     if (good.length) {
       lines.push('**Sources:**');
       for (const e of good) {
-        if (e.kind === 'check') lines.push(`- Quick check (run ${e.pythonRun}): ${e.text}`, '', '```python', e.result.script ?? '', '```', '', '```', e.result.output ?? '', '```');
+        if (e.kind === 'check') lines.push(`- Quick check (run ${e.pythonRun}): ${e.text}`, '', `\`\`\`${e.result.language === 'javascript' ? 'javascript' : 'python'}`, e.result.script ?? '', '```', '', '```', e.result.output ?? '', '```');
         else lines.push(`- ${e.text} — ${e.source?.type === 'web' ? e.source.url : e.source?.type === 'transcript' ? `transcript ${sourceLabel(e)}` : sourceLabel(e)}: “${e.source?.quote ?? ''}”${e.result.changed ? ' (changed since it was read)' : ''}`);
       }
       lines.push('');
@@ -518,6 +518,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
 
   // Only the per-plan projection determines freshness, including while viewing kept plans.
   const stalePlans = doc => (doc?.plans ?? []).filter(p => !p.freshness.current);
+  const staleLabels = doc => [...new Set(stalePlans(doc).map(p => p.freshness.label).filter(Boolean))];
   const notesWarning = /^(?:Missing speech: |The transcript changed after the notes were written\.$|\d+ audio chunk\(s\) were still being transcribed when the notes were written\.$|\d+ line\(s\) had not been checked for misheard terms\.$)/;
 
   function closeMenu(returnFocus = false) {
@@ -542,7 +543,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
     if (!doc && !replaceable) return null;
     const row = el('div', undefined, 'plans-head');
     if (stalePlans(doc).length) {
-      const stale = button('Made before the notes changed', 'plans-link plans-stale', 'plans-stale', () => toggleMenu('plans-stale'));
+      const stale = button(staleLabels(doc).join('; '), 'plans-link plans-stale', 'plans-stale', () => toggleMenu('plans-stale'));
       stale.setAttribute('aria-haspopup', 'menu');
       row.append(stale);
     }
@@ -578,12 +579,7 @@ export function createPlansView({ host, api, hooks, optionsHost, optionsInHead =
       about.setAttribute('role', 'note');
       about.setAttribute('aria-label', 'Plans details');
       about.append(el('p', `Made at ${new Date(doc.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}.`, 'notes-warning'));
-      if (stalePlans(doc).length) {
-        about.append(el('p', 'Made before the notes changed.', 'notes-warning'));
-        for (const label of new Set(stalePlans(doc).map(p => p.freshness.label).filter(Boolean))) {
-          if (sentence(label) !== 'Made before the notes changed.') about.append(el('p', sentence(label), 'notes-warning'));
-        }
-      }
+      for (const label of staleLabels(doc)) about.append(el('p', sentence(label), 'notes-warning'));
       about.append(el('p', 'Sources are checked, not the ideas themselves.', 'notes-warning'));
       for (const w of doc.warnings) if (!notesWarning.test(w)) about.append(el('p', w, 'notes-warning'));
       menu.append(about);

@@ -109,7 +109,7 @@ test('the hook executes the canonical target, not the original symlink spelling'
 
 test('tasks without explicit roots fail closed; a scoped task gets only its captured roots and cwd', async t => {
   const f = await fakePi(t);
-  for (const tools of [undefined, 'read', 'read,run_python']) {
+  for (const tools of [undefined, 'read', 'read,calculate']) {
     const args = piTaskArgs('Example', { model: 'example/main', cwd: f.cwd, tools, extensions: ['not-loaded.ts'] });
     assert.ok(args.includes('--no-tools'));
     assert.ok(!args.includes('--tools'));

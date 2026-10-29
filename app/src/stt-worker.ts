@@ -1,5 +1,5 @@
 import { TranscribeModel, setLogHandler } from 'transcribe-cpp';
-import { decodeChunk } from './audio.ts';
+import { decodeChunk, readRecordingChunk, SAMPLE_RATE } from './audio.ts';
 import { transcribeRecovering } from './recovery.ts';
 
 setLogHandler(() => {});
@@ -28,7 +28,10 @@ process.on('message', async (job: any) => {
   controller = new AbortController();
   try {
     const decodeStart = performance.now();
-    const pcm = await decodeChunk(job.path, job.decodeStart, job.seconds, job.sampleRate);
+    if (job.sampleRate && job.sampleRate !== SAMPLE_RATE) throw new Error('Recorded audio must be 16 kHz mono.');
+    const pcm = job.sampleRate
+      ? await readRecordingChunk(job.path, job.decodeStart, job.seconds, controller.signal)
+      : await decodeChunk(job.path, job.decodeStart, job.seconds, undefined, controller.signal);
     const decodeMs = performance.now() - decodeStart;
     const start = performance.now();
     const loaded = model;

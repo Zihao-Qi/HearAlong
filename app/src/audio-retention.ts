@@ -17,6 +17,8 @@ export class AudioRetention {
   private store: MeetingStore;
   private options: {
     setting: () => AudioRetentionSetting; active: (id: string) => boolean; clock?: () => number;
+    /** Incoming audio not yet accepted: defer removal without resetting an existing completion clock. */
+    pending?: (id: string) => boolean;
     log?: (message: string) => void;
     /** Filesystem boundary, injectable for crash/slow-disk tests. No database access after this starts. */
     removeFiles?: (path: string, names: string[]) => Promise<void>;
@@ -25,7 +27,7 @@ export class AudioRetention {
   private now() { return this.options.clock?.() ?? Date.now(); }
   private ready(m: Meeting) {
     const replay = this.store.replay(m.id);
-    return !this.store.recordingUnended(m.id) && !this.options.active(m.id) && !(replay && this.store.replayPositionMs(replay, this.now()) < replay.durationMs)
+    return !this.options.pending?.(m.id) && !this.store.recordingUnended(m.id) && !this.options.active(m.id) && !(replay && this.store.replayPositionMs(replay, this.now()) < replay.durationMs)
       && !this.store.chunks(m.id).some(c => c.status !== 'completed') && !this.store.heldFrames(m.id).length;
   }
   /** Called by the existing live loop: notices completion and arms the next meeting's expiry, without disk work. */
@@ -33,7 +35,7 @@ export class AudioRetention {
     if (this.stopped && !markOnly) return;
     let next = Infinity;
     for (const m of this.store.meetings()) {
-      if (m.audioRemovedAt !== null || m.audioKept || m.audioEmpty) continue;
+      if (m.audioRemovedAt !== null || m.audioKept || m.audioEmpty || this.options.pending?.(m.id)) continue;
       if (!this.ready(m)) {
         if (m.audioDoneAt !== null) this.store.db.prepare('UPDATE meetings SET audioDoneAt=NULL WHERE id=?').run(m.id);
         continue;

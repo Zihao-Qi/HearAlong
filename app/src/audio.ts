@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { open } from 'node:fs/promises';
 
 export const SAMPLE_RATE = 16_000;
 export const CHUNK_SECONDS = 20;
@@ -49,6 +50,34 @@ export async function probeDuration(path: string): Promise<number> {
   return seconds;
 }
 
+/** HearAlong recordings are already 16 kHz mono f32le; never send them through a media decoder. */
+export async function readRecordingChunk(path: string, startSeconds: number, seconds: number, signal?: AbortSignal): Promise<Float32Array> {
+  signal?.throwIfAborted();
+  const first = Math.round(startSeconds * SAMPLE_RATE), count = Math.round(seconds * SAMPLE_RATE);
+  if (!Number.isSafeInteger(first) || !Number.isSafeInteger(count) || startSeconds < 0 || seconds < 0) {
+    throw new Error('Invalid recording window.');
+  }
+  const file = await open(path, 'r');
+  try {
+    const { size } = await file.stat();
+    // A recording may be mid-append: whole samples only, like FFmpeg's raw decoding (a partial trailing sample is ignored).
+    const samples = Math.min(count, Math.max(0, Math.floor(size / 4) - first));
+    if (!samples) throw new Error('The recording contains no usable audio.');
+    const pcm = Buffer.alloc(samples * 4);
+    let read = 0;
+    while (read < pcm.length) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await file.read(pcm, read, pcm.length - read, first * 4 + read);
+      if (!bytesRead) throw new Error('The recording changed while reading audio.');
+      read += bytesRead;
+    }
+    signal?.throwIfAborted();
+    // Aligned, exclusively owned samples for the native library, just like imported audio.
+    return new Float32Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
+  } finally { await file.close(); }
+}
+
+/** FFmpeg decoding is only needed for imported audio/video media. */
 export async function decodeChunk(path: string, startSeconds: number, seconds: number, sampleRate?: number, signal?: AbortSignal): Promise<Float32Array> {
   const args = ['-nostdin', '-v', 'error'];
   if (sampleRate) args.push('-f', 'f32le', '-ar', String(sampleRate), '-ac', '1');

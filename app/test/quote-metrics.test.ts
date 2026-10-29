@@ -266,6 +266,8 @@ test('actions: every cited source of an answer counts once, by its check status 
     ];
     const answer = `There are 56 buttons [1].\n<<<META\n${JSON.stringify({ sources, assumptions: [], openPoints: [] })}\nMETA>>>`;
     const checked = await checkAnswer(answer, roots, evidence, lines);
+    const directory = checked.checks.find(c => c.id === 6)!;
+    assert.deepEqual({ status: directory.status, detail: directory.detail }, { status: 'invalid', detail: 'not a file' }, 'a stable directory citation is not a changed-file race');
     const outcomes = actionOutcomes(checked.checks);
     assert.equal(outcomes.length, sources.length);
     assert.deepEqual(tally(outcomes), {

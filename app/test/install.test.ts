@@ -218,14 +218,14 @@ for (const state of ['missing', 'old']) {
   });
 }
 
-test('missing uv is installed via brew; an existing uv is left alone', () => {
+test('installer never installs uv, whether present or absent', () => {
   const present = fixture();
   present.ok();
   assert.doesNotMatch(present.calls(), /brew install uv/);
   const missing = fixture();
   rmSync(join(missing.bin, 'uv'));
   missing.ok();
-  assert.match(missing.calls(), /brew install uv\n/);
+  assert.doesNotMatch(missing.calls(), /brew install uv/);
 });
 
 test('upgrade preserves data and old code until npm, build and both swaps succeed', () => {

@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { managedPython } from './helpers/managed-python.ts';
 import { endRecorded, signalGroup } from '../pi-extensions/process-groups.ts';
 const exec = promisify(execFile);
 const worker = fileURLToPath(new URL('./fixtures/sweep2-process.ts', import.meta.url));
@@ -38,17 +37,14 @@ test('Pi 2: killing an owner before registration leaves neither an unrecorded se
   }
 });
 
-test('Pi 7: Python leader exit before its limit is success even when a child inherits its pipes', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'meeting-python-pipes-'));
+test('Pi 7: calculation finishes successfully and an over-limit run times out', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-calculate-limit-'));
   let child: ChildProcess | undefined;
   try {
     const home = join(directory, 'home');
-    const runtime = await managedPython(directory, { ...process.env, HOME: home });
-    const python = runtime.python;
-    const uv = join(directory, 'uv'), out = join(directory, 'result.json');
-    await writeFile(uv, `#!/bin/sh\nwhile [ "$1" != python ]; do shift; done\nshift\nexec '${python}' "$@"\n`); await chmod(uv, 0o700);
-    child = spawn(process.execPath, ['--experimental-strip-types', worker, 'python', directory, out], { detached: true, env: { ...runtime.env, HOME: home, PATH: `${directory}${delimiter}${process.env.PATH}`, RUN_PYTHON_MS: '1500', MEETING_PROCESS_DIR: join(directory, 'processes') }, stdio: 'ignore' });
-    const deadline = setTimeout(() => { if (child?.pid) signalGroup(child.pid, 'SIGKILL'); }, 15_000);
+    const out = join(directory, 'result.json');
+    child = spawn(process.execPath, ['--experimental-strip-types', worker, 'calc', directory, out], { detached: true, env: { ...process.env, HOME: home, CALCULATE_MS: '20000', MEETING_PROCESS_DIR: join(directory, 'processes') }, stdio: 'ignore' });
+    const deadline = setTimeout(() => { if (child?.pid) signalGroup(child.pid, 'SIGKILL'); }, 30_000);
     try { await stopped(child); } finally { clearTimeout(deadline); }
     assert.equal(child.exitCode, 0);
     const { success, timeout } = JSON.parse(await readFile(out, 'utf8'));

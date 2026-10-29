@@ -14,6 +14,7 @@ import { LiveDrafts } from '../src/drafts.ts';
 // Fictional lantern-workshop check; a generated WAV drives replay/capture with scripted speech and models.
 piPackages(true);
 const directory = await mkdtemp(join(tmpdir(), 'meeting-browser-'));
+const materials = await mkdtemp(join(tmpdir(), 'meeting-browser-materials-'));
 const outDir = resolve(process.argv[2] ?? 'artifacts/browser-smoke');
 await mkdir(outDir, { recursive: true });
 const audio = join(directory, 'synthetic-meeting.wav');
@@ -116,7 +117,8 @@ try {
   await page.locator('#selection-menu').waitFor({ state: 'hidden' });
 
   // Material attach and search (read-only).
-  const material = join(directory, 'inventory.md');
+  // Attached files live outside HearAlong's data folder; files inside it are protected app data.
+  const material = join(materials, 'inventory.md');
   await writeFile(material, '# Lantern workshop inventory\nReady: 36\nReady lantern count after the battery check: 36.\n');
   await page.locator('#open-meeting').click();
   await page.locator('#material-path').fill(material);
@@ -359,4 +361,4 @@ try {
     limitation: 'Synthetic audio only; real room audio and hour-long live recording are not validated here.' };
   await writeFile(join(outDir, 'browser-smoke.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
-} finally { await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+} finally { await browser.close(); await app.close(); await rm(directory, { recursive: true, force: true }); await rm(materials, { recursive: true, force: true }); }

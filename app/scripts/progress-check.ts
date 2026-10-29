@@ -60,7 +60,7 @@ const plans = async (_prompt: string, options: PiTaskOptions): Promise<PiTaskRes
           options.onEvent?.({ type: 'tool_execution_end', toolCallId: file, toolName: 'read', result: { content: [{ type: 'text', text: 'fictional material' }] } });
         }
         options.onEvent?.({ type: 'tool_execution_end', toolName: 'fetch_content', result: {} });
-        options.onEvent?.({ type: 'tool_execution_end', toolName: 'run_python', result: {} });
+        options.onEvent?.({ type: 'tool_execution_end', toolName: 'calculate', result: {} });
         await wait(planWrite.promise, options.signal);
       } else {
         if (split && !/plan P[123] /.test(_prompt)) await wait(planFinish.promise, options.signal);

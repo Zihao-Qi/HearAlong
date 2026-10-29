@@ -15,9 +15,9 @@ const check = async (f: Fixture, raw: unknown, extra: Partial<CheckContext> = {}
   checkPlans(raw, { run: 'run1', refs: f.input.refs, evidence: await f.evidence.read(), pins: PINS, ...extra });
 const withRead = async (f: Fixture, offset = 5, limit = 20) => { await f.evidence.record(readResult(f.file, offset, limit)); return f; };
 
-test('the prompt is v1.7 byte for byte, and public plan jobs use the shared prompt and input builder', async () => {
-  assert.equal(createHash('sha256').update(PLAN_PROMPT).digest('hex'), 'b4baf906a8235dcc1cd64ff4b9809dc247d775701b2758aac350e34dae3e4931');
-  assert.equal(Buffer.byteLength(PLAN_PROMPT), 7441);
+test('the JavaScript prompt is v1.8 byte for byte, and public plan jobs use the shared prompt and input builder', async () => {
+  assert.equal(createHash('sha256').update(PLAN_PROMPT).digest('hex'), '6e9f1d67ff7f1bf3aeea024d8aa800d02d3fa1cdb17e457af635c05668779347');
+  assert.equal(Buffer.byteLength(PLAN_PROMPT), 7589);
   const jobs = await readFile(new URL('../src/plans/jobs.ts', import.meta.url), 'utf8');
   assert.match(jobs, /import \{ EXPLORE_PROMPT \} from '\.\/prompt\.ts';/);
   assert.match(jobs, /runPlanPass\(ctx, options,/);

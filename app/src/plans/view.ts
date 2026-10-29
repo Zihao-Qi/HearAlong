@@ -39,7 +39,7 @@ export type RunView = {
   /** A finished run: what became of its plans. `message`: why publication refused them. */
   outcome: PlanJobResult['outcome'] | null; message: string | null;
 };
-export type Freshness = { current: boolean; changed: ('notes' | 'memory' | 'materials')[]; label: string | null };
+export type Freshness = { current: boolean; changed: ('notes' | 'transcript' | 'memory' | 'materials')[]; label: string | null };
 export type StepView = Step & {
   /** What its slot shows (PlanTodos.states); null on kept plans, which are not a version and add nothing. */
   todo: TodoState | null;
@@ -176,7 +176,8 @@ function docView(doc: DocLike, context: Parameters<typeof planView>[2] & { proje
   return {
     version: context.version, run: doc.run, kind: doc.kind, base: doc.base, at: context.at,
     status: doc.status, message: MESSAGE[doc.status], label: SECTION_LABEL,
-    warnings: doc.warnings, review: doc.review, dropped: doc.dropped, deferred: doc.deferred, notCovered: doc.notCovered,
+    warnings: [...new Set([...doc.warnings, ...(context.current?.transcriptStale ? ['The transcript changed after the notes were written.'] : [])])],
+    review: doc.review, dropped: doc.dropped, deferred: doc.deferred, notCovered: doc.notCovered,
     freshness: same ? stale[0] : null, addable: doc.status === 'plans' ? addable : null, plans,
     evidence: Object.assign({}, ...doc.plans.map(p => entriesOf(p, doc.evidence))),
   };

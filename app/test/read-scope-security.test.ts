@@ -1,7 +1,7 @@
 // Security regressions use only fictional files, isolated homes, and real per-process Seatbelt probes.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFile, spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { link, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -12,8 +12,6 @@ import { promisify } from 'node:util';
 import { sandboxed } from '../pi-extensions/tool-sandbox.ts';
 import { pathDecision, readRoots, READ_SCOPE_ENV } from '../pi-extensions/read-scope.ts';
 import { piTaskArgs, runPiTask } from '../src/pi-task.ts';
-import { pythonEnv } from '../pi-extensions/python-env.ts';
-import { managedPython } from './helpers/managed-python.ts';
 const exec = promisify(execFile);
 
 async function fixture(t: any) {
@@ -32,10 +30,7 @@ async function fixture(t: any) {
 
 test('H1: sandboxed stage 1 cannot plant project extensions or context files', async t => {
   const f = await fixture(t);
-  const runtime = await managedPython(f.cwd, f.env);
-  const code = `import os, json\nout = {}\nfor path in ['.pi/extensions/canary.ts', '.agents/skills/a.md', 'AGENTS.md', 'CLAUDE.md']:\n try:\n  os.makedirs(os.path.dirname(path) or '.', exist_ok=True)\n  open(path, 'w').write('fictional planted resource')\n  out[path] = 'allowed'\n except PermissionError:\n  out[path] = 'denied'\nprint(json.dumps(out))`;
-  const [command, args] = sandboxed(runtime.python, ['-c', code], f.cwd, runtime.env);
-  const { stdout } = await exec(command, args, { cwd: f.cwd, env: runtime.env, timeout: 10_000 });
+  const { stdout } = await f.node(`const fs=require('node:fs'), out={}; for(const path of ['.pi/extensions/canary.ts','.agents/skills/a.md','AGENTS.md','CLAUDE.md']) {try{fs.mkdirSync(require('node:path').dirname(path),{recursive:true});fs.writeFileSync(path,'fictional planted resource');out[path]='allowed';}catch(e){out[path]='denied';}} console.log(JSON.stringify(out));`);
   assert.deepEqual(JSON.parse(stdout), { '.pi/extensions/canary.ts': 'denied', '.agents/skills/a.md': 'denied', 'AGENTS.md': 'denied', 'CLAUDE.md': 'denied' });
 });
 
@@ -58,11 +53,9 @@ test('H2/S1: Seatbelt denies both symlink swaps and hardlink planting', async t 
   assert.deepEqual(JSON.parse(stdout), { hard: 'EPERM', insideHardlink: 'EPERM', symlink: 'EPERM' });
 });
 
-test('S1: real sandboxed Python cannot plant or read an outside hardlink', async t => {
-  const f = await fixture(t), runtime = await managedPython(f.cwd, f.env);
-  const code = `import os, json\nout = {}\ntry:\n os.link(${JSON.stringify(f.key)}, 'python-link')\n out['link'] = 'allowed'\nexcept PermissionError:\n out['link'] = 'denied'\ntry:\n out['read'] = open('python-link').read()\nexcept OSError:\n out['read'] = 'unavailable'\nprint(json.dumps(out))`;
-  const [command, args] = sandboxed(runtime.python, ['-c', code], f.cwd, runtime.env);
-  const { stdout } = await exec(command, args, { cwd: f.cwd, env: runtime.env, timeout: 10_000 });
+test('S1: real sandboxed Node cannot plant or read an outside hardlink', async t => {
+  const f = await fixture(t);
+  const { stdout } = await f.node(`const fs=require('node:fs'),out={};try{fs.linkSync(${JSON.stringify(f.key)},'node-link');out.link='allowed';}catch{out.link='denied';}try{out.read=fs.readFileSync('node-link','utf8');}catch{out.read='unavailable';}console.log(JSON.stringify(out));`);
   assert.deepEqual(JSON.parse(stdout), { link: 'denied', read: 'unavailable' });
 });
 
@@ -81,7 +74,7 @@ test('H2: an attempted symlink swap between authorization and open cannot expose
   assert.equal(stdout.trim(), 'EPERM');
 });
 
-test('H2: concurrent checked reads remain safe during repeated sandboxed swap attempts; Python is sequential', async t => {
+test('H2: concurrent checked reads remain safe during repeated sandboxed swap attempts; calculate is sequential', async t => {
   const f = await fixture(t), path = join(f.cwd, 'racing', 'fictional-key');
   await mkdir(join(f.cwd, 'racing'));
   const swapping = f.node(`const fs=require('node:fs'); let n=0,denied=0; const timer=setInterval(()=>{try{fs.rmdirSync('racing');}catch{}try{fs.symlinkSync(${JSON.stringify(join(f.home, '.ssh'))},'racing');fs.unlinkSync('racing');}catch(e){if(e.code==='EPERM')denied++;}try{fs.mkdirSync('racing');}catch{}if(++n===30){clearInterval(timer);console.log(denied);}},2);`);
@@ -93,7 +86,7 @@ test('H2: concurrent checked reads remain safe during repeated sandboxed swap at
     await new Promise(resolve => setTimeout(resolve, 2));
   }
   assert.equal((await swapping).stdout.trim(), '30');
-  const { default: register } = await import('../pi-extensions/run-python.ts');
+  const { default: register } = await import('../pi-extensions/calculate.ts');
   let definition: any; register({ registerTool: (tool: any) => { definition = tool; } } as any);
   assert.equal(definition.executionMode, 'sequential');
 });
@@ -136,7 +129,7 @@ test('M3: an attached sibling scratch directory is not the task snapshot excepti
   assert.equal(stdout.trim(), 'EPERM');
 });
 
-test('M3: Python also refuses excluded descendants beneath a broadly attached material folder', async t => {
+test('M3: Node also refuses excluded descendants beneath a broadly attached material folder', async t => {
   const f = await fixture(t);
   f.env[READ_SCOPE_ENV] = JSON.stringify(readRoots([f.home, f.cwd]));
   const { stdout } = await f.node(`try{console.log(require('node:fs').readFileSync(${JSON.stringify(f.key)},'utf8'));}catch(e){console.log(e.code);}`);
@@ -151,31 +144,6 @@ test('M3: recursive searches refuse trees containing excluded descendants but pe
     assert.ok(pathDecision(tool, { path: f.material, pattern: 'fictional' }, f.cwd, readRoots([f.material, f.cwd])));
     assert.equal(pathDecision(tool, { path: safe, pattern: 'fictional' }, f.cwd, readRoots([f.material, f.cwd])), undefined);
   }
-});
-
-test('M4: Python runtime paths cannot select the user uv cache', async t => {
-  const f = await fixture(t), foreign = join(f.home, '.cache', 'uv');
-  const env = pythonEnv({ ...f.env, UV_CACHE_DIR: foreign, UV_PYTHON_INSTALL_DIR: join(f.home, 'foreign-python') });
-  assert.ok(env.UV_CACHE_DIR!.startsWith(f.data + '/'));
-  assert.notEqual(env.UV_CACHE_DIR, foreign);
-  assert.equal(env.UV_PYTHON_PREFERENCE, 'only-managed');
-});
-
-test('M4: a fictional foreign uv cache remains unreadable despite environment overrides', async t => {
-  const f = await fixture(t), foreign = join(f.home, '.cache', 'uv');
-  await mkdir(foreign, { recursive: true }); await writeFile(join(foreign, 'private-source.py'), 'FICTIONAL_PRIVATE_CACHE');
-  f.env.UV_CACHE_DIR = foreign;
-  const { stdout } = await f.node(`try{console.log(require('node:fs').readFileSync(${JSON.stringify(join(foreign, 'private-source.py'))},'utf8'));}catch(e){console.log(e.code);}`);
-  assert.equal(stdout.trim(), 'EPERM');
-});
-
-const noUv = spawnSync('uv', ['--version']).status === 0 ? false : 'uv is not installed (brew install uv); this check runs real offline uv.';
-test('M4: real offline uv does not fall back to a system interpreter with an empty managed store', { skip: noUv }, async t => {
-  const f = await fixture(t);
-  const { UV_ARGS } = await import('../pi-extensions/python-env.ts');
-  await assert.rejects(exec('uv', [...UV_ARGS, '--offline', '--no-python-downloads', 'python', '-c', 'print(42)'], { cwd: f.cwd, env: pythonEnv(f.env, f.cwd), timeout: 20_000 }), error => {
-    assert.match((error as any).stderr, /managed|download|interpreter/i); return true;
-  });
 });
 
 test('H2: generated code cannot signal its trusted supervisor or another process', async t => {

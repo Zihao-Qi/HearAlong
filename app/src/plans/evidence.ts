@@ -1,6 +1,6 @@
 // What a plans run's tools returned, kept as the evidence its quotes are checked against (M7b §2b "Evidence is what the tools
 // returned"). As each tool result streams in, a compact copy goes to the run's evidence.json, apart from the stream (whose size
-// caps may drop details): reads and greps with the lines they returned, fetched pages, run_python calls. Quotes are checked
+// caps may drop details): reads and greps with the lines they returned, fetched pages, calculation calls. Quotes are checked
 // against this only: the text Pi actually saw, at the lines its call returned. A result over its cap is saved cut and marked;
 // a run over its cap stops saving, and a run whose evidence could not be saved cannot become complete.
 import { createHash, randomUUID } from 'node:crypto';
@@ -31,8 +31,9 @@ export type MaterialEvidence = {
 };
 export type WebEvidence = { id: string; tool: 'fetch'; call: string; url: string; title: string; text: string; hash: string; cut: boolean };
 export type PythonEvidence = { id: string; tool: 'python'; call: string; run: number | null; script: string; output: string; stderr: string; status: string; ok: boolean; cut: boolean };
-export type EvidenceItem = MaterialEvidence | WebEvidence | PythonEvidence;
-type Unsaved = Omit<MaterialEvidence, 'id'> | Omit<WebEvidence, 'id'> | Omit<PythonEvidence, 'id'>;
+export type CalculationEvidence = Omit<PythonEvidence, 'tool'> & { tool: 'calc'; language: 'javascript' };
+export type EvidenceItem = MaterialEvidence | WebEvidence | PythonEvidence | CalculationEvidence;
+type Unsaved = Omit<MaterialEvidence, 'id'> | Omit<WebEvidence, 'id'> | Omit<PythonEvidence, 'id'> | Omit<CalculationEvidence, 'id'>;
 export type EvidenceState = {
   items: number; bytes: number;
   /** Results saved cut (over their own cap), and results not saved at all once the run's cap was reached. */
@@ -336,14 +337,14 @@ export class EvidenceRecorder {
         });
       };
     }
-    if (r.name === 'run_python') {
+    if (r.name === 'calculate' || r.name === 'run_python') {
       const d = (r.details ?? {}) as { runNumber?: unknown; status?: unknown; stdout?: unknown; stderr?: unknown };
       const script = String(args.code ?? ''), output = String(d.stdout ?? r.text), stderr = String(d.stderr ?? '');
       const status = typeof d.status === 'string' ? d.status : r.isError ? 'error' : 'exit 0';
       return budget => {
         const third = Math.floor(budget / 3);
         const kept = { script: cutTo(script, third), output: cutTo(output, third), stderr: cutTo(stderr, third) };
-        return [{ tool: 'python', call: r.id, run: typeof d.runNumber === 'number' ? d.runNumber : null, ...kept, status, ok: !r.isError && status === 'exit 0',
+        return [{ ...(r.name === 'calculate' ? { tool: 'calc' as const, language: 'javascript' as const } : { tool: 'python' as const }), call: r.id, run: typeof d.runNumber === 'number' ? d.runNumber : null, ...kept, status, ok: !r.isError && status === 'exit 0',
           cut: kept.script !== script || kept.output !== output || kept.stderr !== stderr }];
       };
     }

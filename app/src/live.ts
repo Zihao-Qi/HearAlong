@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { FRAME_RATE, type Frame, type MeetingStore } from './store.ts';
 import type { LiveDrafts } from './drafts.ts';
 import type { CaptureTiming } from './capture-gaps.ts';
+import { CaptureConflict } from './capture-error.ts';
 
 /** A window is sealed once this much is held, cut at the quietest frame boundary between MIN and MAX. */
 export const WINDOW_MIN_SECONDS = 16;
@@ -63,7 +64,7 @@ export class LiveCapture {
   private state(meetingId: string, source: string): SourceState {
     let state = this.sources.get(source);
     if (!state) { state = { meetingId, chain: Promise.resolve(), busy: 0, lastFrameAt: this.clock(), window: null, ended: false, firstFrameAt: null, lastSoundAt: null, endMs: 0 }; this.sources.set(source, state); }
-    if (state.meetingId !== meetingId) throw new Error('This audio source belongs to another meeting.');
+    if (state.meetingId !== meetingId) throw new CaptureConflict('This audio source belongs to another meeting.');
     return state;
   }
   private run<T>(state: SourceState, work: () => Promise<T>): Promise<T> {
@@ -113,10 +114,10 @@ export class LiveCapture {
     if (this.closing) return Promise.reject(new Error('Live capture has stopped.'));
     const state = this.state(meetingId, source);
     return this.run(state, async () => {
-      if (state.ended) throw new Error('This audio source has ended; start a new recording.');
-      // A goodbye may have sealed/abandoned the source while this request's body was still arriving.
-      if (pageId !== undefined) this.store.claimRecording(meetingId, source, pageId);
+      if (state.ended) throw new CaptureConflict('This audio source has ended; start a new recording.');
       const { frame, added } = await this.store.addFrame(meetingId, source, sequence, startMs, pcm, timing);
+      // Reclaim only accepted audio: a rejected sequence/body must not reopen a source or reset retention.
+      if (pageId !== undefined) this.store.claimRecording(meetingId, source, pageId);
       state.lastFrameAt = this.clock();
       state.firstFrameAt ??= state.lastFrameAt;
       state.endMs = Math.max(state.endMs, frame.startMs + frame.samples * 1000 / FRAME_RATE);
@@ -127,7 +128,8 @@ export class LiveCapture {
         if (!state.window) state.window = drafts.begin(meetingId, source, `${source}:${frame.sequence}`, frame.startMs) ? `${source}:${frame.sequence}` : null;
         if (state.window) drafts.feed(state.window, asFloats(pcm));
       }
-      await this.sealIfDue(state, source, false);
+      // Saving is the acknowledgement boundary. A failed seal leaves durable held frames for the next frame/sweep.
+      await this.sealIfDue(state, source, false).catch(error => this.options.log?.(`Sealing saved audio failed: ${(error as Error).message}`));
       return frame;
     });
   }
@@ -136,7 +138,7 @@ export class LiveCapture {
     const state = this.state(meetingId, source);
     return this.run(state, async () => {
       const saved = this.store.lastFrameSequence(meetingId, source);
-      if (lastSequence !== null && (saved ?? -1) < lastSequence) throw new Error(`Frames up to ${lastSequence} have not all arrived.`);
+      if (lastSequence !== null && (saved ?? -1) < lastSequence) throw new CaptureConflict(`Frames up to ${lastSequence} have not all arrived.`);
       state.ended = true;
       // Recognizers release at Stop; sealed display previews remain until their chunks complete.
       try {

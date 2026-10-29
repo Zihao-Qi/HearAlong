@@ -8,8 +8,6 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { pathDecision, readRoots, READ_SCOPE_ENV } from '../pi-extensions/read-scope.ts';
 import { sandboxed } from '../pi-extensions/tool-sandbox.ts';
-import { pythonEnv } from '../pi-extensions/python-env.ts';
-import { managedPython } from './helpers/managed-python.ts';
 const exec = promisify(execFile);
 
 async function fixture(t: any) {
@@ -81,22 +79,22 @@ test('N3: ordinary space/parenthesis names still build and run a profile', async
   assert.equal((await exec(command, args, { cwd: f.cwd, env })).stdout.trim(), '42');
 });
 
-test('N4: Python snapshot allow does not reopen hidden or credential-named contents', async t => {
-  const f = await fixture(t), runtime = await managedPython(f.cwd, f.env);
+test('N4: Seatbelt snapshot allow does not reopen hidden or credential-named contents', async t => {
+  const f = await fixture(t);
   for (const [name, text] of [['brief.md', 'fictional approved brief'], ['api-token.md', 'FICTIONAL_TOKEN'], ['.env', 'FICTIONAL_ENV']]) await writeFile(join(f.snapshot, name), text);
-  const code = `import json, pathlib\nout = {}\nfor name in ['brief.md', 'api-token.md', '.env']:\n try: out[name] = pathlib.Path(${JSON.stringify(f.snapshot)}, name).read_text()\n except PermissionError as e: out[name] = e.errno\nprint(json.dumps(out))`;
-  const [command, args] = sandboxed(runtime.python, ['-c', code], f.cwd, runtime.env);
-  const result = await exec(command, args, { cwd: f.cwd, env: runtime.env });
-  assert.deepEqual(JSON.parse(result.stdout), { 'brief.md': 'fictional approved brief', 'api-token.md': 1, '.env': 1 });
+  const code = `const fs=require('node:fs'), out={}; for(const name of ['brief.md','api-token.md','.env']) {try{out[name]=fs.readFileSync(${JSON.stringify(f.snapshot)}+'/'+name,'utf8');}catch(e){out[name]=e.code;}} console.log(JSON.stringify(out));`;
+  const [command, args] = sandboxed(process.execPath, ['-e', code], f.cwd, f.env);
+  const result = await exec(command, args, { cwd: f.cwd, env: f.env });
+  assert.deepEqual(JSON.parse(result.stdout), { 'brief.md': 'fictional approved brief', 'api-token.md': 'EPERM', '.env': 'EPERM' });
 });
 
-test('builds-v0 is neither a writable nor readable cross-task drop box', async t => {
-  const f = await fixture(t), runtime = await managedPython(f.cwd, f.env);
-  const builds = join(pythonEnv(f.env, f.cwd).UV_CACHE_DIR!, 'builds-v0'); await mkdir(builds, { recursive: true });
-  await writeFile(join(builds, 'prior-task.txt'), 'FICTIONAL_PRIOR_TASK');
-  await writeFile(join(builds, '.lock'), 'FICTIONAL_BUILD_MARKER');
-  const code = `import json, pathlib\nout = {}\ntry: out['read'] = pathlib.Path(${JSON.stringify(join(builds, 'prior-task.txt'))}).read_text()\nexcept PermissionError as e: out['read'] = e.errno\ntry:\n pathlib.Path(${JSON.stringify(join(builds, 'current-task.txt'))}).write_text('fictional current task')\n out['write'] = 'allowed'\nexcept PermissionError as e: out['write'] = e.errno\ntry: out['markerRead'] = pathlib.Path(${JSON.stringify(join(builds, '.lock'))}).read_text()\nexcept PermissionError as e: out['markerRead'] = e.errno\ntry:\n pathlib.Path(${JSON.stringify(join(builds, '.lock'))}).write_text('fictional marker content')\n out['markerWrite'] = 'allowed'\nexcept PermissionError as e: out['markerWrite'] = e.errno\nprint(json.dumps(out))`;
-  const [command, args] = sandboxed(runtime.python, ['-c', code], f.cwd, runtime.env);
-  const result = await exec(command, args, { cwd: f.cwd, env: runtime.env });
-  assert.deepEqual(JSON.parse(result.stdout), { read: 1, write: 1, markerRead: 1, markerWrite: 1 });
+test('trusted calculation runtime reads survive an overlapping material exclusion without exposing sibling packages', async t => {
+  const f = await fixture(t), library = join(f.materials, 'node_modules', 'fictional-maths');
+  await mkdir(library, { recursive: true });
+  const allowed = join(library, 'index.cjs'), denied = join(f.materials, 'node_modules', 'other.txt');
+  await writeFile(allowed, 'FICTIONAL_MATHS'); await writeFile(denied, 'FICTIONAL_UNRELATED_PACKAGE');
+  const code = `const fs=require('node:fs'),out={};for(const path of ${JSON.stringify([allowed, denied])}){try{out[path]=fs.readFileSync(path,'utf8');}catch(e){out[path]=e.code;}}console.log(JSON.stringify(out));`;
+  const [command, args] = sandboxed(process.execPath, ['-e', code], f.cwd, f.env, [library]);
+  const { stdout } = await exec(command, args, { cwd: f.cwd, env: f.env });
+  assert.deepEqual(JSON.parse(stdout), { [allowed]: 'FICTIONAL_MATHS', [denied]: 'EPERM' });
 });

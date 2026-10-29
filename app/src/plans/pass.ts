@@ -91,7 +91,7 @@ export async function runPlanPass(ctx: ExplorationContext, options: ExplorationP
   try {
     const sessionDir = join(ctx.folder, 'stage1');
     const first = await run('stage1', `${PLAN_PROMPT}\n\n${PLAN_STAGE1}`, { ...options, sessionDir }, e => {
-      if (e.type === 'tool_execution_start' && e.toolName === 'run_python') used++;
+      if (e.type === 'tool_execution_start' && e.toolName === 'calculate') used++;
       // Stage 1's text is an outline, not written plans.
       if (e.type === 'tool_execution_start' || e.type === 'tool_execution_end') updatePlanProgress(progress, e, scanner);
     });
@@ -121,7 +121,7 @@ export async function runPlanPass(ctx: ExplorationContext, options: ExplorationP
       await copyFile(session, copy);
       // Re-attaching the input would add a second copy of it to the continued conversation.
       const { files: _files, sessionDir: _dir, ...same } = options;
-      return { ...same, session: copy, signal, env: { ...options.env, RUN_PYTHON_USED: String(used) } };
+      return { ...same, session: copy, signal, env: { ...options.env, CALCULATE_USED: String(used) } };
     };
     progress.phase = 'write';
     if (!outline.plans.length) {

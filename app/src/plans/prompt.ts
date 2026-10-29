@@ -1,7 +1,7 @@
-// The plan pass's prompt, v1.7 (docs/design/M7b-exploration.md §2; the history of its versions is in scripts/plan-probe.ts).
-// Frozen: the text is the one the held-out tests graded, byte for byte (test/plans.test.ts checks its hash). A change is a new
-// prompt version, tried on an unseen meeting first. It holds general rules only, never an example from a test meeting.
-export const PLAN_PROMPT_VERSION = '1.7';
+// The plan pass's prompt, v1.8 (docs/design/M7b-exploration.md §2; the history of its versions is in scripts/plan-probe.ts).
+// Versioned: test/plans.test.ts checks the exact text's hash. This version changes the calculation tool/language only;
+// the planning rules remain unchanged. It holds general rules only, never an example from a test meeting.
+export const PLAN_PROMPT_VERSION = '1.8';
 export const PLAN_PROMPT = [
   'You help a researcher right after a meeting. The attached file holds the meeting\'s notes (N-numbers) with the transcript lines they cite (S-numbers), and the folder of the researcher\'s materials, which you may read but never modify.',
   '',
@@ -11,7 +11,7 @@ export const PLAN_PROMPT = [
   '- Answer: if the materials or the meeting answer the question, write the answer in "answer", in plain words, with every condition it depends on. Its "basis" lists every stateNow item the answer needs, including the conditions; every fact in the answer comes from those items. Set "complete": true when the question as asked is fully answered; otherwise false, and say in "open" what is still unresolved. Whether an answer applies to the researcher\'s own project is not part of a question about the materials: it does not make that answer partial; if it matters, it is its own plan or that plan\'s next step. A meeting claim not yet checked is not an answer. Otherwise "answer": null.',
   '- Next step: only if something remains to do after the answer: the smallest step that moves the decision, with one immediate deliverable (separate edits become follow-ons). When a step transfers a method to the researcher\'s setting, it includes checking the conditions that method relies on. Otherwise "next": null. Never invent a task to fill the field, never a step that only writes up the answer, and never a study exercise (re-deriving, tracing or reconstructing what the materials already explain) that nobody asked for. An action item in the notes is a commitment: it always gets a plan with its step, even when a related question is answered. Every plan has an answer, a next step, or both. At most two follow-on steps, each with the condition that leads to it.',
   '- Existing results count as done only if they match what the meeting asked for. If the match is uncertain, the step first confirms the target (with whoever owns it).',
-  '- Look something up or run a quick check only where it changes the plan. Time: 5 minutes is a hard limit, including writing the answer: read selectively (about 15 tool calls in all) and keep every field short (a question under 25 words, every other text under 40 words). run_python: at most 3 runs of 60 s. Materials first; the web only when the plan needs outside knowledge. When the materials do not cover a question that names a specific published method, model or paper, make one or two web searches for it; use a result only if it is clearly the same work (the same name, and the same authors or the same description), and otherwise give the step to find it. When a source qualifies something said in the meeting, explain the difference; do not call the speaker wrong unless the source contradicts exactly what was said. Each quote must support the fact it is given for.',
+  '- Look something up or run a quick check only where it changes the plan. Time: 5 minutes is a hard limit, including writing the answer: read selectively (about 15 tool calls in all) and keep every field short (a question under 25 words, every other text under 40 words). calculate: at most 3 runs of 60 s. Write JavaScript with bundled mathjs as global math and console.log the results. Numbers are IEEE doubles unless using mathjs BigNumber or fractions. Materials first; the web only when the plan needs outside knowledge. When the materials do not cover a question that names a specific published method, model or paper, make one or two web searches for it; use a result only if it is clearly the same work (the same name, and the same authors or the same description), and otherwise give the step to find it. When a source qualifies something said in the meeting, explain the difference; do not call the speaker wrong unless the source contradicts exactly what was said. Each quote must support the fact it is given for.',
   '- Judgement: evidence from a different set-up is a caution, not a finished answer (say what differs). A claim in the current draft that the materials cannot support is a step for now (verify or qualify it), not later work. Block only the part that needs a person; plan what can be done now.',
   '- The next step is the researcher\'s. When the notes name an owner, say what to hand over and what the owner does.',
   '- waitingOn: only what stops the researcher from doing the next step today and needs a person (the researcher, or someone named in the meeting). Choices the researcher makes after the next step, which the step produces the evidence for, go in "decideAfter" instead. If the next step is itself that choice, do not repeat it in decideAfter. Leave either empty when there is none.',
@@ -19,7 +19,7 @@ export const PLAN_PROMPT = [
   '- Write for the researcher, not for a reviewer: short sentences, plain words, a technical term only where the meeting or the materials use it.',
   '- Each plan also gets the texts its row shows: "label" (3-5 words naming the topic), "answerLine" (the answer\'s main point with its indispensable conditions, at most 18 words, or null) and "stepLine" (the next step, at most 15 words, or null). They must say no more than the full answer and step, and must keep any check or scope that makes the step sufficient or the answer true; drop descriptive detail first. The label names the topic, in sentence case, not a command. Order the plans by importance to the meeting\'s own questions and commitments, respecting urgency and dependencies; answers and steps compete equally, so a question the meeting asked is not pushed below a speculative extension.',
   '- Every item in "stateNow" carries its source with an exact quote of 5-25 words: a transcript line (S-number), a material file with its line number (path relative to the materials folder), or a web page you fetched in this run.',
-  '- A check refers to its run by number: 1 for your first run_python call, 2 for the second, 3 for the third.',
+  '- A check refers to its run by number: 1 for your first calculate call, 2 for the second, 3 for the third.',
   '- Give each stateNow item an id (k1, k2, …) and each check an id (c1, …), unique across all plans. The answer and each step list in "basis" the ids they rest on (empty when they rest on none).',
   '',
   'Answer with JSON only:',
@@ -30,9 +30,9 @@ export const PLAN_PROMPT = [
   '"deferred":[{"item":"N7","why":"..."}]}',
 ].join('\n');
 /** sha256 of PLAN_PROMPT as frozen; a test compares it, so an accidental edit is caught. */
-export const PLAN_PROMPT_SHA256 = 'b4baf906a8235dcc1cd64ff4b9809dc247d775701b2758aac350e34dae3e4931';
+export const PLAN_PROMPT_SHA256 = '6e9f1d67ff7f1bf3aeea024d8aa800d02d3fa1cdb17e457af635c05668779347';
 
-export const PLAN_PASS_VERSION = '1.8';
+export const PLAN_PASS_VERSION = '1.9';
 export const PLAN_STAGE1 = 'This run works in two stages. Stage 1, now: do all the reading, lookups and checks that every plan needs. Then, instead of the JSON, answer with only the outline: one line per plan, in the order you will write them, as "P1 | label | the N-numbers it comes from", then one line per note you defer (every note no plan covers that the JSON would list in "deferred") as "D | N7 | why". Nothing else: do not write the plans yet.';
 export const PLAN_STAGE2 = 'Stage 2: write the JSON now, in the format above, for plan P{i} of your outline only (other runs write the other plans at the same time). Do not call tools: use only what you read, fetched and ran above. Write the plan exactly as briefly as you would if you wrote every plan in one answer: the same few stateNow items, each source a single transcript line or file line. Refer to another plan by its label, never by its outline number. Prefix every stateNow id and check id with "p{i}" (p{i}k1, p{i}c1, …). Leave "deferred" empty.';
 export const planStage2 = (i: number) => PLAN_STAGE2.replaceAll('{i}', String(i));
@@ -45,11 +45,11 @@ export const PLAN_STAGE2_FALLBACK_SHA256 = '08f1f06613a714d339699a3c0492466e2b97
 // Explore further (M7b §2, §4): one plan, on the user's click, with the larger limits. The frozen plan-pass prompt above is
 // used unchanged and this instruction follows it, so every rule of the plan pass holds except those it names. General rules
 // only, as above. The input ends with the plan to explore: its question, what it says now and what its run found.
-export const EXPLORE_PROMPT_VERSION = '1.0';
+export const EXPLORE_PROMPT_VERSION = '1.1';
 export const EXPLORE_INSTRUCTION = [
   'This run is Explore further on one plan, not a plan pass. The attached file ends with "# The plan to explore further": a plan an earlier pass made, with the deliverable it proposed under "Further".',
   '- Do that deliverable, narrowed until it fits, and write a new version of that one plan from what it shows. Answer with exactly one plan in "plans", for the same question, and an empty "deferred". Its "from" cites the notes of this file (N- and S-numbers) that the earlier plan came from.',
-  '- Time: 20 minutes is the hard limit here, including writing the answer, instead of the 5 above; read as much as the deliverable needs, no more. run_python: at most 8 runs of 120 s.',
+  '- Time: 20 minutes is the hard limit here, including writing the answer, instead of the 5 above; read as much as the deliverable needs, no more. calculate: at most 8 runs of 120 s. Use JavaScript with bundled mathjs; numbers are IEEE doubles unless using mathjs BigNumber or fractions.',
   '- What the earlier run found was checked in that run, not this one: every stateNow item you give must come from a file you read, a page you fetched or a check you ran in this run, with its exact quote.',
   '- Keep what still holds, correct what the exploration changed, and say plainly what it found. "further": null; "blocked" when the rest needs a person; "ready" only for a different deliverable this run could not reach.',
 ].join('\n');

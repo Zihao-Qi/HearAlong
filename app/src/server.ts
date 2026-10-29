@@ -2,11 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, readdir, open, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
-import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { numberInRange } from './config.ts';
 import { dataDirectory, LEGACY_DATA_NOTICE } from './data-directory.ts';
+import { sessionToken } from './session-token.ts';
+import { CaptureConflict } from './capture-error.ts';
 import { downloadDisposition } from './download.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
@@ -40,7 +42,6 @@ import { CORRECTION_SYSTEM_PROMPT, Corrector, cleanGlossary, glossaryPrompt } fr
 import { NotesJobs, notesMarkdown, piNotesRunner, type NotesRunner } from './notes.ts';
 import { ActionJobs, piActionRunner, type ActionRunner } from './actions.ts';
 import { Boards, type GateAsk } from './board.ts';
-import { ensurePython, pythonStatus, stopPython } from './python-env.ts';
 import { Cooldowns } from './quota.ts';
 import { Explorations, recoverExplorations } from './explorations.ts';
 import { AutoPlanning, PlanTodos, PlanVersions } from './plans/index.ts';
@@ -145,6 +146,7 @@ export async function startServer(options: {
       '/segments-poll.js': ['segments-poll.js', 'text/javascript'],
       '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
       '/upload-retry.js': ['upload-retry.js', 'text/javascript'],
+      '/recording-end.js': ['recording-end.js', 'text/javascript'],
       '/capture-gaps.js': ['capture-gaps.js', 'text/javascript'],
       // The Plans section (M7b); its fixtures load only with ?plans-fixture= in the page URL (a dev switch).
       '/plans.js': ['plans.js', 'text/javascript'], '/plans-fixtures.js': ['plans-fixtures.js', 'text/javascript'],
@@ -177,6 +179,7 @@ export async function startServer(options: {
     store = new MeetingStore(directory);
     // A committed deletion must finish before recognition, notes/actions, boards or plans load their job records.
     finishPendingMeetingDeletions(store, message => console.log(message));
+    await store.removeOrphanAudioFiles(); // Under the lock, before any job or incoming recording can create files.
     const settingsPath = join(directory, 'settings.json');
     type BoardModel = 'quick' | 'main';
     const isBoardModel = (v: unknown): v is BoardModel => v === 'quick' || v === 'main';
@@ -348,8 +351,6 @@ export async function startServer(options: {
     // Select-text actions (M3): sol with per-action tools; an explicit `heavy: null` disables them unless a runner is injected.
     const actionRunner: ActionRunner | null = options.actions !== undefined ? options.actions
       : cloud && options.heavy !== null ? piActionRunner(() => ai.require('main')) : null;
-    // Prepare Compute's pinned Python environment on demand, not while AI is Off. Jobs wait outside their time limit.
-    const realRunner = Boolean(actionRunner) && options.actions === undefined;
     // Memory for actions (§7): a snapshot made from the database (never the repo files, which may hold unresolved edits),
     // with the notes of the project's other meetings, in a read-only folder per action so its citations stay checkable.
     const snapshotRoot = join(directory, 'scratch', 'memory-snapshots');
@@ -388,8 +389,7 @@ export async function startServer(options: {
     };
     const webUnavailable = () => ai.mode() === 'local' ? 'Web lookups are unavailable in On this Mac mode.' : null;
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
-      rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns,
-      computeReady: realRunner ? () => ensurePython(directory) : undefined });
+      rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns });
     await actionJobs.load();
     // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
@@ -412,20 +412,21 @@ export async function startServer(options: {
     const lastPcmAt = new Map<string, number>();
     // A recording session per meeting: the sources that sent audio and have not ended (Stop sends /pcm/end per source).
     const recording = new Map<string, Set<string>>();
+    // Unvalidated bodies need a temporary guard, not a durable recording claim or a fresh activity timestamp.
+    const receivingPcm = new Map<string, number>();
     const importing = new Set<string>();
     const isRecording = (meetingId: string) => Boolean(appStoreRef.heldFrames(meetingId).length
       || (recording.get(meetingId)?.size && clock() - (lastPcmAt.get(meetingId) ?? 0) < 60_000));
     const stillComing = (meetingId: string) => {
       const replay = appStoreRef.replay(meetingId);
-      return isRecording(meetingId) || Boolean(replay && appStoreRef.replayPositionMs(replay, clock()) < replay.durationMs)
+      return receivingPcm.has(meetingId) || isRecording(meetingId) || Boolean(replay && appStoreRef.replayPositionMs(replay, clock()) < replay.durationMs)
         || appStoreRef.chunks(meetingId).some(c => c.status === 'queued' || c.status === 'running');
     };
     // Explorations (M7b): the plan pass and Explore further, one at a time across the app, after any recording or replay and
     // after the meeting's own notes, memory update and actions. What a run computes comes with its request; this is its runtime.
     const replaying = () => appStoreRef.meetings().some(m => { const replay = appStoreRef.replay(m.id); return Boolean(replay && appStoreRef.replayPositionMs(replay, clock()) < replay.durationMs); });
-    // A recording counts from its first frame's arrival: the server's claim (made before the frame is saved, as for moves) as well
-    // as the capture's own view, which starts only once that frame is saved.
-    const recordingAnywhere = () => capture.recording() || [...recording.keys()].some(id => isRecording(id));
+    // In-flight bodies count for admission immediately, but only accepted frames publish lasting recording activity.
+    const recordingAnywhere = () => receivingPcm.size > 0 || capture.recording() || [...recording.keys()].some(id => isRecording(id));
     const localLiveUnavailable = () => ai.mode() === 'local' && recordingAnywhere() ? 'The local Board and corrections wait until recording stops.' : null;
     // The plans' Pi: the real one with cloud models on (an explicit `heavy: null` turns it off, as for notes), or a test's.
     const planPi = options.plans !== undefined ? options.plans : cloud && options.heavy !== null ? runPiTask : null;
@@ -440,13 +441,13 @@ export async function startServer(options: {
     // The plans of a meeting (M7b §2b): published versions in data/plans, their to-dos and automatic attempts in the database.
     const planJobs = new PlanJobs({ store, directory, clock, explorations, cooldowns, memory, projects, notes: notesJobs, pdfText,
       versions: new PlanVersions(directory, clock), todos: new PlanTodos(store, memory, clock), auto: new AutoPlanning(store, clock),
-      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython(directory) : undefined, web: () => ai.web, webUnavailable,
+      enabled: Boolean(planPi), web: () => ai.web, webUnavailable,
       models: async kind => ai.allow(await planModel(kind, () => ai.require('main'))),
       materialEvidence: (path, blocks) => files.evidenceAllowed(path, blocks),
       final: id => !stillComing(id), stale: id => notesJobs.status(id).then(s => s.stale), changed: id => changed(id) });
     /** What is running for a meeting, in words; a move waits for all of it (§8.2). Synchronous, so the caller can move right after. */
     const busy = (meetingId: string) => [
-      ...(isRecording(meetingId) ? ['the recording'] : []),
+      ...(isRecording(meetingId) || receivingPcm.has(meetingId) ? ['the recording'] : []),
       ...((() => { const replay = appStoreRef.replay(meetingId); return replay && appStoreRef.replayPositionMs(replay, clock()) < replay.durationMs; })() ? ['the replay'] : []),
       ...(notesJobs.busy(meetingId) ? ['the notes'] : []),
       ...(proposals.busy(meetingId) ? ['the memory update'] : []),
@@ -467,6 +468,7 @@ export async function startServer(options: {
     };
     const appStoreRef = store;
     const audioRetention = new AudioRetention(store, { setting: () => settings.audioRetention, clock,
+      pending: id => receivingPcm.has(id),
       active: id => isRecording(id) || capture.active(id) || importing.has(id), log: message => console.warn(message) });
     retention = audioRetention;
     if (jobs) jobs.onSettled = () => audioRetention.observe();
@@ -490,7 +492,7 @@ export async function startServer(options: {
     const meetingIds = appStoreRef.db.prepare('SELECT id FROM meetings');
     const pruneDeletedMeetingState = () => {
       const existing = new Set((meetingIds.all() as { id: string }[]).map(m => m.id));
-      for (const state of [boardActive, endedAt, lastPcmAt, recording, importing]) {
+      for (const state of [boardActive, endedAt, lastPcmAt, recording, receivingPcm, importing]) {
         for (const id of state.keys()) if (!existing.has(id)) state.delete(id);
       }
       // Active builds block deletion; failed meeting builds can linger. Project-scoped builds belong to the project.
@@ -535,7 +537,7 @@ export async function startServer(options: {
         projects.saveGlossary(scope, cleanGlossary(extractJson(result.text)), 'generated', result.provider && `${result.provider}/${result.model}`, before);
       } finally { await rm(view, { recursive: true, force: true }).catch(() => {}); }
     };
-    const token = randomBytes(32).toString('hex');
+    const token = await sessionToken(directory);
     let origin = '';
     let uploading = false;
     let closing = false;
@@ -637,6 +639,7 @@ export async function startServer(options: {
     const appJobs = jobs;
     const server = createServer(async (req, res) => {
       let admitted = false;
+      let releasePcm: (() => void) | undefined;
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
@@ -650,7 +653,7 @@ export async function startServer(options: {
           if (['/', '/setup', '/setup.html', '/mini.html'].includes(url.pathname)) res.setHeader('Set-Cookie', `meeting_session=${token}; HttpOnly; SameSite=Strict; Path=/`);
           if (url.pathname === '/') {
             const speech = speechSetup.status().rows.find(row => row.id === 'speech')!;
-            const neededReady = speech.state === 'ready' && !speechSetup.pending && speechSetup.ffmpeg.found;
+            const neededReady = speech.state === 'ready' && !speechSetup.pending;
             if (!settings.setupSeen || (!neededReady && appStore.meetings().length === 0)) {
               res.writeHead(302, { Location: '/setup', 'Cache-Control': 'no-store' }).end(); return;
             }
@@ -679,7 +682,7 @@ export async function startServer(options: {
         const pageId = req.headers['x-page'];
         if (typeof pageId === 'string' && pageId.length <= 64) {
           pages.set(pageId, Date.now()); seenPage = true;
-          appStore.reconnectRecordingPage(pageId);
+          // Only an actual frame reclaims a recovering source; a page heartbeat does not prove it is still capturing.
         }
         if (req.method === 'POST' && url.pathname === '/api/bye') {
           const departed = url.searchParams.get('page') ?? '';
@@ -812,7 +815,7 @@ export async function startServer(options: {
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const ready = fingerprint.ready();
           send(res, 200, { update: { ready, canRestart }, working: working(), config: speechSetup.runningConfig, meetings: appStore.meetings(), recording: capture.recording(), recordingAnywhere: recordingAnywhere(), shuttingDown, audioRetentionNotice: audioRetention.notice,
-            queued: appStore.queuedCount(), sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
+            queued: appStore.queuedCount(), transcriptionStorageError: appJobs.storageError, sttBackend: switchable ? switchable.backend : modelAvailable() ? 'test adapter' : 'unavailable',
             ai: ai.status(),
             capabilities: { microphone: true, systemAudio: false, cloudModels: ai.mode() !== 'off' && Boolean(quick), mainModel: ai.current('main'), correctionModel: quick ? ai.currentCorrection() : null, notesModel: notesRunner ? ai.current('main') : null, actionModel: actionRunner ? ai.current('main') : null, quickModel: quick ? ai.current('quick') : null, heavyModel: heavy ? ai.current('main') : null, participationScheduler: false, pdfExtraction: false },
           }); return;
@@ -1072,7 +1075,7 @@ export async function startServer(options: {
           res.end(notesMarkdown(status.notes, status.stale, status.coverage)); return;
         }
         if (req.method === 'GET' && action === 'actions') {
-          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled && (options.actions !== undefined || ai.mode() !== 'off'), pausedUntil: actionJobs.paused(), web: ai.web, python: pythonStatus(),
+          send(res, 200, { jobs: actionJobs.list(meetingId), enabled: actionJobs.enabled && (options.actions !== undefined || ai.mode() !== 'off'), pausedUntil: actionJobs.paused(), web: ai.web,
             materials: rootsFor(meetingId).length > 0 }); return;
         }
         if (req.method === 'POST' && action === 'actions') {
@@ -1080,7 +1083,11 @@ export async function startServer(options: {
           const value = await json(req);
           // "Ask about this" / "Look into it" on a board card bind the job to that card (M4 decision 7).
           const bound = typeof value.cardId === 'string' && await boards.hasCard(meetingId, value.cardId) ? { origin: 'card' as const, cardId: value.cardId } : { origin: 'user' as const, cardId: undefined };
-          try { const { job, merged } = await actionJobs.submit(meetingId, { ...value, ...bound }); send(res, merged ? 200 : 202, { job, merged }); }
+          try {
+            // Card-bound selection actions cannot bypass the Board's revision guard (including Ask about this / Look into it).
+            const selection = bound.cardId && !value.parentId && !value.retryOf ? await boards.selection(meetingId, bound.cardId) : value.selection;
+            const { job, merged } = await actionJobs.submit(meetingId, { ...value, ...bound, selection }); send(res, merged ? 200 : 202, { job, merged });
+          }
           catch (error) { throw new HttpError((error as { status?: number }).status ?? 500, (error as Error).message); }
           return;
         }
@@ -1203,10 +1210,12 @@ export async function startServer(options: {
           const startMs = numberInRange(req.headers['x-start-ms'], 0, 8 * 3600 * 1000, 'Audio start');
           if (!Number.isInteger(sequence) || !Number.isInteger(sampleRate)) throw new HttpError(400, 'Sequence and sample rate must be integers.');
           if (sampleRate !== 16000) throw new HttpError(400, 'Live audio must be 16 kHz mono.');
-          // Claim before reading the body: a first frame still arriving must block moves and audio retention too.
-          appStore.claimRecording(meetingId, source, typeof pageId === 'string' && pageId.length <= 64 ? pageId : null);
-          lastPcmAt.set(meetingId, clock());
-          recording.set(meetingId, (recording.get(meetingId) ?? new Set()).add(source));
+          // Protect in-flight bodies without reopening a source or clearing completion before validation/admission.
+          receivingPcm.set(meetingId, (receivingPcm.get(meetingId) ?? 0) + 1);
+          releasePcm = () => {
+            const remaining = (receivingPcm.get(meetingId) ?? 1) - 1;
+            if (remaining) receivingPcm.set(meetingId, remaining); else receivingPcm.delete(meetingId);
+          };
           if (ai.mode() === 'local') { if (quick instanceof ModelRpc) quick.interrupt(); gate?.interrupt(); }
           const pcm = await body(req, 4 * 16000);
           if (!pcm.length || pcm.length % 4) throw new HttpError(400, 'A live frame holds at most 1 second of float32 audio.');
@@ -1221,7 +1230,8 @@ export async function startServer(options: {
             try { parsed = JSON.parse(declared); } catch { throw new HttpError(400, 'Capture settings must be JSON.'); }
             if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || declared.length > 600) throw new HttpError(400, 'Capture settings must be a small object.');
             const clean = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter(([k, v]) => /^[a-zA-Z]{1,40}$/.test(k) && ['string', 'number', 'boolean'].includes(typeof v)).map(([k, v]) => [k, typeof v === 'string' ? v.slice(0, 120) : v]));
-            appStore.setSourceSettings(meetingId, source, clean);
+            try { appStore.setSourceSettings(meetingId, source, clean); }
+            catch (error) { throw new HttpError(503, (error as Error).message); }
           }
           // Optional metadata only: old pages still send exactly the same PCM body and need no capture clock.
           const captureWallMs = Number(req.headers['x-capture-wall-ms']);
@@ -1234,7 +1244,9 @@ export async function startServer(options: {
               ? { suspension: { fromWallMs, toWallMs } } : {}) } : undefined;
           let frame;
           try { frame = await capture.accept(meetingId, source, sequence, startMs, pcm, typeof pageId === 'string' && pageId.length <= 64 ? pageId : null, timing); }
-          catch (error) { throw new HttpError(409, (error as Error).message); }
+          catch (error) { throw new HttpError(error instanceof CaptureConflict ? 409 : 503, (error as Error).message); }
+          lastPcmAt.set(meetingId, clock());
+          recording.set(meetingId, (recording.get(meetingId) ?? new Set()).add(source));
           boardActive.add(meetingId);
           const pending = Number(req.headers['x-pending']);
           const clockStart = Number(req.headers['x-clock-start']);
@@ -1251,7 +1263,7 @@ export async function startServer(options: {
           const lastSequence = value.lastSequence === null ? null : numberInRange(value.lastSequence, 0, 1_000_000, 'Last sequence');
           let result;
           try { result = await capture.end(meetingId, source, lastSequence); }
-          catch (error) { throw new HttpError(409, (error as Error).message); }
+          catch (error) { throw new HttpError(error instanceof CaptureConflict ? 409 : 503, (error as Error).message); }
           recording.get(meetingId)?.delete(source);
           if (!appStore.recordingUnended(meetingId)) appStore.recordingEnded(meetingId, clock());
           audioRetention.observe();
@@ -1259,6 +1271,7 @@ export async function startServer(options: {
           send(res, 200, result); return;
         }
         if (req.method === 'POST' && action === 'upload') {
+          if (!speechSetup.ffmpeg.found) throw new HttpError(400, 'Importing audio/video files needs FFmpeg. Open Settings › This Mac › Setup to check FFmpeg. Recording and transcription do not need it.');
           if (!modelAvailable()) throw new HttpError(400, 'No local model is available.');
           if (uploading) throw new HttpError(409, 'Another audio file is uploading.');
           importing.add(meetingId);
@@ -1299,7 +1312,7 @@ export async function startServer(options: {
         if (!res.headersSent && !res.destroyed) send(res, status, { error: message, ...detail,
           ...(plansError ? { status, code: typeof detail.code === 'string' ? detail.code : status === 404 ? 'not found' : status === 409 ? 'conflict' : 'bad request' } : {}) });
         else if (!res.destroyed) res.end();
-      } finally { if (admitted) admissions--; }
+      } finally { releasePcm?.(); if (admitted) admissions--; }
     });
     server.requestTimeout = 120_000;
     server.headersTimeout = 10_000;
@@ -1378,7 +1391,6 @@ export async function startServer(options: {
       await gate?.close();
       await aiClosing;
       await keys.close(); // after the HTTP drain: an admitted key request has finished (a later one was refused)
-      stopPython(); // first, so jobs waiting on preparation are released
       await pdfText.close(); // waits for an extraction being stopped
       await actionJobs.close();
       await quick?.close?.();

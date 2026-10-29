@@ -142,7 +142,7 @@ const PLANS_RULES: Rule[] = [
   [/^no address given$/, 'no_citation'], [/^not fetched in this run$/, 'source_not_read'], [/^unknown source type null$/, 'no_citation'],
   [/^unknown source type /, 'invalid_citation'], [/^no text$/, 'no_text'], [/ is defined more than once$/, 'duplicate_id'],
 ];
-/** A plans run: each state item in the registry once (quick checks are Python runs, not quotes). */
+/** A plans run: each state item in the registry once (quick checks are calculation runs, not quotes). */
 export function plansOutcomes(run: Pick<CheckedRun, 'evidence'>): Outcome[] {
   return Object.values(run.evidence).filter(e => e.kind === 'state').map(e => e.result.ok ? 'passed' : match(PLANS_RULES, e.result.reason ?? ''));
 }

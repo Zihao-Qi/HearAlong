@@ -41,7 +41,7 @@ async function harness(outline: string, writers: (prompt: string, options: PiTas
     assert.equal(await readFile(options.session!, 'utf8'), 'session');
     return writers(prompt, options);
   } } as unknown as ExplorationContext;
-  const options = { model: 'fiction/model', thinking: 'low' as const, files: [inputPath], tools: 'read,run_python', extensions: ['python.ts'], env: { RUN_PYTHON_MAX_RUNS: '3', RUN_PYTHON_MS: '60000' } };
+  const options = { model: 'fiction/model', thinking: 'low' as const, files: [inputPath], tools: 'read,calculate', extensions: ['calculate.ts'], env: { CALCULATE_MAX_RUNS: '3', CALCULATE_MS: '60000' } };
   return { folder, calls, progress, controller, run: () => runPlanPass(ctx, options, () => {}, progress), close: () => rm(folder, { recursive: true, force: true }) };
 }
 test('writers merge in outline order, ignore extra plans/deferred, report exact progress and provenance', async () => {
@@ -58,7 +58,7 @@ test('writers merge in outline order, ignore extra plans/deferred, report exact 
     for (const c of h.calls.slice(1)) {
       assert.deepEqual(c.options.tools, h.calls[0].options.tools); assert.deepEqual(c.options.extensions, h.calls[0].options.extensions);
       assert.deepEqual(c.options.thinking, h.calls[0].options.thinking); assert.deepEqual(c.options.model, h.calls[0].options.model);
-      assert.equal(c.options.files, undefined); assert.deepEqual(c.options.env, { ...h.calls[0].options.env, RUN_PYTHON_USED: '0' });
+      assert.equal(c.options.files, undefined); assert.deepEqual(c.options.env, { ...h.calls[0].options.env, CALCULATE_USED: '0' });
     }
     const usage = JSON.parse(await readFile(join(h.folder, 'usage.json'), 'utf8')); assert.equal(usage.length, 3); assert.equal(usage[1].usage.cacheRead, 38000);
   } finally { await h.close(); }
