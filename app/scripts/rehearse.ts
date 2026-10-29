@@ -7,7 +7,6 @@ import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { startServer } from '../src/server.ts';
 import { clock, loadWav, parseArgs, validateRunFiles, writeTrimmed } from './rehearsal-input.ts';
-import { discoverModel } from '../src/config.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
@@ -31,6 +30,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     await validateRunFiles(directory);
   } else {
     // A new run starts after onboarding, with the speech model the app itself would find (MEETING_MODEL_PATH or Pi voice settings).
+    const { discoverModel } = await import('../src/config.ts');
     const speech = await discoverModel();
     if (!speech.available || !speech.path) throw new Error(speech.error ?? 'No speech model is available.');
     speechModelPath = speech.path;
