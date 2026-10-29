@@ -363,7 +363,6 @@ async function refreshStatus() {
     // Only a snapshot requested after the current selection may say that meeting no longer exists.
     if (generation === selectionGeneration && !capture && !requestingMic && !status.meetings.some(m => m.id === meetingId)) selectMeeting(status.meetings[0]?.id ?? null);
     renderMeetingMenu();
-    const caps = status.capabilities;
     const ai = fresh.ai;
     $('settings-ai-change').hidden = !!ai?.forcedOff;
     $('cloud').textContent = ai?.forcedOff ? 'Off for this start (MEETING_CLOUD=0).' : ai?.mode === 'local' ? 'On this Mac · nothing leaves it.' : ai?.mode === 'off' ? 'Off · transcription only.' : `Cloud · ${ai?.main?.id?.split('/')[0] ?? 'through Pi'}`;
@@ -1618,7 +1617,7 @@ function renderBoard(owner) {
     const state = holder.querySelector(':scope > .action-head .action-state');
     if (state && job.state !== 'done') state.textContent = stateText(job);
   }
-  for (const [id, entry] of boardView.nodes) if (!keep.has(id)) boardView.nodes.delete(id);
+  for (const [id] of boardView.nodes) if (!keep.has(id)) boardView.nodes.delete(id);
   const anchored = anchor && container.querySelector(`[data-card="${CSS.escape(anchor.id)}"]`);
   if (anchored) pane.scrollTop += anchored.getBoundingClientRect().top - pane.getBoundingClientRect().top - anchor.offset;
   const fresh = [...boardView.unread].filter(id => visible.some(c => c.id === id)).length;
@@ -2480,7 +2479,6 @@ function wallClock(ms) {
   return new Date(ms).toDateString() === new Date().toDateString() ? `today ${time}` : `${day(ms)}, ${time}`;
 }
 const requestId = () => crypto.randomUUID();
-const projectBase = () => { if (!projectView.project) throw new Error('This meeting is not in a project.'); return `/api/projects/${projectView.project.id}`; };
 let projectEpoch = 0;
 const projectOwners = new WeakMap();
 /** Captured by rendered controls, not looked up again at click time. A → B → A is still a new owner. */
@@ -2856,7 +2854,7 @@ function changesFor(p) {
     : p.kind === 'update' ? p.changes.map(c => ({ ...c, ...(c.item === original ? { item: choice } : {}), ...(c.by === original ? { by: choice } : {}) }))
     : [{ op: 'addSource', item: choice }];
   if (wording !== undefined) changes = changes.map(c => c.op === 'create' || c.op === 'answer' || (c.op === 'edit' && c.text) ? { ...c, text: wording } : c);
-  return changes.map(({ source: _source, ...c }) => c);
+  return changes.map(c => { const copy = { ...c }; delete copy.source; return copy; });
 }
 /** A target changed since the proposal was made, and the user has not looked at it again. */
 const isStale = p => Object.entries(p.targets).some(([id, v]) => projectView.data.items.find(i => i.id === id)?.version !== v) && !projectView.menu?.reviewed?.has(p.id);
