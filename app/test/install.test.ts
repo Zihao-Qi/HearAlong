@@ -60,7 +60,8 @@ esac`);
 case "$*" in
   'install node@22') : > "$TEST_ROOT/node-installed" ;;
   'install ffmpeg') : > "$TEST_ROOT/ffmpeg-installed" ;;
-  '--prefix node@22'|'--prefix ffmpeg') echo "$TEST_ROOT/tools" ;;
+  'install uv') : > "$TEST_ROOT/uv-installed" ;;
+  '--prefix node@22'|'--prefix ffmpeg'|'--prefix uv') echo "$TEST_ROOT/tools" ;;
   *) exit 91 ;;
 esac`);
   stub('node', `if [ "\${TEST_NODE:-}" = missing ] && [ ! -f "$TEST_ROOT/node-installed" ]; then exit 1; fi
@@ -84,8 +85,10 @@ elif [ "\${TEST_FFMPEG:-}" = n44_banner ]; then
   printf '${name} version n4.4.1\\nbuilt with Apple clang version 16.0.0\\n'
 else echo '${name} version 8.0'; fi`);
   }
+  stub('uv', 'exit 0');
   mkdirSync(join(root, 'tools/bin'), { recursive: true });
   for (const name of ['node', 'npm', 'ffmpeg', 'ffprobe']) symlinkSync(join(bin, name), join(root, 'tools/bin', name));
+  cpSync(join(bin, 'uv'), join(root, 'tools/bin/uv')); // A test removes bin/uv to model a Mac without uv.
   stub('swiftc', `echo swiftc >> "$CALLS"
 [ "$HEARALONG_NO_REGISTER" = 1 ]
 [ "\${TEST_BUILD_FAIL:-}" != 1 ]
@@ -214,6 +217,16 @@ for (const state of ['missing', 'old']) {
     assert.match(f.calls(), /brew install ffmpeg\n/);
   });
 }
+
+test('missing uv is installed via brew; an existing uv is left alone', () => {
+  const present = fixture();
+  present.ok();
+  assert.doesNotMatch(present.calls(), /brew install uv/);
+  const missing = fixture();
+  rmSync(join(missing.bin, 'uv'));
+  missing.ok();
+  assert.match(missing.calls(), /brew install uv\n/);
+});
 
 test('upgrade preserves data and old code until npm, build and both swaps succeed', () => {
   const f = fixture();

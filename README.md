@@ -67,7 +67,7 @@ Requires macOS 26 or later, [Google Chrome](https://www.google.com/chrome/) and 
 curl -fsSL https://github.com/Zihao-Qi/HearAlong/releases/latest/download/install.sh | sh
 ```
 
-The installer verifies the release checksum, installs Node.js ≥ 22.19 (`node@22`) and FFmpeg ≥ 4.4 with Homebrew only if needed, and installs pinned runtime packages with npm. It never installs Homebrew or Chrome, and never asks for administrator privileges. It builds and ad-hoc signs the helper locally with Apple's Swift tools; no Apple Developer account is needed.
+The installer verifies the release checksum, installs Node.js ≥ 22.19 (`node@22`), FFmpeg ≥ 4.4 and `uv` (for calculations) with Homebrew only if needed, and installs pinned runtime packages with npm. It never installs Homebrew or Chrome, and never asks for administrator privileges. It builds and ad-hoc signs the helper locally with Apple's Swift tools; no Apple Developer account is needed.
 
 - Code: `~/Library/Application Support/HearAlong/app/`
 - Recordings, transcripts, settings and downloaded speech models: `~/Library/Application Support/HearAlong/data/`
@@ -81,7 +81,7 @@ To uninstall, quit HearAlong, then run:
 sh "$HOME/Library/Application Support/HearAlong/app/install.sh" --uninstall
 ```
 
-This removes the code and helper, **not your data**. Delete `~/Library/Application Support/HearAlong/data/` yourself only if you no longer want your meetings or models. Homebrew, Node, FFmpeg, saved Keychain keys and any Chrome web app remain; remove those separately if desired.
+This removes the code and helper, **not your data**. Delete `~/Library/Application Support/HearAlong/data/` yourself only if you no longer want your meetings or models. Homebrew, Node, FFmpeg, uv, saved Keychain keys and any Chrome web app remain; remove those separately if desired.
 
 ### Run from source
 
