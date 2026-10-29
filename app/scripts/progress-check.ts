@@ -175,7 +175,8 @@ try {
       const sentence = page.locator('.notes-summary a').first();
       await sentence.focus(); await sentence.evaluate(n => { (window as any).savedSentence = n; });
       const firstClock = await page.locator('#notes-progress .progress-heading').innerText();
-      await page.waitForTimeout(1200);
+      // Wait for the tick itself, not a fixed 1.2 s: a slow runner's timers can fire late.
+      await page.waitForFunction(text => (document.querySelector('#notes-progress .progress-heading') as HTMLElement | null)?.innerText !== text, firstClock, { timeout: 5000 }).catch(() => {});
       assert.notEqual(await page.locator('#notes-progress .progress-heading').innerText(), firstClock, 'clock ticks each second');
       assert.equal(await sentence.evaluate(n => n === document.activeElement), true);
       await shot('notes-again-read');
@@ -219,7 +220,7 @@ try {
       await startPlan();
       await page.locator('#plans [data-phase="notes"][data-state="now"]').waitFor();
       const planClock = await page.locator('#plans .progress-heading').innerText();
-      await page.waitForTimeout(1200);
+      await page.waitForFunction(text => (document.querySelector('#plans .progress-heading') as HTMLElement | null)?.innerText !== text, planClock, { timeout: 5000 }).catch(() => {});
       assert.notEqual(await page.locator('#plans .progress-heading').innerText(), planClock, 'plans clock ticks too');
       await shot('plans-read-notes');
       const planFocus = page.locator('.plan-chevron').first();
