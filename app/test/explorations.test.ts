@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { request as httpRequest, type ClientRequest } from 'node:http';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -655,6 +656,8 @@ test('the final stream state is written after the queued appends, so a failed la
 
 test('a recording counts for admission from its first frame\'s arrival, before the capture has saved it (review 7)', async () => {
   const s = await scratch();
+  let incoming: ClientRequest | undefined;
+  let accepted: Promise<number> | undefined;
   const app = await startServer({ directory: s.directory, port: 0, quick: null, heavy: null, drafts: null, recognizer: {
     async transcribe() { return { text: 'Test', backend: 'test', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, words: [], timestampKind: 'none' }; },
     close() {},
@@ -662,9 +665,21 @@ test('a recording counts for admission from its first frame\'s arrival, before t
   try {
     const meeting = app.store.createMeeting('Live meeting');
     const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
-    // A frame the capture does not save (out of order): the server has claimed the recording, the capture has not seen it.
+    // Hold a valid first frame in flight, before capture can save it. A separate rejected request must not release its guard.
+    const source = `mic:${randomUUID()}`;
+    accepted = new Promise<number>((resolve, reject) => {
+      incoming = httpRequest(`${app.url}/api/meetings/${meeting.id}/pcm`, { method: 'POST', headers: {
+        Cookie: cookie, Origin: app.url, Expect: '100-continue', 'Content-Length': String(16000 * 4),
+        'X-Audio-Source': source, 'X-Sequence': '0', 'X-Sample-Rate': '16000', 'X-Start-Ms': '0',
+      } }, response => { response.resume(); response.once('end', () => resolve(response.statusCode!)); });
+      incoming.once('error', reject);
+    });
+    void accepted.catch(() => {}); // Early assertion cleanup may abort the still-arriving body.
+    const arrived = once(incoming!, 'continue');
+    incoming!.write(Buffer.alloc(4)); await arrived;
+    assert.equal(app.store.lastFrameSequence(meeting.id, source), null, 'the admitted body has not reached capture yet');
     const frame = await fetch(`${app.url}/api/meetings/${meeting.id}/pcm`, { method: 'POST', body: Buffer.alloc(16000 * 4),
-      headers: { Cookie: cookie, Origin: app.url, 'X-Audio-Source': `mic:${randomUUID()}`, 'X-Sequence': '1', 'X-Sample-Rate': '16000', 'X-Start-Ms': '0' } });
+      headers: { Cookie: cookie, Origin: app.url, 'X-Audio-Source': source, 'X-Sequence': '1', 'X-Sample-Rate': '16000', 'X-Start-Ms': '0' } });
     assert.equal(frame.status, 409);
     assert.ok(app.busy(meeting.id).includes('the recording'));
     const other = app.store.createMeeting('Another meeting');
@@ -672,7 +687,14 @@ test('a recording counts for admission from its first frame\'s arrival, before t
     await sleep(150);
     assert.equal(app.explorations.get(job.id)!.state, 'waiting');
     assert.equal(app.explorations.list(other.id)[0].waiting?.reason, 'Waiting for the recording to end');
-  } finally { await app.close(); await s.close(); }
+    incoming!.end(Buffer.alloc(16000 * 4 - 4));
+    assert.equal(await accepted, 201, 'the guarded valid frame can still finish saving');
+    assert.equal(app.store.lastFrameSequence(meeting.id, source), 0);
+    const stopped = await fetch(`${app.url}/api/meetings/${meeting.id}/pcm/end`, { method: 'POST',
+      headers: { Cookie: cookie, Origin: app.url, 'Content-Type': 'application/json' }, body: JSON.stringify({ source, lastSequence: 0 }) });
+    assert.equal(stopped.status, 200);
+    await until(() => app.explorations.get(job.id)!.state === 'done', 'admitted AI work to resume after Stop');
+  } finally { incoming?.destroy(); await accepted?.catch(() => {}); await app.close(); await s.close(); }
 });
 
 test('one event stays within its bound as written, JSON escapes included (review 9)', async () => {

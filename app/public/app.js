@@ -5,6 +5,7 @@ import { createListenPlayer } from '/listen.js';
 import { createSegmentsPoll } from '/segments-poll.js';
 import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
+import { createRecordingEnds } from '/recording-end.js';
 import { SetupUI, setupRequest, aiDialog } from '/setup-ui.js';
 import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
 
@@ -359,7 +360,7 @@ async function refreshStatus() {
     listen.recording(fresh.recordingAnywhere || capture || requestingMic);
     listen.meeting(fresh.meetings.find(m => m.id === meetingId));
     if (fresh.shuttingDown) quitting(); // also with no meeting selected (no transcript polling)
-    $('connection').textContent = '';
+    $('connection').textContent = fresh.transcriptionStorageError ? `Transcription paused: ${fresh.transcriptionStorageError}. Retrying…` : '';
     // Only a snapshot requested after the current selection may say that meeting no longer exists.
     if (generation === selectionGeneration && !capture && !requestingMic && !status.meetings.some(m => m.id === meetingId)) selectMeeting(status.meetings[0]?.id ?? null);
     renderMeetingMenu();
@@ -2168,6 +2169,9 @@ $('mic-test').onclick = guarded(async () => {
 // capture = { owner, path, context, offsetMs, generation, sources: Map<'mic'|'tab', Source>, stopping, drainUntil, startedAt, lastDraftAt }
 let captureGeneration = 0;
 const SOURCE_NAMES = { mic: 'Microphone', tab: 'Meeting tab' };
+const recordingEnds = createRecordingEnds((path, value) => apiWithin(10_000, path, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value),
+}));
 
 function sourceIds() { return capture ? [...capture.sources.values()].map(s => s.sourceId) : []; }
 /** A source's end: stop its input, collect its last frame, save what is queued, and tell the server. Never touches the other source. */
@@ -2188,8 +2192,8 @@ function endSource(session, source, why) {
     try { await source.uploads; } catch { saved = false; /* already reported */ }
     // Always end the source on the server: after a failed upload with an unknown last frame (null), so whatever was saved is
     // transcribed now and its live preview is released.
-    try { await apiWithin(10_000, `${session.path}/pcm/end`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: source.sourceId, lastSequence: saved && source.sequence ? source.sequence - 1 : null, stopping: Boolean(session.stopping) }) }); }
-    catch (error) { log(`${SOURCE_NAMES[source.kind]}: the end could not be confirmed (${error.message}); it is transcribed after a short delay instead.`, true); }
+    try { await recordingEnds.end(`${session.path}/pcm/end`, { source: source.sourceId, lastSequence: saved && source.sequence ? source.sequence - 1 : null, stopping: Boolean(session.stopping) }); }
+    catch (error) { log(`${SOURCE_NAMES[source.kind]}: the end could not be confirmed (${error.message}); saved audio is transcribed after a short delay and confirming Stop will keep retrying.`, true); }
     if (why) log(why);
     session.sources.delete(source.kind);
     if (source.kind === 'tab' && !session.stopping) session.tabEnded = true;
