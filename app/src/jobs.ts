@@ -35,48 +35,52 @@ export class JobManager {
     if (this.running || this.stopped || this.recognizer.available?.() === false || this.clock() < this.storageRetryAt) return;
     if (this.retryTimer) { this.clearTimer(this.retryTimer); this.retryTimer = undefined; }
     this.running = true;
-    // Every fire-and-forget caller is safe, including startup and live capture. No database writes in this handler.
-    this.drained = this.pump().then(() => {
+    this.drained = this.pump();
+  }
+  private async pump() {
+    try {
+      while (!this.stopped && this.recognizer.available?.() !== false) {
+        if (this.settlement) {
+          const saved = this.settlement;
+          if ('result' in saved) this.store.completeChunk(saved.job.id, saved.result);
+          else this.store.failChunk(saved.job.id, saved.error, saved.delayMs === null ? null : this.clock() + saved.delayMs);
+          this.settlement = undefined;
+          this.onSettled?.(saved.job.meetingId);
+          continue;
+        }
+        const job = this.store.nextChunk(this.clock());
+        if (!job) {
+          const retryAt = this.store.nextRetryAt();
+          if (retryAt !== null) this.wake(retryAt);
+          break;
+        }
+        // A restart can recover a running third attempt; do not start a fourth.
+        if (job.attempts >= 3) {
+          this.settlement = { job, error: job.error ?? 'Transcription attempt limit reached.', delayMs: null };
+          continue;
+        }
+        this.store.startChunk(job.id);
+        try {
+          const result = await this.recognizer.transcribe({ ...job, path: this.store.resolvePath(job.path) });
+          if (!this.stopped) this.settlement = { job, result };
+        } catch (error) {
+          if (!this.stopped) {
+            const attempts = job.attempts + 1;
+            this.settlement = { job, error: error instanceof Error ? error.message : String(error),
+              delayMs: attempts < 3 ? (attempts === 1 ? 15_000 : 60_000) : null };
+          }
+        }
+      }
       this.storageError = null; this.storageFailures = 0; this.storageRetryAt = 0;
-    }, error => {
+    } catch (error) {
+      // Every fire-and-forget caller is safe. No database writes in this handler.
       if (this.stopped) return;
       this.storageError = error instanceof Error ? error.message : String(error);
       this.storageRetryAt = this.clock() + Math.min(60_000, 15_000 * 2 ** Math.min(this.storageFailures++, 2));
       this.wake(this.storageRetryAt);
-    }).finally(() => { this.running = false; });
-  }
-  private async pump() {
-    while (!this.stopped && this.recognizer.available?.() !== false) {
-      if (this.settlement) {
-        const saved = this.settlement;
-        if ('result' in saved) this.store.completeChunk(saved.job.id, saved.result);
-        else this.store.failChunk(saved.job.id, saved.error, saved.delayMs === null ? null : this.clock() + saved.delayMs);
-        this.settlement = undefined;
-        this.onSettled?.(saved.job.meetingId);
-        continue;
-      }
-      const job = this.store.nextChunk(this.clock());
-      if (!job) {
-        const retryAt = this.store.nextRetryAt();
-        if (retryAt !== null) this.wake(retryAt);
-        break;
-      }
-      // A restart can recover a running third attempt; do not start a fourth.
-      if (job.attempts >= 3) {
-        this.settlement = { job, error: job.error ?? 'Transcription attempt limit reached.', delayMs: null };
-        continue;
-      }
-      this.store.startChunk(job.id);
-      try {
-        const result = await this.recognizer.transcribe({ ...job, path: this.store.resolvePath(job.path) });
-        if (!this.stopped) this.settlement = { job, result };
-      } catch (error) {
-        if (!this.stopped) {
-          const attempts = job.attempts + 1;
-          this.settlement = { job, error: error instanceof Error ? error.message : String(error),
-            delayMs: attempts < 3 ? (attempts === 1 ? 15_000 : 60_000) : null };
-        }
-      }
+    } finally {
+      // Release before resolving: a due retry/terminal poll must not lose its kick to a drained pump.
+      this.running = false;
     }
   }
   async wait() { await this.drained; }
