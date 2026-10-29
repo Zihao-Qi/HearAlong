@@ -25,6 +25,7 @@ for (const mode of ['cloud', 'local'] as const) test(`${mode} listing has exact 
   await reader.read();
   const call = (await f.calls())[0];
   assert.deepEqual(call.args, [
+    '--no-approve',
     ...(mode === 'local' ? ['--no-extensions', '--no-skills'] : []),
     '-e', LOCAL_MODELS_EXTENSION, '--no-context-files', '--list-models',
   ]);
@@ -49,12 +50,12 @@ for (const mode of ['local', 'cloud'] as const) test(`${mode} tasks and RPC have
   const f = await fakePi(t);
   const model = mode === 'local' ? 'ollama/example' : 'example/main';
   f.env.OPENAI_API_KEY = 'fictional-key';
-  const prefix = mode === 'local' ? ['--no-extensions', '--no-skills', '-e', LOCAL_MODELS_EXTENSION] : [];
+  const prefix = ['--no-approve', ...(mode === 'local' ? ['--no-extensions', '--no-skills', '-e', LOCAL_MODELS_EXTENSION] : [])];
   await runPiTask('Example', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: null });
   const rpc = new PiRpc({ model, aiMode: mode, cwd: f.cwd, env: f.env });
   try { await rpc.ask('Example'); } finally { await rpc.close(); }
   const python = fileURLToPath(new URL('../pi-extensions/run-python.ts', import.meta.url));
-  await runPiTask('Example gated', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: 'read,run_python', readRoots: [], extensions: [python], processDir: join(f.directory, 'processes') });
+  await runPiTask('Example gated', { model, aiMode: mode, cwd: f.cwd, env: f.env, tools: 'read,run_python', command: f.command, readRoots: [], extensions: [python], processDir: join(f.directory, 'processes') });
   const calls = await f.calls();
   assert.deepEqual(calls[2].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '-e', python, '-e', READ_SCOPE_EXTENSION, '--tools', 'read,run_python', '--no-session', '--', 'Example gated']);
   assert.deepEqual(calls[0].args, [...prefix, '--mode', 'json', '--model', model, '--no-context-files', '--no-tools', ...(mode === 'cloud' ? ['--no-skills'] : []), '--no-session', '--', 'Example']);

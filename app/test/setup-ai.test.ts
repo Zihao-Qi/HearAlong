@@ -38,7 +38,7 @@ test('stderr warnings do not affect a valid model table, and probes have app cwd
   const f = await fakePi(t, { stderr: 'Warning: No models match pattern example/*' });
   assert.equal((await new PiModels({ cwd: f.cwd, env: f.env }).read()).state, 'ok');
   const call = (await f.calls())[0]; assert.equal(call.cwd, f.cwd);
-  assert.deepEqual(call.args, ['-e', LOCAL_MODELS_EXTENSION, '--no-context-files', '--list-models']); assert.ok(!call.args.includes('--no-extensions'));
+  assert.deepEqual(call.args, ['--no-approve', '-e', LOCAL_MODELS_EXTENSION, '--no-context-files', '--list-models']); assert.ok(!call.args.includes('--no-extensions'));
 });
 
 for (const [label, config, state] of [
@@ -199,7 +199,7 @@ test('warm correction and board lanes replace processes, old calls keep their mo
 test('notes and action runners resolve each call, running task keeps its model; plan thinking never splits colon ids', async t => {
   const f = await fixture(t, { taskDelay: 150 }, chosen); useEnvironment(t, f.env);
   const notes = piNotesRunner(() => f.ai.require('main'));
-  const actions = piActionRunner(() => f.ai.require('main'));
+  const actions = piActionRunner(() => f.ai.require('main'), undefined, f.command);
   const input = { instructions: 'Reply OK', inputPath: join(f.directory, 'input.md'), cwd: f.cwd, sessionDir: join(f.directory, 'sessions'), signal: new AbortController().signal };
   const old = notes(input); await until(async () => (await f.calls()).some(c => c.args.includes('json')));
   await f.ai.use({ main: chosen.quickModel, quick: chosen.quickModel });

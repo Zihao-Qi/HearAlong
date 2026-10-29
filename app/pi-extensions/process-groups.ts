@@ -80,9 +80,11 @@ export type Gated = { child: ChildProcess; record: ProcessRecord; path: string; 
  */
 export async function spawnGated(command: string, args: string[], options: {
   dir: string; kind: string; cwd: string; env?: NodeJS.ProcessEnv; stdio: ['ignore' | 'pipe', 'ignore' | 'pipe', 'ignore' | 'pipe'];
+  /** Trusted owner lifeline on fd 4, separate from the gate's fd 3. Never inherited by calculation code. */
+  lifetime?: boolean;
 }): Promise<Gated> {
   await mkdir(options.dir, { recursive: true, mode: 0o700 });
-  const child = spawn('/bin/sh', ['-c', GATE, SENTINEL, options.dir, command, ...args], { cwd: options.cwd, env: options.env, detached: true, stdio: [...options.stdio, 'pipe'] });
+  const child = spawn('/bin/sh', ['-c', GATE, SENTINEL, options.dir, command, ...args], { cwd: options.cwd, env: options.env, detached: true, stdio: [...options.stdio, 'pipe', ...(options.lifetime ? ['pipe' as const] : [])] });
   const gate = child.stdio[3] as Writable;
   gate.on('error', () => {}); // the shell may be gone already
   try {

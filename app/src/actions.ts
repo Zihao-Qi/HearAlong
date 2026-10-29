@@ -524,9 +524,9 @@ export type ActionRunner = (input: {
   /** Where the task's processes are recorded (Pi's group, Compute's scripts): a server start ends what a crash left there. */
   processDir: string;
 }) => Promise<PiTaskResult>;
-export function piActionRunner(model: TaskModel, timeoutMs = 600_000): ActionRunner {
+export function piActionRunner(model: TaskModel, timeoutMs = 600_000, command?: string): ActionRunner {
   return async ({ action, tools, readRoots, instructions, inputPath, cwd, sessionDir, signal, onEvent, processDir }) => runPiTask(instructions, {
-    model: await taskModel(model), cwd, sessionDir, tools, readRoots, extensions: ACTIONS[action].extensions, files: [inputPath], timeoutMs, signal, onEvent, processDir,
+    model: await taskModel(model), cwd, sessionDir, tools, readRoots, command, extensions: ACTIONS[action].extensions, files: [inputPath], timeoutMs, signal, onEvent, processDir,
   });
 }
 /** The tools an action gets: without working web tools, Explain and Other fall back to the materials alone. */
@@ -786,7 +786,12 @@ export class ActionJobs {
     const started = performance.now();
     let firstTextMs: number | null = null;
     const cwd = join(this.options.directory, 'scratch', 'actions', job.id);
-    const roots = job.context.roots;
+    const currentRoots = () => {
+      const attached = this.options.rootsFor(job.meetingId);
+      return job.context.roots.filter(root => attached.some(now => now.id === root.id && now.path === root.path)
+        || this.options.memory?.root(job.meetingId, root.id)?.path === root.path);
+    };
+    const roots = currentRoots();
     let before: Awaited<ReturnType<typeof materialManifest>> | null = null;
     // Tool results are kept as they arrive, so a failed or cancelled run still has its calculations on record.
     const starts = new Map<string, unknown>();
@@ -837,7 +842,7 @@ export class ActionJobs {
         }
       };
       const result = await this.options.runner!({
-        action: job.action, tools: toolsFor(job.action, web), readRoots: roots.map(root => root.path), instructions: actionInstructions(job.action, pdfs.length > 0), inputPath, cwd,
+        action: job.action, tools: toolsFor(job.action, web), readRoots: currentRoots().map(root => root.path), instructions: actionInstructions(job.action, pdfs.length > 0), inputPath, cwd,
         sessionDir: join(this.options.directory, 'sessions', job.meetingId, 'actions', job.id), signal: controller.signal, onEvent,
         processDir: join(this.options.directory, 'processes', job.id),
       });

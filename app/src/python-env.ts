@@ -10,10 +10,10 @@ let child: ChildProcess | null = null;
 
 export function pythonStatus(): PythonState { return { ...status }; }
 /** Starts (once) and returns the preparation; bounded to 10 minutes. */
-export function ensurePython(timeoutMs = 600_000): Promise<void> {
+export function ensurePython(directory: string, timeoutMs = 600_000): Promise<void> {
   ready ??= new Promise<void>((resolve, reject) => {
     status.state = 'preparing';
-    child = spawn('uv', [...UV_ARGS, 'python', '-c', 'import numpy, scipy, sympy'], { env: pythonEnv(process.env), stdio: ['ignore', 'ignore', 'pipe'] });
+    child = spawn('uv', [...UV_ARGS, 'python', '-c', 'import numpy, scipy, sympy'], { env: pythonEnv({ ...process.env, MEETING_DATA_DIR: directory }), stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     const timer = setTimeout(() => { child?.kill('SIGKILL'); }, timeoutMs);
     child.stderr!.on('data', part => { err = (err + part).slice(-500); });

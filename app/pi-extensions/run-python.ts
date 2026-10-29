@@ -3,7 +3,8 @@
  * Loaded per task with `pi -e <this file>`; the task's cwd is the job's scratch folder.
  *
  * Bounds: scratch folder only, 120 s per run (RUN_PYTHON_MS), at most 6 runs per task (RUN_PYTHON_MAX_RUNS), 20 KB each of stdout and stderr, one thread per
- * math library, and the whole process group is killed on timeout, cancel, the script's end or Pi's exit. `uv` supplies pinned
+ * math library, and the owner cleans attributed descendants on timeout, cancel, the script's end or Pi's exit. Native code
+ * can disclaim responsibility (see python-owner.c); this is not complete hostile-process containment. `uv` supplies pinned
  * packages, offline (prepared by the server beforehand); the script runs in tool-sandbox.ts's sandbox without credentials.
  *
  * With a process folder (MEETING_PROCESS_DIR, set by runPiTask's `processDir`), each script's group is recorded there before the
@@ -16,6 +17,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PACKAGES, pythonEnv, UV_ARGS } from './python-env.ts';
 import { spawnGated, type Gated } from './process-groups.ts';
+import { pythonOwner } from './python-owner.ts';
 import { sandboxed, toolEnv } from './tool-sandbox.ts';
 
 const RUN_MS = Number(process.env.RUN_PYTHON_MS ?? 120_000);
@@ -51,6 +53,7 @@ export default function runPython(pi: ExtensionAPI) {
   pi.registerTool({
     name: 'run_python',
     label: 'Run Python',
+    executionMode: 'sequential',
     description: `Run a short Python 3.12 script for a calculation (numpy, scipy, sympy available). The script runs in a scratch folder with a ${RUN_MS / 1000} s limit; at most ${MAX_RUNS} runs per task. Print the results you need.`,
     promptSnippet: 'Run a short Python calculation (numpy, scipy, sympy) and read its printed output',
     promptGuidelines: [
@@ -69,23 +72,25 @@ export default function runPython(pi: ExtensionAPI) {
       await mkdir(temporary, { recursive: true, mode: 0o700 });
       const env = { ...pythonEnv(toolEnv(process.env)), TMPDIR: temporary, TMP: temporary, TEMP: temporary,
         OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MKL_NUM_THREADS: '1', VECLIB_MAXIMUM_THREADS: '1', NUMEXPR_NUM_THREADS: '1' };
-      const [command, args] = sandboxed('uv', [...UV_ARGS, '--offline', 'python', script], cwd, env);
+      const [program, argv] = sandboxed('uv', [...UV_ARGS, '--offline', 'python', script], cwd, env);
+      const command = await pythonOwner(cwd, env), args = [program, ...argv];
       const stdout = capped(), stderr = capped();
       type Outcome = { code: number | null; signal: string | null; timedOut: boolean; error?: string };
       // Recorded before it starts (when the task has a process folder); a script that cannot be recorded does not run.
       let gated: Gated | null = null;
       let unrecorded: Outcome | null = null;
       if (PROCESS_DIR) {
-        try { gated = await spawnGated(command, args, { dir: PROCESS_DIR, kind: 'python', cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
+        try { gated = await spawnGated(command, args, { dir: PROCESS_DIR, kind: 'python', cwd, env, stdio: ['ignore', 'pipe', 'pipe'], lifetime: true }); }
         catch (error) { unrecorded = { code: null, signal: null, timedOut: false, error: (error as Error).message }; }
       }
       const result = unrecorded ?? await new Promise<Outcome>(resolve => {
-        const child = gated?.child ?? spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = gated?.child ?? spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ignore', 'pipe'] });
         let timedOut = false, finished = false;
         let exited: Outcome | null = null;
         let drain: NodeJS.Timeout | undefined;
         if (child.pid) groups.add(child.pid);
-        const stop = () => { if (child.pid) killGroup(child.pid); };
+        // Closing the lifeline asks the isolated owner to kill attributed descendants, including escaped sessions.
+        const stop = () => { child.stdio[4]?.destroy(); };
         const timer = setTimeout(() => { timedOut = true; stop(); }, RUN_MS);
         const finish = (value: Outcome) => {
           if (finished) return;
@@ -93,7 +98,8 @@ export default function runPython(pi: ExtensionAPI) {
           clearTimeout(timer);
           clearTimeout(drain);
           signal?.removeEventListener('abort', stop);
-          // Whatever the script left running in its group ends with it.
+          // The native owner has cleaned its attributed descendants before normal completion; end the gate/sentinel too.
+          child.stdio[4]?.destroy();
           if (child.pid) killGroup(child.pid);
           resolve(value);
         };

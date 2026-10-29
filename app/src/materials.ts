@@ -5,11 +5,8 @@ import { isPdf, searchForms, type PdfText } from './pdf-text.ts';
 /** A read-only material root. `scope` is `project:<id>` or `meeting:<id>` (projects.ts keeps them). */
 export type Material = { id: string; scope: string; path: string; kind: 'file' | 'folder'; label: string };
 const TEXT = new Set(['.md', '.txt', '.csv', '.tsv', '.json', '.py', '.ipynb', '.ts', '.js', '.r', '.jl', '.yaml', '.yml']);
-// project-memory/: the app's generated memory files (they may hold unapproved edits); memory reaches actions as a snapshot.
-const EXCLUDED = new Set(['node_modules', '.git', '.ssh', '.aws', '.cache', '__pycache__', 'project-memory']);
-export function excluded(name: string) {
-  return name.startsWith('.') || EXCLUDED.has(name.toLowerCase()) || /(?:secret|credential|password|token)/i.test(name) || /\.(?:pem|key|p12|pfx)$/i.test(name);
-}
+import { excluded } from '../pi-extensions/material-exclusions.ts';
+export { excluded } from '../pi-extensions/material-exclusions.ts';
 function within(root: string, path: string) {
   const rel = relative(root, path);
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !rel.startsWith(sep));

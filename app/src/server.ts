@@ -389,7 +389,7 @@ export async function startServer(options: {
     const webUnavailable = () => ai.mode() === 'local' ? 'Web lookups are unavailable in On this Mac mode.' : null;
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
       rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns,
-      computeReady: realRunner ? () => ensurePython() : undefined });
+      computeReady: realRunner ? () => ensurePython(directory) : undefined });
     await actionJobs.load();
     // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
@@ -440,7 +440,7 @@ export async function startServer(options: {
     // The plans of a meeting (M7b §2b): published versions in data/plans, their to-dos and automatic attempts in the database.
     const planJobs = new PlanJobs({ store, directory, clock, explorations, cooldowns, memory, projects, notes: notesJobs, pdfText,
       versions: new PlanVersions(directory, clock), todos: new PlanTodos(store, memory, clock), auto: new AutoPlanning(store, clock),
-      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython() : undefined, web: () => ai.web, webUnavailable,
+      enabled: Boolean(planPi), python: planPi === runPiTask ? () => ensurePython(directory) : undefined, web: () => ai.web, webUnavailable,
       models: async kind => ai.allow(await planModel(kind, () => ai.require('main'))),
       materialEvidence: (path, blocks) => files.evidenceAllowed(path, blocks),
       final: id => !stillComing(id), stale: id => notesJobs.status(id).then(s => s.stale), changed: id => changed(id) });

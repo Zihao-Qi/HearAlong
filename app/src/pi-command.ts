@@ -6,6 +6,7 @@ import { toolEnv } from '../pi-extensions/tool-sandbox.ts';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const RECOMMENDED_LOCAL_MODEL = 'qwen3.5:4b';
 export const LOCAL_MODELS_EXTENSION = join(ROOT, 'pi-extensions', 'local-models.ts');
+export const BUNDLED_PI = join(ROOT, 'node_modules', '.bin', 'pi');
 export type AiMode = 'local' | 'cloud' | 'off';
 export const isLocalModel = (id: string) => /^(ollama|lmstudio)\/.+/.test(id);
 
@@ -31,9 +32,17 @@ export function piLaunch(args: string[], options: { mode?: AiMode; model?: strin
   delete env.MEETING_LOCAL_NOTES_THINKING;
   // User models.json can contain credential commands and endpoint overrides. Local runs never load that configuration.
   if (mode === 'local' && options.cwd) env.PI_CODING_AGENT_DIR = join(options.cwd, '.pi-local');
+  const cli = args.includes('--mode') || args.includes('--list-models');
+  const end = args.indexOf('--') < 0 ? args.length : args.indexOf('--');
+  const safeArgs = cli ? args.filter((arg, index) => index >= end || !['--approve', '-a', '--no-approve', '-na'].includes(arg)) : args;
+  const modeIndex = safeArgs.indexOf('--mode');
+  const leading = modeIndex > 0 ? safeArgs.slice(0, modeIndex) : [];
+  const trailing = modeIndex > 0 ? safeArgs.slice(modeIndex) : safeArgs;
   return { args: [
+    ...leading,
+    ...(cli ? ['--no-approve'] : []),
     ...(mode === 'local' ? ['--no-extensions', '--no-skills'] : []),
-    ...(mode === 'local' || options.listing ? ['-e', LOCAL_MODELS_EXTENSION] : []), ...args.filter((arg, index) => mode !== 'local' || arg !== '--no-skills' || (args.indexOf('--') >= 0 && index > args.indexOf('--'))),
+    ...(mode === 'local' || options.listing ? ['-e', LOCAL_MODELS_EXTENSION] : []), ...trailing.filter((arg, index) => mode !== 'local' || arg !== '--no-skills' || (trailing.indexOf('--') >= 0 && index > trailing.indexOf('--'))),
   ], env };
 }
 /** One executable policy for tasks, RPC and setup probes. An explicit override is authoritative, even if broken. */

@@ -264,6 +264,26 @@ test('retry makes a new job, follow-ups need a finished parent, restarts never r
   } finally { await f.close(); }
 });
 
+test('detached materials are not readable by a follow-up or retry', async () => {
+  const f = await fixture();
+  try {
+    let attached = f.roots;
+    const scopes: string[][] = [];
+    const runner: ActionRunner = async input => { scopes.push(input.readRoots); return result('Fictional answer.' + META([])); };
+    const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => attached });
+    const selection = { text: LINES[0].slice(0, 20), segmentIds: [f.segments[0].id] };
+    const first = await jobs.submit(f.meeting.id, { action: 'explain', selection });
+    await until(() => jobs.get(first.job.id)!.state === 'done');
+    attached = [];
+    const follow = await jobs.submit(f.meeting.id, { parentId: first.job.id, prompt: 'Fictional follow-up?' });
+    await until(() => jobs.get(follow.job.id)!.state === 'done');
+    const retry = await jobs.submit(f.meeting.id, { retryOf: first.job.id });
+    await until(() => jobs.get(retry.job.id)!.state === 'done');
+    assert.deepEqual(scopes, [f.roots.map(root => root.path), [], []]);
+    await jobs.close();
+  } finally { await f.close(); }
+});
+
 test('needs-materials actions explain themselves; writing is refused when models are off', async () => {
   const f = await fixture();
   try {

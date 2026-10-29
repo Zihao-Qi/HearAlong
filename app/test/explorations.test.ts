@@ -149,7 +149,7 @@ test('a recorded group is ended only while it is still the process recorded (a r
 
 test('thinking level and skills are set per task; other tasks keep Pi\'s defaults', () => {
   const base = { model: 'm', cwd: '/tmp', tools: 'read', readRoots: [] };
-  assert.deepEqual(piTaskArgs('p', base), ['--mode', 'json', '--model', 'm', '--no-context-files', '-e', READ_SCOPE_EXTENSION, '--tools', 'read', '--no-session', '--', 'p']);
+  assert.deepEqual(piTaskArgs('p', base), ['--no-approve', '--mode', 'json', '--model', 'm', '--no-context-files', '-e', READ_SCOPE_EXTENSION, '--tools', 'read', '--no-session', '--', 'p']);
   const plan = piTaskArgs('p', { ...base, thinking: 'low', skills: false });
   assert.deepEqual(plan.slice(plan.indexOf('--thinking'), plan.indexOf('--thinking') + 2), ['--thinking', 'low']);
   assert.equal(plan.filter(a => a === '--no-skills').length, 1);

@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { READ_SCOPE_ENV, readRoots } from '../pi-extensions/read-scope.ts';
-import { isLocalModel, piCommand, piLaunch, watchPiRun, type AiMode } from './pi-command.ts';
+import { explicitTools, READ_SCOPE_ENV, readRoots } from '../pi-extensions/read-scope.ts';
+import { BUNDLED_PI, isLocalModel, piCommand, piLaunch, watchPiRun, type AiMode } from './pi-command.ts';
 import { localFailure, localLengthMessage } from './local-ai.ts';
 import { inLocalPiLane } from './local-pi-lane.ts';
 import { endRecorded, signalGroup, spawnGated, type ProcessRecord } from '../pi-extensions/process-groups.ts';
@@ -43,7 +43,7 @@ export type PiTaskOptions = {
   sessionDir?: string;
   /** Continue this session file in place (takes precedence over sessionDir). */
   session?: string;
-  /** Tool allowlist; `null` disables every tool, skill and extension tool. Omitted: Pi's defaults. */
+  /** Explicit plain-name allowlist. Null, omission, patterns or default-set modifiers disable tools and skills. */
   tools?: string | null;
   /** Attached material/snapshot paths, captured with realpath at launch; cwd is added. Missing: no tools. */
   readRoots?: string[];
@@ -86,7 +86,7 @@ export const PI_TASK_LIMITS = { drainMs: 2000, cleanupTries: 3, cleanupRetryMs: 
 export const READ_SCOPE_EXTENSION = fileURLToPath(new URL('../pi-extensions/read-scope.ts', import.meta.url));
 
 export function piTaskArgs(prompt: string, options: PiTaskOptions): string[] {
-  const scoped = options.tools !== null && options.readRoots !== undefined;
+  const scoped = explicitTools(options.tools) && options.readRoots !== undefined;
   const tools = scoped ? options.tools : null;
   return piLaunch([
     '--mode', 'json', '--model', options.model, '--no-context-files',
@@ -142,7 +142,7 @@ function scopedArgs(args: string[], options: PiTaskOptions): string[] {
   const delimiter = args.indexOf('--', mode);
   const end = delimiter < 0 ? args.length : delimiter;
   let header = args.slice(mode, end);
-  if (options.tools !== null && options.readRoots !== undefined) {
+  if (explicitTools(options.tools) && options.readRoots !== undefined) {
     if (!header.some((arg, index) => ['-e', '--extension'].includes(arg) && header[index + 1] === READ_SCOPE_EXTENSION)) header.push('-e', READ_SCOPE_EXTENSION);
   } else {
     header = header.filter((arg, index, all) => !['--tools', '-e', '--extension'].includes(arg) && !['--tools', '-e', '--extension'].includes(all[index - 1]));
@@ -156,7 +156,7 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
   let args: string[];
   let scope: string | undefined;
   try {
-    if (options.tools !== null && options.readRoots !== undefined) scope = JSON.stringify(readRoots([...options.readRoots, options.cwd]));
+    if (explicitTools(options.tools) && options.readRoots !== undefined) scope = JSON.stringify(readRoots([...options.readRoots, options.cwd]));
     const launch = piLaunch(options.args ? scopedArgs(options.args, options) : [], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } });
     args = options.args ? launch.args : piTaskArgs(prompt, options);
   } catch (error) { return Promise.reject(error); }
@@ -165,7 +165,7 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
   // Cancelled before it started: never spawn a (cloud-calling) process.
   if (options.signal?.aborted) return Promise.reject(stopped('Pi task was cancelled.', 'cancelled'));
   let command: string;
-  try { command = piCommand(options.command, { ...process.env, ...options.env }); }
+  try { command = options.command ?? (scope ? BUNDLED_PI : piCommand(undefined, { ...process.env, ...options.env })); }
   catch (error) { return Promise.reject(error); }
   const processDir = options.processDir;
   const env = piLaunch([], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env, ...(processDir ? { MEETING_PROCESS_DIR: processDir } : {}) } }).env;

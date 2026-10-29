@@ -24,12 +24,14 @@ test('file decisions: absolute, relative, traversal, sibling-prefix and missing 
   const f = await fixture(t);
   for (const tool of ['read', 'grep', 'find', 'ls', 'edit', 'write']) {
     for (const path of [join(f.root, 'Café.txt'), '../Materials/Café.txt', join(f.root, 'new', 'missing.txt')]) {
-      assert.equal(pathDecision(tool, { path }, f.cwd, f.roots), undefined, `${tool}: ${path}`);
+      if (tool === 'edit' || tool === 'write') assert.ok(pathDecision(tool, { path }, f.cwd, f.roots), `${tool}: ${path}`);
+      else assert.equal(pathDecision(tool, { path }, f.cwd, f.roots), undefined, `${tool}: ${path}`);
     }
     for (const path of [join(f.outside, 'secret.txt'), '../outside/secret.txt', '../Materials/../outside/secret.txt', `${f.root}-sibling/new.txt`]) {
       assert.deepEqual(pathDecision(tool, { path }, f.cwd, f.roots), { block: true, reason: `${path} is outside this task's materials.` });
     }
   }
+  for (const tool of ['edit', 'write']) assert.equal(pathDecision(tool, { path: join(f.cwd, 'output.txt') }, f.cwd, f.roots), undefined);
 });
 
 test('symlinks authorize their real target, including missing descendants and dangling links', async t => {
@@ -89,7 +91,7 @@ test('missing or malformed environment scope installs a blocking hook rather tha
   for (const value of [undefined, 'broken', '[]', '[{}]']) {
     if (value === undefined) delete process.env[READ_SCOPE_ENV]; else process.env[READ_SCOPE_ENV] = value;
     let handler: any;
-    register({ on: (_event: string, fn: any) => { handler = fn; } } as any);
+    register({ on: (event: string, fn: any) => { if (event === 'tool_call') handler = fn; } } as any);
     assert.equal(handler({ toolName: 'read', input: { path: f.root } }, { cwd: f.cwd }).block, true);
   }
 });
@@ -99,7 +101,7 @@ test('the hook executes the canonical target, not the original symlink spelling'
   t.after(() => { if (before === undefined) delete process.env[READ_SCOPE_ENV]; else process.env[READ_SCOPE_ENV] = before; });
   process.env[READ_SCOPE_ENV] = JSON.stringify(f.roots);
   let handler: any;
-  register({ on: (_event: string, fn: any) => { handler = fn; } } as any);
+  register({ on: (event: string, fn: any) => { if (event === 'tool_call') handler = fn; } } as any);
   const event = { toolName: 'read', input: { path: join(f.outside, 'entrance', 'Café.txt') } };
   assert.equal(handler(event, { cwd: f.cwd }), undefined);
   assert.equal(event.input.path, join(f.root, 'Café.txt'));
@@ -124,7 +126,7 @@ test('preassembled Pi CLI arguments cannot bypass the extension or the missing-r
   const f = await fakePi(t);
   const base = { model: 'example/main', cwd: f.cwd, env: f.env, tools: 'read' };
   const args = ['--mode', 'json', '--model', base.model, '--tools', 'read', '--no-session', '--', 'Example'];
-  await runPiTask('Example', { ...base, args, readRoots: [] });
+  await runPiTask('Example', { ...base, command: f.command, args, readRoots: [] });
   await runPiTask('Example', { ...base, args });
   const calls = await f.calls();
   assert.ok(calls[0].args.includes(READ_SCOPE_EXTENSION));
