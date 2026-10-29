@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 export type PsProcess = {
   pid: number;
   ppid: number;
-  /** Instantaneous CPU percent, as `ps` prints it (not a fraction). */
+  /** macOS ps %cpu: decaying average over up to a minute (not instantaneous); 100% = one core. */
   cpu: number;
   /** Resident set, in kilobytes, as macOS `ps` prints `rss`. */
   rssKb: number;

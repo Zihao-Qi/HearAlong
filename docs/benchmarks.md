@@ -27,7 +27,9 @@ Files land in `app/artifacts/bench/ami/` (`download/`, `annotations/words/`, `au
 
 For each meeting, read `annotations/words/<ID>.<A-D>.words.xml` (NITE XML, ISO-8859-1 unless the declaration says UTF-8). The reference is every speaker's `<w>` element, ordered by start time, then speaker letter, then end time. Drop `punc="true"` tokens, `trunc="true"` (truncated) words, and every element that is not `<w>` (`vocalsound`, `disfmarker`, `gap`, and the rest). A time window is half-open on the AMI clock: keep a word whose start is `>= from` and `< to`.
 
-### Word error rate
+### Custom-normalized WER
+
+Accuracy is **custom-normalized WER**, not directly comparable to published Whisper/NIST scores. The policy below is custom, not a standard English equivalence normalizer; its implementation is identified by the recorded app commit.
 
 WER = (substitutions + deletions + insertions) / N, where N is the number of reference words after normalization. A corpus figure sums the counts across sessions and divides once. It is not the mean of the per-session rates.
 
@@ -40,15 +42,19 @@ The same normalizer is applied to the reference and to the hypothesis:
 5. Remove the fillers `uh`, `um`, `hmm`, `mm`, `mhm`, `ah`, `eh`, `oh`. After the hyphen split, the pairs `uh huh` and `mm hmm` are removed together, so `uh-huh` does not leave a `huh`. A lone `huh` stays.
 6. Collapse whitespace.
 
-### File WER
+Limits: ordinals (`2nd`) and decades (`1990s`) are not expanded; decimal and thousands punctuation splits numbers before expansion (`3.5` → `three five`, `2,000` → `two zero`). Years expand as cardinals, leading-zero sequences lose their zeros, and numbers above 9999 stay digits. British “and” and contraction variants are not equated. Filler removal is lossy (`oh no` matches `no`). Formatting differences can therefore count as recognition errors, and distinct utterances can normalize identically.
 
-`npm run bench:wer` transcribes each selected WAV with the same store, queue, and local recognizer as `scripts/transcribe-file.ts` (the original file is read in place). The hypothesis is the final segments' text, joined in time order. The reference is the whole meeting. Raw JSON is `app/artifacts/bench/results/wer-<timestamp>.json`: per-session counts, totals, the model file's basename, wall time, audio duration, git commit, macOS version, `sysctl -n machdep.cpu.brand_string`, and RAM from `sysctl -n hw.memsize`.
+### File custom-normalized WER
+
+`npm run bench:wer` transcribes each selected WAV with the same store, queue, and local recognizer as `scripts/transcribe-file.ts` (the original file is read in place). The hypothesis is the final segments' text, joined in time order. The reference is the whole meeting. Raw JSON is `app/artifacts/bench/results/wer-<timestamp>.json`: per-session counts, totals, requested sessions × mics, failed and unfinished chunk counts, wall time, and audio duration. Both runners record the selected model file's basename, SHA-256 and byte size (hashed once before measurement), git commit and dirty flag, Node version, macOS version, chip (`sysctl -n machdep.cpu.brand_string`), RAM (`hw.memsize`) and logical cores (`hw.logicalcpu`). The selected model path is fixed for the whole run. Dirty source is refused unless `--allow-dirty` is passed; that state is recorded and never pooled with clean runs.
+
+Benchmark settlement waits for every chunk to become terminal, including scheduled automatic retries, with a 30-minute deadline after queueing the file (or stopping live capture). Exhausted failures, cancelled chunks, or unfinished chunks mark the run as an error, not a completed repetition. This is an opt-in benchmark path; `transcribe-file.ts`'s CLI output is unchanged.
 
 ### Preview lag and final lag
 
 `npm run bench:live` plays one WAV excerpt in real time through the real page and server, using the rehearsal tool: a disposable headless Chromium (`MEETING_TEST_CHROME`), a temporary data folder under `app/artifacts/rehearsal/runs`, and an ephemeral port. It does not use the user's browser profile, the app's `data` folder, or port 4318.
 
-The excerpt starts at `--from` (M:SS on the AMI clock) and lasts `--minutes` (default 10). The live reference is the same half-open window. The live WER compares the saved final transcript of that window with the AMI reference for the same window.
+The excerpt starts at `--from` (M:SS on the AMI clock) and lasts `--minutes` (default 10). The live reference is the same half-open window. The live custom-normalized WER compares the saved final transcript of that window with the AMI reference for the same window. A live run with no spoken-to-visible final samples is an error run.
 
 The headline is spoken to visible. The report gives p50, p95, max, and the number of samples.
 
@@ -67,11 +73,11 @@ The headline is spoken to visible. The report gives p50, p95, max, and the numbe
 
 ### Resources
 
-Every 1 s, `ps -axo pid=,ppid=,pcpu=,rss=,command=` samples the Node process that hosts the server, and every descendant whose command is `stt-worker.ts` or `stt-stream-worker.ts` plus processes those workers spawn (the decoder). Chrome is a descendant and is not counted as a speech worker. When both the final-text worker and the preview worker are alive, one sample sums them. CPU is the `ps` percent. RSS from `ps` is kilobytes, stored as bytes. The report gives mean, p95, and max for each role. Sampling starts once recording is up and continues while the tail is still being transcribed.
+Every 1 s, `ps -axo pid=,ppid=,pcpu=,rss=,command=` samples the Node process that hosts the server, and every descendant whose command is `stt-worker.ts` or `stt-stream-worker.ts` plus processes those workers spawn (the decoder). Chrome is a descendant and is not counted as a speech worker. When both the final-text worker and the preview worker are alive, one sample sums them. CPU is sampled macOS `ps %cpu`: a **decaying average over up to a minute**, not instantaneous or one-second interval utilization. **100% = one core**; values can exceed 100% and are not normalized to the whole machine. Averaging history changes when workers restart. RSS from `ps` is kilobytes, stored as bytes. The report gives mean, p95, and sampled max for each role; one-second sampling can miss short-lived processes and true peaks. Sampling starts once recording is up and continues while the tail is still being transcribed.
 
 ### How to rerun
 
-From `app/`, with provider keys unset. Fetch and the two measurement commands need a network and a speech model; the report command does not. Point `MEETING_TEST_CHROME` at a disposable Chromium, not the Chrome you browse with. The model is the one HearAlong already uses (`MEETING_MODEL_PATH` or Pi's voice settings).
+From `app/`, with provider keys unset. Fetch needs network access; measurement needs a local speech model, downloaded corpus and (for live) disposable Chromium. The report command needs none of these. Point `MEETING_TEST_CHROME` at a disposable Chromium, not the Chrome you browse with. The model is the one HearAlong already uses (`MEETING_MODEL_PATH` or Pi's voice settings).
 
 ```sh
 npm run bench:fetch
@@ -81,7 +87,18 @@ npm run bench:live -- --session ES2004a --mic Mix-Headset --from 0:00 --minutes 
 npm run bench:report
 ```
 
-`bench:report` reads every `results/*.json`, or the files you pass. With two or more finished runs it prints the median and the min–max spread. Three runs are the intended spread. A run that stopped early is listed and left out of the median.
+`bench:report` reads every `results/*.json`, or the files you pass. It emits one block per cohort, newest first (by newest run), with run and finished-run counts. Cohorts match kind; model basename + SHA-256; chip, RAM and logical cores; app commit and dirty state; and exact condition: requested sessions × mics set for file accuracy, or session, mic, from and minutes for live. Labels do not define cohorts. Different conditions are never pooled. Results missing the new provenance fields go in one inspection-only **Legacy** block, with no cross-run statistics.
+
+Within each cohort it prints medians and min–max spreads from eligible finished repetitions only, including in the per-session table. Each metric reports its eligible run count; lag/resource summaries contribute only when their `n > 0` (accuracy requires reference N > 0). Missing is `n/a`, never zero. Errored runs remain visible with failed/unfinished chunk counts but contribute to no median. Three comparable finished runs are the intended spread; a single eligible run is explicitly counted as one, not repeatability evidence.
+
+## Known limits
+
+- **Live tail visibility:** queue settlement does not wait for every saved final to reach the real DOM or the segment-end snapshot before closing Chromium. Tail samples can be censored; no expected/observed/unmapped coverage accounting yet. Lag is conditional on recognized, mapped, observed text, not all speech. The diagnostic warning is a heuristic, not validation.
+- **Live input alignment:** fake-microphone playback can start before the capture graph is ready. Startup loss/offset and captured duration are not measured. WER still scores the requested interval; half-open reference selection by word start can include clipped boundary words.
+- **Reference integrity:** extraction is not atomic or verified against the archive; partial XML and missing speaker files can be accepted. Extracted references are not fingerprinted in results. Blank/whitespace timestamp attributes can silently become zero; negative/reversed times are not validated.
+- **Corpus trust:** fetch checks local hashes but can adopt preexisting nonempty files (trust on first use). Hashes do not establish official-source identity; approved corpus checksums and an immutable scored-input manifest are not pinned to runs.
+- **Provenance beyond this minimum:** no versioned measurement schema, selected backend/config, Chromium/native-runtime versions, or source-diff identity. `--allow-dirty` records only a flag, not the dirty bytes; same-commit dirty runs are not uniquely reproducible. Do not modify model/source files during a run.
+- **Interpretation:** custom normalization has the numeric/lexical limits listed above; macOS CPU values have a decaying time base, and one-second resource sampling misses true peaks. No end-to-end browser/audio alignment or tail-observation validation is supplied by the offline unit tests.
 
 ## Results
 
