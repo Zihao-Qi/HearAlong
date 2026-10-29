@@ -15,7 +15,7 @@ import { Type } from 'typebox';
 import { spawn } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { PACKAGES, pythonEnv, UV_ARGS } from './python-env.ts';
+import { PACKAGES, preparedPython, pythonEnv, UV_ARGS } from './python-env.ts';
 import { spawnGated, type Gated } from './process-groups.ts';
 import { pythonOwner, sweepPython } from './python-owner.ts';
 import { sandboxed, toolEnv } from './tool-sandbox.ts';
@@ -70,9 +70,11 @@ export default function runPython(pi: ExtensionAPI) {
       if (signal?.aborted) throw new Error('Cancelled before running.');
       const temporary = join(cwd, '.tmp');
       await mkdir(temporary, { recursive: true, mode: 0o700 });
-      const env = { ...pythonEnv(toolEnv(process.env)), TMPDIR: temporary, TMP: temporary, TEMP: temporary,
+      const env: NodeJS.ProcessEnv = { ...pythonEnv(toolEnv(process.env)), TMPDIR: temporary, TMP: temporary, TEMP: temporary,
         OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MKL_NUM_THREADS: '1', VECLIB_MAXIMUM_THREADS: '1', NUMEXPR_NUM_THREADS: '1' };
-      const [program, argv] = sandboxed('uv', [...UV_ARGS, '--offline', 'python', script], cwd, env);
+      const prepared = await preparedPython(env, cwd);
+      if (prepared) env.VIRTUAL_ENV = prepared;
+      const [program, argv] = sandboxed('uv', [...UV_ARGS, ...(prepared ? ['--active'] : []), '--offline', 'python', script], cwd, env);
       const command = await pythonOwner(cwd, env), args = [program, ...argv];
       const stdout = capped(), stderr = capped();
       type Outcome = { code: number | null; signal: string | null; timedOut: boolean; error?: string };

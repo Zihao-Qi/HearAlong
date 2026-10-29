@@ -1,6 +1,6 @@
 /** Model-written code loses credentials and can read only task roots and its Python runtime. Metadata stays readable. */
 import { homedir } from 'node:os';
-import { delimiter, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { closeSync, existsSync, openSync, readSync, realpathSync } from 'node:fs';
 import { pythonEnv } from './python-env.ts';
 import { excludedDescendants } from './material-exclusions.ts';
@@ -32,7 +32,7 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
   try { roots = scopeFromEnv(env).filter(root => insideRoots(root.path, [root])); } catch { /* No scope means scratch only, never read-everything. */ }
   const params: Record<string, string> = {
     PI_HOME: join(home, '.pi'), PI_AGENT: real(env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
-    KEYCHAINS: join(home, 'Library', 'Keychains'), DATA: data, CWD: folder, CACHE: real(runtime.UV_CACHE_DIR!), CACHE_BUILDS: real(join(runtime.UV_CACHE_DIR!, 'builds-v0')), PYTHON: real(runtime.UV_PYTHON_INSTALL_DIR!),
+    KEYCHAINS: join(home, 'Library', 'Keychains'), DATA: data, CWD: folder, CACHE: real(runtime.UV_CACHE_DIR!), CACHE_BUILDS: real(join(runtime.UV_CACHE_DIR!, 'builds-v0')), PYTHON: real(runtime.UV_PYTHON_INSTALL_DIR!), PYTHON_PARENT: real(dirname(runtime.UV_PYTHON_INSTALL_DIR!)),
     PROJECT_PI: join(folder, '.pi'), PROJECT_AGENTS: join(folder, '.agents'), AGENTS: join(folder, 'AGENTS.md'), CLAUDE: join(folder, 'CLAUDE.md'),
     EXECUTABLE: real(executable), NODE: real(process.execPath),
   };
@@ -65,6 +65,8 @@ export function sandboxed(command: string, args: string[], cwd: string, env: Nod
 (deny network-outbound (literal "/private/var/run/mDNSResponder"))
 (deny file-read* file-read-data file-read-xattr file-write* (subpath (param "DATA")))
 ${excluded.length ? `(deny file-read-data file-read-xattr ${excluded.join(' ')})` : ''}
+; uv canonicalizes its minor-version interpreter alias through these parents. Metadata only: no directory listing or sibling reads.
+(allow file-read-metadata (literal (param "DATA")) (literal (param "PYTHON_PARENT")))
 (allow file-read* file-read-data file-read-xattr (subpath (param "CACHE")) (subpath (param "PYTHON")))
 (allow file-write* (subpath (param "CACHE_BUILDS")) (require-all (subpath (param "CACHE")) (regex #"/([^/]*[.]lock|[.]git|[.]gitignore|CACHEDIR[.]TAG)$")))
 ${scratch.length ? `(allow file-read-data ${scratch.join(' ')})` : ''}

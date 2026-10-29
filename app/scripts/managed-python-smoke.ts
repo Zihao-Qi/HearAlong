@@ -13,6 +13,9 @@ export const MATH_CASES = [
   { name: 'sympy', code: `import sympy as sp\nassert sp.__version__ == '1.14.0'\nx = sp.Symbol('x')\nassert sp.integrate(x**2, (x, 0, 3)) == 9\nassert sp.solve(x**2 - 4, x) == [-2, 2]\nprint('PASS sympy')` },
 ] as const;
 
+/** Keep failed tool/exception diagnostics useful without dumping the full bounded output. */
+export function smokeErrorExcerpt(text: string): string { return text.split(/\r?\n/).slice(0, 20).join('\n'); }
+
 /** Uses first-Compute preparation, then the actual extension tool (owner, offline uv, and final Seatbelt profile). */
 async function managedPythonSmoke(directory: string, offline = false): Promise<boolean> {
   const data = resolve(directory), before = process.cwd(), saved = { ...process.env };
@@ -32,7 +35,10 @@ async function managedPythonSmoke(directory: string, offline = false): Promise<b
     console.log(offline ? 'Preparation is offline: downloads forbidden.' : 'Preparation may download managed CPython 3.12 from GitHub and pinned packages from the configured index (PyPI by default).');
     let passed = true;
     try { await ensurePython(data); console.log('PASS prepare'); }
-    catch { passed = false; console.log(`FAIL prepare${offline ? ' (managed interpreter/packages unavailable offline)' : ' (managed runtime preparation failed)'}`); }
+    catch (error) {
+      passed = false; console.log(`FAIL prepare${offline ? ' (managed interpreter/packages unavailable offline)' : ' (managed runtime preparation failed)'}`);
+      console.log(smokeErrorExcerpt(error instanceof Error ? error.message : String(error)));
+    }
     // Import only after setting the per-task environment: the extension captures its budgets and process-record directory.
     const { default: register } = await import('../pi-extensions/run-python.ts');
     let tool: any; register({ registerTool: (definition: any) => { tool = definition; } } as any);
@@ -42,8 +48,12 @@ async function managedPythonSmoke(directory: string, offline = false): Promise<b
         const output = result.content.filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n').trim();
         const ok = !result.isError && output === `PASS ${check.name}`;
         console.log(`${ok ? 'PASS' : 'FAIL'} ${check.name}`);
+        if (!ok && output) console.log(smokeErrorExcerpt(output));
         passed &&= ok;
-      } catch { passed = false; console.log(`FAIL ${check.name}`); }
+      } catch (error) {
+        passed = false; console.log(`FAIL ${check.name}`);
+        console.log(smokeErrorExcerpt(error instanceof Error ? error.message : String(error)));
+      }
     }
     return passed;
   } finally {

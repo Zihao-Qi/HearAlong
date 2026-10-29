@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { MATH_CASES } from '../scripts/managed-python-smoke.ts';
+import { MATH_CASES, smokeErrorExcerpt } from '../scripts/managed-python-smoke.ts';
 const exec = promisify(execFile), script = fileURLToPath(new URL('../scripts/managed-python-smoke.ts', import.meta.url));
 
 test('managed math smoke explains its download step and requires an explicit data directory', async () => {
@@ -15,6 +15,11 @@ test('managed math smoke explains its download step and requires an explicit dat
   assert.match(help.stdout, /--offline prohibits downloads/);
   await assert.rejects(exec(process.execPath, ['--experimental-strip-types', script]), error => (error as any).code === 2);
   assert.deepEqual(MATH_CASES.map(check => check.name), ['numpy', 'scipy.linalg.solve', 'scipy.sparse.linalg.svds', 'sympy']);
+});
+
+test('managed math smoke diagnostics retain the first 20 lines of failed tool output', () => {
+  const lines = Array.from({ length: 25 }, (_, i) => `fictional error line ${i + 1}`);
+  assert.equal(smokeErrorExcerpt(lines.join('\r\n')), lines.slice(0, 20).join('\n'));
 });
 
 test('fresh managed math smoke runs preparation and every real tool call offline, reports failures and removes only its scratch', async t => {
