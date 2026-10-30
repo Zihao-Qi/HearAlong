@@ -91,7 +91,7 @@ test('missing or malformed environment scope installs a blocking hook rather tha
   for (const value of [undefined, 'broken', '[]', '[{}]']) {
     if (value === undefined) delete process.env[READ_SCOPE_ENV]; else process.env[READ_SCOPE_ENV] = value;
     let handler: any;
-    register({ on: (event: string, fn: any) => { if (event === 'tool_call') handler = fn; } } as any);
+    await register({ registerTool() {}, on: (event: string, fn: any) => { if (event === 'tool_call') handler = fn; } } as any);
     assert.equal(handler({ toolName: 'read', input: { path: f.root } }, { cwd: f.cwd }).block, true);
   }
 });
@@ -101,7 +101,7 @@ test('the hook executes the canonical target, not the original symlink spelling'
   t.after(() => { if (before === undefined) delete process.env[READ_SCOPE_ENV]; else process.env[READ_SCOPE_ENV] = before; });
   process.env[READ_SCOPE_ENV] = JSON.stringify(f.roots);
   let handler: any;
-  register({ on: (event: string, fn: any) => { if (event === 'tool_call') handler = fn; } } as any);
+  await register({ registerTool() {}, on: (event: string, fn: any) => { if (event === 'tool_call') handler = fn; } } as any);
   const event = { toolName: 'read', input: { path: join(f.outside, 'entrance', 'Café.txt') } };
   assert.equal(handler(event, { cwd: f.cwd }), undefined);
   assert.equal(event.input.path, join(f.root, 'Café.txt'));
