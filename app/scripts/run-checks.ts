@@ -141,7 +141,7 @@ async function main() {
   await checkAudio(audio);
   const node = [process.execPath, '--experimental-strip-types'];
   const check = (script: string, ...args: string[]) => [...node, `scripts/${script}.ts`, ...args];
-  const tasks: [string, string[]][] = [
+  const all: [string, string[]][] = [
     ['npm-test', ['npm', 'test', '--', '--test-concurrency=2']],
     ['typecheck', ['npm', 'run', 'check']],
     ['transcript-download', check('transcript-download-check', join(out, 'transcript-download'))],
@@ -162,6 +162,9 @@ async function main() {
     ['progress-fix1', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-fix1-check.ts', join(out, 'progress-fix1')]],
     ['progress-fix2', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-fix2-check.ts', join(out, 'progress-fix2')]],
   ];
+  // CI runs the unit tests and the type check in their own jobs; its browser job sets MEETING_CHECKS_BROWSER_ONLY=1.
+  const browserOnly = process.env.MEETING_CHECKS_BROWSER_ONLY === '1';
+  const tasks = browserOnly ? all.filter(([name]) => name !== 'npm-test' && name !== 'typecheck') : all;
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {
     for (const pid of running) signal(pid, 'SIGKILL');

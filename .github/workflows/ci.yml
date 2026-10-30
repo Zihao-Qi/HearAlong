@@ -94,6 +94,7 @@ jobs:
       - name: Isolated suites
         env:
           MEETING_CHECK_TIMEOUT_S: 1800
+          MEETING_CHECKS_BROWSER_ONLY: '1' # the static and unit jobs already run the type check and unit tests
         run: npm run checks -- "$RUNNER_TEMP/checks"
       - name: Summary
         if: always()
