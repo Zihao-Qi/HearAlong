@@ -490,6 +490,8 @@ export async function startServer(options: {
     // stays watched for 10 minutes after that, so corrections finishing late are still scanned; later edits need "Scan this meeting".
     const endedAt = new Map<string, number>();
     const meetingIds = appStoreRef.db.prepare('SELECT id FROM meetings');
+    // Before the loops below: a loop tick can run during a later await of startup (e.g. the session token).
+    const liveView = new LiveView(clock);
     const pruneDeletedMeetingState = () => {
       const existing = new Set((meetingIds.all() as { id: string }[]).map(m => m.id));
       for (const state of [boardActive, endedAt, lastPcmAt, recording, receivingPcm, importing]) {
@@ -562,7 +564,6 @@ export async function startServer(options: {
     let shuttingDown = false;
     // The mini view (M7 native mini window, docs/design/M7-native-mini.md): drawn from the server alone, so it stays current while
     // the app's page is hidden and throttled (another app in full screen); Stop and cards reach the page through frame replies.
-    const liveView = new LiveView(clock);
     const segmentsTag = new SegmentsTag();
     /** The recording now, with only the sources of its own recording (a reloaded page's old sources are not). */
     const recordingNow = () => {
