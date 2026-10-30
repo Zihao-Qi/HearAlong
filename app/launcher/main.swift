@@ -29,6 +29,44 @@ struct Config: Decodable {
     }
 }
 
+// Shared with HelperTests.swift; no app launch, audio discovery or permissions are needed to check the wording.
+struct BackgroundStatus: Decodable {
+    let pageOpen: Bool
+    let working: Bool
+    let label: String?
+    let kind: String?
+    let title: String?
+}
+
+func backgroundLabel(_ status: BackgroundStatus) -> String {
+    let label = status.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return label.isEmpty ? "Finishing work in the background" : label
+}
+
+func backgroundVisible(_ status: BackgroundStatus, owned: Bool) -> Bool {
+    owned && !status.pageOpen && status.working
+}
+
+func backgroundQuitText(_ status: BackgroundStatus) -> (title: String, text: String) {
+    let name = status.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let title = name.isEmpty ? "this meeting" : (name.count > 40 ? String(name.prefix(39)) + "…" : name)
+    switch status.kind {
+    case "notes": return ("Quit while notes are being written?", "The notes for \(title) stop now. You can write them again from the Notes tab.")
+    case "plans": return ("Quit while plans are being made?", "The plans for \(title) stop now. You can make them again from the Plans tab.")
+    case "actions": return ("Quit while answers are being written?", "This work stops now.")
+    case "transcription": return ("Quit while audio is being transcribed?", "This work stops now.")
+    case "import": return ("Quit while audio is being imported?", "This work stops now.")
+    case "download": return ("Quit while the speech model is being downloaded?", "This work stops now.")
+    case "memory": return ("Quit while memory is being updated?", "This work stops now.")
+    case "board": return ("Quit while the Board is being scanned?", "This work stops now.")
+    case "corrections": return ("Quit while the transcript is being corrected?", "This work stops now.")
+    case "glossary": return ("Quit while the glossary is being built?", "This work stops now.")
+    case "recording": return ("Quit while audio is being recorded?", "This work stops now.")
+    case "replay": return ("Quit while audio is being replayed?", "This work stops now.")
+    default: return ("Quit while work is running?", "This work stops now.")
+    }
+}
+
 final class Helper: NSObject, NSApplicationDelegate {
     private var config: Config!
     private var serverPid: pid_t = 0     // also its process group: every child the server starts is in it
@@ -41,6 +79,11 @@ final class Helper: NSObject, NSApplicationDelegate {
     private let env = ProcessInfo.processInfo.environment
     private var mini: MiniWindow?
     private var activity: NSObjectProtocol? // keeps App Nap from slowing the mini window's checks while the server runs
+    private var backgroundTimer: Timer?
+    private var backgroundAsking = false
+    private var backgroundStatus: BackgroundStatus?
+    private var statusItem: NSStatusItem?
+    private var statusText: NSTextField?
 
     private var port: Int { Int(env["MEETING_LAUNCHER_PORT"] ?? "") ?? config.port }
     private var base: URL { URL(string: "http://127.0.0.1:\(port)/")! }
@@ -155,7 +198,7 @@ final class Helper: NSObject, NSApplicationDelegate {
         DispatchQueue.global().async {
             let deadline = Date().addingTimeInterval(60)
             while Date() < deadline {
-                if self.isAssistant() { DispatchQueue.main.async { self.starting = false; self.startMini(); if open && self.alive() { self.openWindow() } }; return }
+                if self.isAssistant() { DispatchQueue.main.async { self.starting = false; self.startMini(); self.startBackgroundStatus(); if open && self.alive() { self.openWindow() } }; return }
                 if !self.aliveNow() { return } // its exit is reported below
                 Thread.sleep(forTimeInterval: 0.5)
             }
@@ -167,6 +210,9 @@ final class Helper: NSObject, NSApplicationDelegate {
             while waitpid(pid, &code, 0) == -1 && errno == EINTR {}
             DispatchQueue.main.async {
                 self.serverExited = true
+                self.backgroundTimer?.invalidate()
+                self.backgroundTimer = nil
+                self.removeBackgroundStatus()
                 if self.quitting { return }
                 let normal = (code & 0x7f) == 0 && ((code >> 8) & 0xff) == 0
                 if normal { self.stopAll(then: { exit(0) }) }
@@ -225,6 +271,102 @@ final class Helper: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: Background work (only an owned server, no page open, and work still running)
+
+    private func startBackgroundStatus() {
+        guard owned, alive(), backgroundTimer == nil else { return }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.pollBackgroundStatus() }
+        RunLoop.main.add(timer, forMode: .common)
+        backgroundTimer = timer
+        pollBackgroundStatus()
+    }
+
+    private func pollBackgroundStatus() {
+        guard owned, alive(), !quitting, !backgroundAsking else { return }
+        backgroundAsking = true
+        var req = URLRequest(url: base.appendingPathComponent("api/helper/status"), timeoutInterval: 2)
+        req.httpShouldHandleCookies = true // Same session and host checks as the mini; never send X-Page.
+        URLSession.shared.dataTask(with: req) { [weak self] data, response, _ in
+            let code = (response as? HTTPURLResponse)?.statusCode
+            let status = code == 200 ? data.flatMap { try? JSONDecoder().decode(BackgroundStatus.self, from: $0) } : nil
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.backgroundAsking = false
+                guard self.alive(), !self.quitting else { return }
+                self.backgroundStatus = status
+                self.showBackgroundStatus(status)
+                if code == 403 {
+                    // GET / supplies a fresh cookie but does not claim page presence.
+                    DispatchQueue.global().async { _ = self.request(self.base) }
+                }
+            }
+        }.resume()
+    }
+
+    private func showBackgroundStatus(_ status: BackgroundStatus?) {
+        guard let status, backgroundVisible(status, owned: owned) else { removeBackgroundStatus(); return }
+        if statusItem == nil {
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+            let image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "HearAlong")
+            image?.isTemplate = true
+            item.button?.image = image
+            item.button?.setAccessibilityLabel("HearAlong")
+            let menu = NSMenu()
+            let header = NSMenuItem()
+            header.isEnabled = false
+            let field = NSTextField(labelWithString: "")
+            field.maximumNumberOfLines = 2
+            field.cell?.usesSingleLineMode = false
+            header.view = NSView()
+            header.view?.addSubview(field)
+            statusText = field
+            menu.addItem(header)
+            menu.addItem(.separator())
+            let open = NSMenuItem(title: "Open HearAlong", action: #selector(openFromMenu), keyEquivalent: "")
+            open.target = self
+            menu.addItem(open)
+            let quit = NSMenuItem(title: "Quit HearAlong", action: #selector(quitFromMenu), keyEquivalent: "")
+            quit.target = self
+            menu.addItem(quit)
+            item.menu = menu
+            statusItem = item
+        }
+        let label = backgroundLabel(status)
+        let text = NSMutableAttributedString(string: label + "\nHearAlong quits by itself when done.",
+                                            attributes: [.font: NSFont.menuFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor])
+        text.addAttributes([.font: NSFont.boldSystemFont(ofSize: 13), .foregroundColor: NSColor.labelColor],
+                           range: NSRange(location: 0, length: (label as NSString).length))
+        statusText?.attributedStringValue = text
+        if let field = statusText, let view = field.superview {
+            let size = text.size()
+            field.frame = NSRect(x: 14, y: 6, width: ceil(size.width) + 4, height: ceil(size.height))
+            view.setFrameSize(NSSize(width: field.frame.width + 28, height: field.frame.height + 12))
+        }
+    }
+
+    private func removeBackgroundStatus() {
+        if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
+        statusItem = nil
+        statusText = nil
+    }
+
+    @objc private func openFromMenu() { openWindow() }
+
+    @objc private func quitFromMenu() {
+        guard !quitting else { return }
+        if let status = backgroundStatus, status.working {
+            let wording = backgroundQuitText(status)
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = wording.title
+            alert.informativeText = wording.text
+            alert.addButton(withTitle: "Keep running") // first button is the default, never the destructive action
+            alert.addButton(withTitle: "Quit")
+            guard alert.runModal() == .alertSecondButtonReturn else { return }
+        }
+        stopAll(then: { NSApp.terminate(nil) })
+    }
+
     // MARK: The mini window
 
     private func startMini() {
@@ -268,6 +410,9 @@ final class Helper: NSObject, NSApplicationDelegate {
     private func stopAll(then finish: @escaping () -> Void) {
         if quitting { return }
         quitting = true
+        backgroundTimer?.invalidate()
+        backgroundTimer = nil
+        removeBackgroundStatus()
         if let mini { mini.stop { self.stopServer(then: finish) } }
         else { stopServer(then: finish) }
     }
@@ -524,8 +669,12 @@ extension String {
     }
 }
 
+#if HELPER_TESTING
+try HelperTests.main()
+#else
 let app = NSApplication.shared
 let helper = Helper()
 app.delegate = helper
 app.setActivationPolicy(.accessory) // no Dock icon: the Dock shows the installed app
 app.run()
+#endif

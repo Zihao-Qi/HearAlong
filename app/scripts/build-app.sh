@@ -177,3 +177,10 @@ if [ "$REUSED" -eq 1 ]; then
 else
   printf 'Built a new helper (cdhash %s; previous %s) because %s\n' "$HELPER_HASH" "$PREVIOUS_HASH" "$BUILD_REASON"
 fi
+# Warning only: never stop or reactivate a running helper during a build.
+if RUNNING_HELPERS="$(pgrep -f '/Contents/MacOS/HearAlongHelper')"; then
+  for HELPER_PID in $RUNNING_HELPERS; do
+    printf 'An older HearAlong is still running (pid %s). Opening the app now would bring that one back.\n' "$HELPER_PID"
+    printf 'Quit it from the menu bar icon, or run: kill %s\n' "$HELPER_PID"
+  done
+fi

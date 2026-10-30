@@ -5,6 +5,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../src/server.ts';
 
+test('helper status polling does not keep a closed, idle server alive', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-helper-idle-'));
+  let idleAt = 0;
+  const app = await startServer({ directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null, idleMs: 2200, onIdle: () => { idleAt ||= Date.now(); } });
+  try {
+    const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
+    const headers = { Cookie: cookie, Origin: app.url };
+    await fetch(`${app.url}/api/status`, { headers: { ...headers, 'X-Page': 'window' } });
+    await fetch(`${app.url}/api/bye?page=window`, { method: 'POST', headers });
+    const poll = async () => {
+      const res = await fetch(`${app.url}/api/helper/status`, { headers });
+      assert.equal(res.status, 200);
+      const status = await res.json();
+      assert.deepEqual([status.pageOpen, status.working], [false, false]);
+    };
+    const bye = Date.now();
+    for (let i = 0; i < 4 && !idleAt; i++) { await poll(); await new Promise(r => setTimeout(r, 2000)); }
+    assert.ok(idleAt && idleAt - bye >= 2200 && idleAt - bye < 5000, `idled despite repeated helper polls (${idleAt - bye} ms)`);
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 // The installed app (M7): the server stops by itself once its window is gone and nothing runs; an open page keeps it.
 test('the server reports idle once the last open page says goodbye, and not while a page is open', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'meeting-idle-'));

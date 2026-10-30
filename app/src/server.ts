@@ -10,6 +10,7 @@ import { dataDirectory, LEGACY_DATA_NOTICE } from './data-directory.ts';
 import { sessionToken } from './session-token.ts';
 import { CaptureConflict } from './capture-error.ts';
 import { downloadDisposition } from './download.ts';
+import { helperStatus, type HelperWork } from './helper-status.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
@@ -555,6 +556,19 @@ export async function startServer(options: {
     const startedAt = Date.now();
     let idleSince: number | null = null;
     const working = () => admissions > 0 || uploading || importing.size > 0 || ['downloading', 'checking'].includes(speechSetup.download.state.state) || capture.recording() || appStoreRef.queuedCount() > 0 || appStoreRef.meetings().some(m => stillComing(m.id) || busy(m.id).length > 0);
+    const helperWork = (): HelperWork | undefined => {
+      // Reuse the same meeting activity as working(); an unclassified admission still gets the neutral fallback.
+      for (const m of appStoreRef.meetings()) {
+        const activity = importing.has(m.id) ? 'the import' : busy(m.id)[0] ?? (stillComing(m.id) ? 'the transcription' : undefined);
+        if (activity) return { activity, title: m.title };
+      }
+      if (['downloading', 'checking'].includes(speechSetup.download.state.state)) return { activity: 'the speech download' };
+      if (uploading || importing.size) return { activity: 'the import' };
+      if (capture.recording()) return { activity: 'the recording' };
+      if (appStoreRef.queuedCount() > 0) return { activity: 'the transcription' };
+      return undefined;
+    };
+    const pageOpen = () => [...pages.values()].some(at => Date.now() - at <= 180_000);
     const idleLoop = options.idleMs ? setInterval(() => {
       pruneDeletedMeetingState();
       const now = Date.now();
@@ -877,6 +891,11 @@ export async function startServer(options: {
           restarting = true; // Before 202 and before the response is flushed: another page cannot start new work.
           res.once('finish', () => { void app.shutdown().then(() => (options.exit ?? process.exit)(0)); });
           send(res, 202, { restarting: true }); return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/helper/status') {
+          // No X-Page from the helper: polling neither opens a page nor reserves a mutation admission.
+          const active = working();
+          send(res, 200, helperStatus(pageOpen(), active, active ? helperWork() : undefined)); return;
         }
         if (req.method === 'GET' && url.pathname === '/api/status') {
           const ready = fingerprint.ready();
