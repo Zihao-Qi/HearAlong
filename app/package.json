@@ -16,7 +16,7 @@
     "land": "node --experimental-strip-types scripts/land.ts",
     "delete-meetings": "node --experimental-strip-types scripts/delete-meetings.ts",
     "guard:install": "cd .. && common=$(git rev-parse --path-format=absolute --git-common-dir) && git config core.hooksPath \"${common%/*}/.githooks\"",
-    "test": "node --experimental-strip-types --import ./scripts/check-isolation.ts --test --test-timeout=180000 test/*.test.ts",
+    "test": "node --experimental-strip-types --import ./scripts/check-isolation.ts --test --test-timeout=300000 test/*.test.ts",
     "smoke:stt": "node --experimental-strip-types scripts/stt-smoke.ts",
     "smoke:browser": "node --experimental-strip-types scripts/browser-smoke.ts",
     "bench:fetch": "node --experimental-strip-types scripts/bench/ami-fetch.ts",

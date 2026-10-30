@@ -80,7 +80,10 @@ test('H2: concurrent checked reads remain safe during repeated sandboxed swap at
   const swapping = f.node(`const fs=require('node:fs'); let n=0,denied=0; const timer=setInterval(()=>{try{fs.rmdirSync('racing');}catch{}try{fs.symlinkSync(${JSON.stringify(join(f.home, '.ssh'))},'racing');fs.unlinkSync('racing');}catch(e){if(e.code==='EPERM')denied++;}try{fs.mkdirSync('racing');}catch{}if(++n===30){clearInterval(timer);console.log(denied);}},2);`);
   const roots = readRoots([f.cwd]);
   for (let n = 0; n < 30; n++) {
-    assert.equal(pathDecision('read', { path }, f.cwd, roots), undefined);
+    // While the folder is briefly removed, refusing is the safe answer; allowing is fine while it exists. The safety
+    // property is below: the read never returns the outside file.
+    const decision = pathDecision('read', { path }, f.cwd, roots);
+    assert.ok(decision === undefined || decision.block === true, JSON.stringify(decision));
     const text = await readFile(path, 'utf8').catch(() => 'missing');
     assert.notEqual(text, 'FICTIONAL_SSH_CANARY');
     await new Promise(resolve => setTimeout(resolve, 2));

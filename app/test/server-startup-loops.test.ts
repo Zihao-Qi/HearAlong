@@ -9,7 +9,6 @@ import { startServer } from '../src/server.ts';
 // a loop that reads something startup has not created yet fails here instead of only on a busy CI runner.
 test('every server loop can tick as soon as it is scheduled', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'startup-loops-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const interval = globalThis.setInterval, ticks: string[] = [];
   t.mock.method(globalThis, 'setInterval', (fn: (...args: any[]) => unknown, ms: number, ...args: any[]) => {
     ticks.push(String(ms));
@@ -20,7 +19,8 @@ test('every server loop can tick as soon as it is scheduled', async t => {
   const app = await startServer({ directory, port: 0, drafts: null,
     recognizer: { available: () => true, transcribe: async () => { throw new Error('unused'); }, close() {} },
     setup: { scan: { home: directory, hfHome: null, envModelPath: null }, ffmpeg: async () => ({ found: true }) } });
-  t.after(() => app.close());
+  // Stop the server before removing its folder: it may still be writing there.
+  t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
   assert.ok(ticks.length >= 2, `loops scheduled: ${ticks.join(', ')}`);
   assert.equal((await fetch(app.url)).ok, true);
 });
