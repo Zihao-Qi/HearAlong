@@ -10,7 +10,8 @@ import { benchPaths, reference, referenceText } from './ami.ts';
 import { parseWerArgs } from './cli.ts';
 import { machineInfo, modelIdentity } from './machine.ts';
 import { chunkCompletionError, fileStamp, resultPath, type WerFile, type WerSession } from './results.ts';
-import { corpusWer, wer } from './wer.ts';
+import { corpusWer, NORMALIZER } from './wer.ts';
+import { scoreBreakdown } from './breakdown.ts';
 
 async function main(): Promise<void> {
   const args = parseWerArgs(process.argv.slice(2));
@@ -33,8 +34,9 @@ async function main(): Promise<void> {
       try {
         const work = join(paths.work, 'wer', fileStamp(started), meetingId, mic);
         const transcript = await transcribeMedia(wav, work, { modelPath: config.path, terminalTimeoutMs: 30 * 60_000 });
-        const spoken = referenceText(reference(meetingId, { root: paths.root }));
-        const scored = wer(spoken, transcript.text);
+        const words = reference(meetingId, { root: paths.root });
+        const spoken = referenceText(words);
+        const { overall: scored, breakdown } = scoreBreakdown(words, transcript.text);
         const unfinishedChunks = transcript.summary.failed.filter(chunk => chunk.status === 'queued' || chunk.status === 'running').length;
         const failedChunks = transcript.summary.failed.length - unfinishedChunks;
         error = transcript.settlementError || chunkCompletionError(failedChunks, unfinishedChunks);
@@ -42,7 +44,7 @@ async function main(): Promise<void> {
         sessions.push({
           meetingId, mic, audioSeconds: transcript.summary.durationSeconds, wallSeconds: transcript.summary.wallSeconds,
           substitutions: scored.substitutions, deletions: scored.deletions, insertions: scored.insertions, hits: scored.hits,
-          referenceWords: scored.referenceWords, wer: scored.wer, failedChunks, unfinishedChunks,
+          referenceWords: scored.referenceWords, wer: scored.wer, failedChunks, unfinishedChunks, breakdown,
         });
         if (error) break;
       } catch (caught) {
@@ -54,7 +56,7 @@ async function main(): Promise<void> {
   }
   const scored = corpusWer(pairs);
   const result: WerFile = {
-    ...machine, kind: 'wer', createdAt: started.toISOString(), runLabel: args.label, model: identity.basename, modelIdentity: identity, error,
+    ...machine, normalizer: NORMALIZER, scoringCommit: machine.commit, scoringDirty: machine.dirty, kind: 'wer', createdAt: started.toISOString(), runLabel: args.label, model: identity.basename, modelIdentity: identity, error,
     condition: { sessions: args.sessions, mics: args.mics }, sessions,
     totals: {
       substitutions: scored.substitutions, deletions: scored.deletions, insertions: scored.insertions, hits: scored.hits,

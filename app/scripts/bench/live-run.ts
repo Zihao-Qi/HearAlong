@@ -19,7 +19,7 @@ import { readPs, serverUsage, speechWorkerUsage } from './ps.ts';
 import { chunkCompletionError, resultPath, type CountSummary, type LiveFile } from './results.ts';
 import { applySnapshot, domSight, frameEndMs, headlineLagWarning, mergeSights, rememberSegmentEnds, spokenFrame, visibleLags, type DomSight, type SpokenFrame } from './snapshot.ts';
 import { summarize } from './stats.ts';
-import { wer } from './wer.ts';
+import { NORMALIZER, wer } from './wer.ts';
 
 type ResourceSample = { at: number; serverCpu: number; serverRss: number; workerCpu: number; workerRss: number };
 
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
   }).join(' ') || null;
   if (warning) console.warn(warning);
   const result: LiveFile = {
-    ...machine, kind: 'live', createdAt: started.toISOString(), runLabel: args.label, model: identity.basename, modelIdentity: identity, error: failure, warning,
+    ...machine, normalizer: NORMALIZER, scoringCommit: machine.commit, scoringDirty: machine.dirty, kind: 'live', createdAt: started.toISOString(), runLabel: args.label, model: identity.basename, modelIdentity: identity, error: failure, warning,
     failedChunks, unfinishedChunks,
     meetingId: args.session, mic: args.mic, fromSec, minutes: args.minutes, audioSeconds, clockOffsetMs,
     preview, final, diagnostic,

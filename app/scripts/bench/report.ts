@@ -4,8 +4,9 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { benchPaths } from './ami.ts';
-import { parseResult, validateCompletion, type BenchResult, type CountSummary, type LiveFile, type WerFile } from './results.ts';
+import { parseResult, validateCompletion, type BenchResult, type CountSummary, type LiveFile, type WerFile, type IhmFile } from './results.ts';
 import { medianSpread } from './stats.ts';
+import { sumScores } from './breakdown.ts';
 
 const BEGIN = '<!-- bench:begin -->';
 const END = '<!-- bench:end -->';
@@ -23,13 +24,14 @@ export function loadResults(files: string[]): BenchResult[] {
 
 /** Missing provenance is legacy, never a basis for cross-run statistics. Selection order is immaterial. */
 export function cohortKey(run: BenchResult): string | null {
-  if (!run.modelIdentity || run.logicalCores === undefined || run.dirty === undefined || !run.nodeVersion || (run.kind === 'wer' && !run.condition)) return null;
+  if (!run.modelIdentity || run.logicalCores === undefined || run.dirty === undefined || !run.nodeVersion || (run.kind !== 'live' && !run.condition)) return null;
   const set = (values: string[]) => [...new Set(values)].sort();
-  const condition = run.kind === 'wer'
+  const condition = run.kind !== 'live'
     ? [set(run.condition!.sessions), set(run.condition!.mics)]
     : [run.meetingId, run.mic, run.fromSec, run.minutes];
   return JSON.stringify([run.kind, run.modelIdentity.basename, run.modelIdentity.sha256,
-    run.chip, run.ramBytes, run.logicalCores, run.commit, run.dirty, condition]);
+    run.chip, run.ramBytes, run.logicalCores, run.commit, run.dirty, condition,
+    run.normalizer ?? 'hearalong-1', run.scoringCommit ?? run.commit, run.scoringDirty ?? run.dirty]);
 }
 
 /** Replace the marker section. The same runs produce the same text, including a second run on the output. */
@@ -48,30 +50,35 @@ function renderRuns(runs: BenchResult[]): string {
   const groups = new Map<string | null, BenchResult[]>();
   // Newest run first, which also orders cohorts by their newest run. Equal dates preserve input order.
   for (const run of [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
-    const key = cohortKey(run);
+    const key = cohortKey(run) ?? `legacy:${run.normalizer ?? 'hearalong-1'}`;
     const group = groups.get(key) ?? [];
     group.push(run); groups.set(key, group);
   }
   const lines = [ATTRIBUTION, '', 'Accuracy is custom-normalized WER; not directly comparable to published Whisper/NIST scores.'];
   let index = 0;
   for (const [key, group] of groups) {
-    const legacy = key === null;
+    const legacy = key?.startsWith('legacy:') ?? false;
     const example = group[0];
     lines.push('', legacy ? '### Legacy' : `### Cohort ${++index} — ${example.kind}`, '',
       `${group.length} ${group.length === 1 ? 'run' : 'runs'}; ${group.filter(run => !run.error).length} finished.`, '');
+    lines.push(`Normalizer: ${example.normalizer ?? 'hearalong-1'}. Scoring commit: ${example.scoringCommit ?? example.commit}; scoring dirty: ${example.scoringDirty ?? example.dirty ?? 'unknown'}.`, '');
     if (legacy) lines.push('Missing cohort provenance: inspection only; unrelated legacy runs are not aggregated.', '');
-    else if (example.kind === 'wer') lines.push(`Condition: sessions ${example.condition!.sessions.slice().sort().join(', ')} × mics ${example.condition!.mics.slice().sort().join(', ')}.`, '');
+    else if (example.kind !== 'live') lines.push(`Condition: sessions ${example.condition!.sessions.slice().sort().join(', ')} × mics ${example.condition!.mics.slice().sort().join(', ')}.`, '');
     else lines.push(`Condition: ${example.meetingId}, ${example.mic}, from ${example.fromSec} s, ${example.minutes} minutes.`, '');
     lines.push(...markdownTable(
       ['Run', 'Kind', 'Date', 'Label', 'Model basename', 'Model SHA-256', 'Model bytes', 'Commit', 'Dirty', 'Node', 'macOS', 'Chip', 'RAM', 'Logical cores', 'Failed chunks', 'Unfinished chunks'],
       group.map((run, i) => [i + 1, run.kind, run.createdAt, run.runLabel ?? '', run.modelIdentity?.basename ?? run.model,
         run.modelIdentity?.sha256 ?? 'n/a', run.modelIdentity?.bytes ?? 'n/a', run.commit, run.dirty === undefined ? 'n/a' : String(run.dirty),
         run.nodeVersion ?? 'n/a', run.macos, run.chip, formatRam(run.ramBytes), run.logicalCores ?? 'n/a',
-        run.kind === 'wer' ? run.sessions.reduce((n, s) => n + s.failedChunks, 0) : run.failedChunks ?? 'n/a',
-        run.kind === 'wer' ? (run.sessions.every(s => s.unfinishedChunks !== undefined) ? run.sessions.reduce((n, s) => n + s.unfinishedChunks!, 0) : 'n/a') : run.unfinishedChunks ?? 'n/a']),
+        run.kind !== 'live' ? run.sessions.reduce((n, s) => n + s.failedChunks, 0) : run.failedChunks ?? 'n/a',
+        run.kind !== 'live' ? (run.sessions.every(s => s.unfinishedChunks !== undefined) ? run.sessions.reduce((n, s) => n + s.unfinishedChunks!, 0) : 'n/a') : run.unfinishedChunks ?? 'n/a']),
     ));
     for (const [i, run] of group.entries()) if (run.error) lines.push('', `Run ${i + 1} stopped early: ${oneLine(run.error)}`);
-    const werRuns = group.filter((run): run is WerFile => run.kind === 'wer');
+    const werRuns = group.filter((run): run is WerFile | IhmFile => run.kind !== 'live');
+    const ihmRuns = group.filter((run): run is IhmFile => run.kind === 'ihm');
+    if (ihmRuns.length) lines.push('', 'Check of the Q8 model file against NVIDIA’s published AMI 10.14% (offline, Open ASR Leaderboard). Not an exact reproduction: our normalizer is not whisper-normalizer (numbers, fillers, contractions differ); NVIDIA’s segmentation may differ from AMI’s segments file.', '', ...markdownTable(
+      ['Run', 'hearalong-2 WER', 'hearalong-1 WER', 'NVIDIA published WER', 'Clips'],
+      ihmRuns.map(run => [no(group, run), formatPercent(run.totals.wer), formatPercent(run.legacyTotals.wer), '10.14%', run.clips])));
     const liveRuns = group.filter((run): run is LiveFile => run.kind === 'live');
     if (werRuns.length) lines.push('', ...renderWer(group, werRuns, !legacy));
     if (liveRuns.length) lines.push('', ...renderLive(group, liveRuns, !legacy));
@@ -86,17 +93,29 @@ function aggregate(label: string, values: number[], format: (n: number) => strin
   return `${prefix} ${format(spread.median)} (min ${format(spread.min)}, max ${format(spread.max)}).`;
 }
 
-function renderWer(ordered: BenchResult[], runs: WerFile[], aggregateRuns: boolean): string[] {
+function renderWer(ordered: BenchResult[], runs: (WerFile | IhmFile)[], aggregateRuns: boolean): string[] {
   const lines = ['#### Accuracy: custom-normalized WER', '', ...markdownTable(
     ['Run', 'Custom-normalized WER', 'S', 'D', 'I', 'N', 'Audio', 'Wall'],
     runs.map(run => [no(ordered, run), run.totals.referenceWords > 0 ? formatPercent(run.totals.wer) : 'n/a', run.totals.substitutions, run.totals.deletions, run.totals.insertions, run.totals.referenceWords, formatSeconds(run.totals.audioSeconds), formatSeconds(run.totals.wallSeconds)]),
   )];
   if (aggregateRuns) lines.push('', aggregate('custom-normalized WER', runs.filter(run => !run.error && run.totals.referenceWords > 0).map(run => run.totals.wer), formatPercent));
+  const eligible = runs.filter(run => !run.error);
+  if (eligible.some(run => run.sessions.some(session => session.breakdown))) {
+    lines.push('', '##### Per microphone', '', 'Corpus counts across eligible finished runs. Single-speaker excludes overlap and turns of at most two words. Insertions attach to the preceding reference word (leading insertions to the first).', '', ...markdownTable(
+      ['Mic', 'Overall WER', 'Single-speaker WER', 'Share of missed words that were crosstalk'],
+      [...new Set(eligible.flatMap(run => run.sessions.map(session => session.mic)))].sort().map(mic => {
+        const sessions = eligible.flatMap(run => run.sessions.filter(session => session.mic === mic));
+        const overall = sumScores(sessions), clean = sumScores(sessions.flatMap(session => session.breakdown ? [session.breakdown.singleSpeaker] : []));
+        const overlapD = sessions.reduce((sum, session) => sum + (session.breakdown?.overlap.deletions ?? 0), 0);
+        const complete = sessions.every(session => session.breakdown);
+        return [mic, formatPercent(overall.wer), complete && clean.referenceWords ? formatPercent(clean.wer) : 'n/a', complete && overall.deletions ? formatPercent(overlapD / overall.deletions) : 'n/a'];
+      })));
+  }
   lines.push('', '##### Per session', '', ...sessionTable(ordered, runs, aggregateRuns));
   return lines;
 }
 
-function sessionTable(ordered: BenchResult[], runs: WerFile[], aggregateRuns: boolean): string[] {
+function sessionTable(ordered: BenchResult[], runs: (WerFile | IhmFile)[], aggregateRuns: boolean): string[] {
   const keys = new Map<string, { meetingId: string; mic: string }>();
   for (const run of runs) for (const session of run.sessions) keys.set(`${session.meetingId}\t${session.mic}`, { meetingId: session.meetingId, mic: session.mic });
   const header = ['Session', 'Mic', ...runs.map(run => `Run ${no(ordered, run)}`)];

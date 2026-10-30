@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -9,12 +10,15 @@ import { LagMeter } from '../scripts/lag-meter.ts';
 import { ANNOTATIONS_URL, SC_MEETINGS, benchPaths, reference, referenceText } from '../scripts/bench/ami.ts';
 import { downloadAction, planFetches, wordsOutputName } from '../scripts/bench/ami-fetch.ts';
 import { clockToSeconds, parseLiveArgs, parseWerArgs } from '../scripts/bench/cli.ts';
+import { classifyWords, scoreBreakdown } from '../scripts/bench/breakdown.ts';
+import { planIhm, readSegments, speakerChannels } from '../scripts/bench/ihm.ts';
+import { rescore } from '../scripts/bench/rescore.ts';
 import { loadResults, renderBench } from '../scripts/bench/report.ts';
 import { parseResult, type LiveFile, type WerFile, type WerSession } from '../scripts/bench/results.ts';
 import { parsePs, serverUsage, speechWorkerUsage } from '../scripts/bench/ps.ts';
 import { applySnapshot, domSight, frameEndMs, headlineLagWarning, mergeSights, rememberSegmentEnds, spokenAt, spokenFrame, visibleLags } from '../scripts/bench/snapshot.ts';
 import { medianSpread, percentile, summarize } from '../scripts/bench/stats.ts';
-import { align, corpusWer, normalize, wer } from '../scripts/bench/wer.ts';
+import { align, backtrace, corpusWer, normalize, normalizeReference, wer } from '../scripts/bench/wer.ts';
 
 const werScript = fileURLToPath(new URL('../scripts/bench/wer.ts', import.meta.url));
 const benchmarks = fileURLToPath(new URL('../../docs/benchmarks.md', import.meta.url));
@@ -43,6 +47,53 @@ test('normalizer folds case, punctuation, apostrophes, hyphens, and spaces', () 
   assert.deepEqual(normalize('too    many   spaces'), ['too', 'many', 'spaces']);
   assert.deepEqual(normalize('Ｈｅｌｌｏ'), ['hello']);
   assert.equal(wer('Hello,  WORLD!', 'hello world').wer, 0);
+});
+
+test('AMI letter tokens join, including plurals, without joining other underscore words', () => {
+  assert.deepEqual(normalize('T_V_ L_C_D_ R_S_I_ P_C_B_ T_V_s'), ['tv', 'lcd', 'rsi', 'pcb', 'tvs']);
+  assert.equal(wer('The T_V_s work', 'the TVs work').wer, 0);
+  assert.equal(wer('TV', 'T_V_').wer, 0);
+  assert.deepEqual(normalize('uh_huh uh-huh huh ice_cream T_V_set T_V_S'), ['huh', 'ice', 'cream', 't', 'v', 'set', 't', 'v', 's']);
+  assert.deepEqual(normalize('T_V_', 'hearalong-1'), ['t', 'v']);
+});
+
+test('Whisper spelling dictionary is symmetric and does not stem unrelated words', () => {
+  assert.equal(wer('The programme recogniser likes colour', 'the program recognizer likes color').wer, 0);
+  assert.equal(wer('color', 'colour').wer, 0);
+  assert.deepEqual(normalize('catalogue aluminium theatre zebra'), ['catalog', 'aluminum', 'theater', 'zebra']);
+  assert.deepEqual(normalize('programme', 'hearalong-1'), ['programme']);
+});
+
+test('word attribution preserves global paired-filler removal and number expansion', () => {
+  const words = ['uh', 'huh', 'A', '12', 'T_V_'].map((text, index) => ({ text, index }));
+  assert.deepEqual(normalizeReference(words), [{ text: 'a', index: 2 }, { text: 'twelve', index: 3 }, { text: 'tv', index: 4 }]);
+  assert.deepEqual(normalizeReference(words).map(word => word.text), normalize(words.map(word => word.text).join(' ')));
+});
+
+test('backtrace ties, insertion ownership, and empty reference are deterministic', () => {
+  assert.deepEqual(backtrace(['a', 'b'], ['extra', 'a', 'b', 'tail']), [
+    { kind: 'insertions', referenceIndex: 0, hypothesisIndex: 0 }, { kind: 'hits', referenceIndex: 0, hypothesisIndex: 1 },
+    { kind: 'hits', referenceIndex: 1, hypothesisIndex: 2 }, { kind: 'insertions', referenceIndex: 1, hypothesisIndex: 3 },
+  ]);
+  assert.deepEqual(backtrace([], ['word']), [{ kind: 'insertions', referenceIndex: null, hypothesisIndex: 0 }]);
+  assert.equal(backtrace(['a'], ['b'])[0].kind, 'substitutions');
+});
+
+test('word classes handle speaker overlap, strict gap/turn bounds, and inclusive chunk edges', () => {
+  const w = (text: string, start: number, end: number, speaker = 'A') => ({ text, start, end, speaker });
+  const words = [w('one', 18, 18.2), w('two', 19, 19.2), w('three', 20, 20.2), w('four', 21, 21.2),
+    w('five', 22.7, 23), w('six', 23.5, 24), w('other', 19.1, 19.3, 'B'), w('touch', 24, 25, 'C')];
+  const flags = classifyWords(words);
+  assert.deepEqual(flags.map(f => f.overlap), [false, true, false, false, false, false, true, false]);
+  assert.deepEqual(flags.map(f => f.shortTurn), [false, false, false, false, true, true, true, true]);
+  assert.deepEqual(flags.slice(0, 5).map(f => f.chunkEdge), [false, true, true, true, false]);
+  const scored = scoreBreakdown(words.slice(0, 4), 'one extra two wrong');
+  assert.deepEqual(scored.overall, wer('one two three four', 'one extra two wrong'));
+  assert.deepEqual(scored.breakdown.singleSpeaker, scored.overall);
+  const cross = scoreBreakdown([w('red', 0, 1), w('blue', 0, 1, 'B')], '');
+  assert.equal(cross.breakdown.overlap.deletions, 2);
+  assert.equal(cross.breakdown.overlapDeletionShare, 1);
+  assert.equal(scoreBreakdown([], 'extra').overall.wer, Infinity);
 });
 
 test('digits from 0 to 9999 become English words and larger digit strings stay', () => {
@@ -111,7 +162,8 @@ test('WER CLI scores a file and rejects malformed JSON', () => {
     ]));
     const ok = spawnSync(process.execPath, ['--experimental-strip-types', werScript, good], { encoding: 'utf8' });
     assert.equal(ok.status, 0, ok.stderr);
-    const parsed = JSON.parse(ok.stdout) as { items: { id: string; wer: number }[]; corpus: { wer: number; referenceWords: number } };
+    const parsed = JSON.parse(ok.stdout) as { normalizer: string; items: { id: string; wer: number }[]; corpus: { wer: number; referenceWords: number } };
+    assert.equal(parsed.normalizer, 'hearalong-2');
     assert.equal(parsed.items[0].wer, 0);
     assert.equal(parsed.items[1].wer, 1);
     assert.equal(parsed.corpus.referenceWords, 3);
@@ -352,8 +404,8 @@ test('a frame end and a snapshot become LagMeter samples', () => {
 
 test('report generation replaces the marker section, keeps the outside, and is idempotent', () => {
   const doc = readFileSync(benchmarks, 'utf8');
-  assert.equal(renderBench(doc, []), doc);
-  assert.match(doc, /not yet measured/);
+  assert.equal(renderBench(renderBench(doc, []), []), renderBench(doc, []));
+  assert.match(renderBench(doc, []), /not yet measured/);
   const directory = mkdtempSync(join(tmpdir(), 'bench-report-'));
   try {
     const source = 'Keep this.\n\n<!-- bench:begin -->\nold numbers\n<!-- bench:end -->\n\nAnd this.\n';
@@ -409,6 +461,75 @@ test('report generation replaces the marker section, keeps the outside, and is i
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('rescore preserves transcription provenance, refuses missing sessions, and uses live saved text', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bench-rescore-'));
+  try {
+    const file = writeWer(directory, 0), raw = JSON.parse(readFileSync(file, 'utf8'));
+    const paths = benchPaths(directory);
+    mkdirSync(paths.words, { recursive: true });
+    writeFileSync(paths.wordsFile('XX0000a', 'A'), '<root><w starttime="0" endtime="1">T_V_</w><w starttime="1" endtime="2">programme</w><w starttime="2" endtime="3">works</w></root>');
+    const work = join(paths.work, 'wer', '2026-01-01T03-04-05-000Z', 'XX0000a', 'Mix-Headset');
+    assert.throws(() => rescore(raw, 'original.json', paths, { commit: 'scoring', dirty: true }), /Missing saved transcript/);
+    mkdirSync(work, { recursive: true });
+    const db = new DatabaseSync(join(work, 'meetings.sqlite'));
+    db.exec("CREATE TABLE segments (text TEXT, startMs REAL, ord INTEGER); INSERT INTO segments VALUES ('TV program works', 0, 0)"); db.close();
+    const next = rescore(raw, 'original.json', paths, { commit: 'scoring', dirty: true });
+    assert.equal(next.commit, raw.commit); assert.equal(next.createdAt, raw.createdAt);
+    assert.deepEqual(next.modelIdentity, raw.modelIdentity); assert.equal(next.dirty, raw.dirty);
+    assert.equal(next.scoringCommit, 'scoring'); assert.equal(next.scoringDirty, true);
+    assert.equal(next.rescoredFrom, 'original.json'); assert.equal(next.normalizer, 'hearalong-2');
+    const parsed = parseResult(next); assert.ok(parsed.kind === 'wer');
+    assert.equal(parsed.totals.wer, 0); assert.equal(parsed.totals.wallSeconds, raw.totals.wallSeconds);
+    assert.equal(parsed.sessions[0].breakdown?.singleSpeaker.referenceWords, 3);
+    raw.sessions.push({ ...raw.sessions[0], mic: 'Array1-01' });
+    assert.throws(() => rescore(raw, 'original.json', paths, { commit: 'scoring', dirty: true }), /Missing saved transcript/);
+    const live = JSON.parse(readFileSync(writeLive(directory, 0), 'utf8'));
+    live.fromSec = 0; live.transcript = 'TV program works';
+    const rescored = parseResult(rescore(live, 'live.json', paths, { commit: 'scoring', dirty: true }));
+    assert.ok(rescored.kind === 'live'); assert.equal(rescored.wer.wer, 0); assert.deepEqual(rescored.preview, live.preview);
+    delete live.transcript;
+    assert.throws(() => rescore(live, 'live.json', paths, { commit: 'scoring', dirty: true }), /Missing saved live transcript/);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('report never pools normalizer versions, including legacy files', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bench-versions-'));
+  try {
+    const raw = JSON.parse(readFileSync(writeWer(directory, 0), 'utf8'));
+    const old = parseResult(raw), current = parseResult({ ...raw, normalizer: 'hearalong-2' });
+    const source = '<!-- bench:begin -->\n<!-- bench:end -->';
+    const doc = renderBench(source, [old, current]);
+    assert.equal((doc.match(/Median custom-normalized WER across 1 eligible run:/g) ?? []).length, 2);
+    assert.doesNotMatch(doc, /across 2 eligible/);
+    delete raw.modelIdentity;
+    const legacy = renderBench(source, [parseResult(raw), parseResult({ ...raw, normalizer: 'hearalong-2' })]);
+    assert.equal((legacy.match(/### Legacy/g) ?? []).length, 2);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('IHM plan reads explicit channel mapping and half-open speaker segments', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'bench-ihm-'));
+  try {
+    const paths = benchPaths(directory);
+    for (const subdir of ['corpusResources', 'segments', 'words']) mkdirSync(join(paths.annotations, subdir), { recursive: true });
+    const xml = '<root><meeting observation="Fiction1"><speaker nxt_agent="A" channel="2"/><speaker nxt_agent="B" channel="0"/></meeting></root>';
+    assert.deepEqual([...speakerChannels(xml, 'Fiction1')], [['A', 2], ['B', 0]]);
+    assert.throws(() => speakerChannels(xml, 'Missing'), /No channel mapping/);
+    assert.throws(() => readSegments('<segment nite:id="bad" transcriber_start=" " transcriber_end="2">'), /Invalid AMI segment/);
+    writeFileSync(join(paths.annotations, 'corpusResources', 'meetings.xml'), xml);
+    for (const speaker of ['A', 'B']) {
+      writeFileSync(join(paths.annotations, 'segments', `Fiction1.${speaker}.segments.xml`), `<root><segment nite:id="${speaker}1" transcriber_start="1" transcriber_end="2"/></root>`);
+      writeFileSync(paths.wordsFile('Fiction1', speaker), `<root><w starttime="1" endtime="1.2">${speaker}boat</w><w starttime="2" endtime="2.3">outside</w><w starttime="1.5" endtime="1.6" trunc="true">truncated</w></root>`);
+    }
+    const clips = planIhm(['Fiction1'], directory);
+    assert.deepEqual(clips.map(c => [c.speaker, c.mic, c.reference]), [['A', 'Headset-2', 'Aboat'], ['B', 'Headset-0', 'Bboat']]);
+    assert.equal(clips[0].path, paths.wav('Fiction1', 'Headset-2'));
+    const fetches = planFetches(directory, 'Headset');
+    assert.equal(fetches.length, 65);
+    assert.equal(fetches[1].url, 'https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Headset-0.wav');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 const machine = { commit: 'abcdef1234567890', macos: '99.0', chip: 'Fictional Chip', ramBytes: 16 * 2 ** 30,
