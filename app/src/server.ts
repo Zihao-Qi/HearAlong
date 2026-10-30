@@ -147,6 +147,7 @@ export async function startServer(options: {
       '/segments-poll.js': ['segments-poll.js', 'text/javascript'],
       '/capture-clock.js': ['capture-clock.js', 'text/javascript'],
       '/upload-retry.js': ['upload-retry.js', 'text/javascript'],
+      '/storage-error.js': ['storage-error.js', 'text/javascript'],
       '/recording-end.js': ['recording-end.js', 'text/javascript'],
       '/capture-gaps.js': ['capture-gaps.js', 'text/javascript'],
       // The Plans section (M7b); its fixtures load only with ?plans-fixture= in the page URL (a dev switch).
@@ -184,10 +185,10 @@ export async function startServer(options: {
     const settingsPath = join(directory, 'settings.json');
     type BoardModel = 'quick' | 'main';
     const isBoardModel = (v: unknown): v is BoardModel => v === 'quick' || v === 'main';
-    let settings: ModeSettings & { boardModel: BoardModel; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null;
+    let settings: ModeSettings & { boardModel: BoardModel; autoAnswers: boolean; miniOpensItself: boolean; audioRetention: AudioRetentionSetting; speechModelPath: string | null; setupSeen: boolean; mainModel: string | null; quickModel: string | null;
       /** Providers with a key in the Keychain, and those whose key a failed change may have altered: names only, never a key. */
       apiKeys: KeyProvider[]; apiKeysUnconfirmed: KeyProvider[] } = {
-      boardModel: 'quick', miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false, mainModel: null, quickModel: null, apiKeys: [], apiKeysUnconfirmed: [],
+      boardModel: 'quick', autoAnswers: true, miniOpensItself: false, audioRetention: 'day', speechModelPath: null, setupSeen: false, mainModel: null, quickModel: null, apiKeys: [], apiKeysUnconfirmed: [],
     };
     try {
       const saved = JSON.parse(await readFile(settingsPath, 'utf8'));
@@ -196,6 +197,7 @@ export async function startServer(options: {
       else if (saved.boardModel === 'luna') settings.boardModel = 'quick';
       else if (saved.boardModel === 'sol') settings.boardModel = 'main';
       for (const key of ['mainModel', 'quickModel'] as const) if (typeof saved[key] === 'string' && saved[key].trim()) settings[key] = saved[key];
+      if (typeof saved.autoAnswers === 'boolean') settings.autoAnswers = saved.autoAnswers;
       if (typeof saved.miniOpensItself === 'boolean') settings.miniOpensItself = saved.miniOpensItself;
       if (typeof saved.speechModelPath === 'string' && saved.speechModelPath.trim()) settings.speechModelPath = saved.speechModelPath;
       if (typeof saved.setupSeen === 'boolean') settings.setupSeen = saved.setupSeen;
@@ -402,7 +404,7 @@ export async function startServer(options: {
     const meetingClock = (id: string) => { const replay = boardStore.replay(id); return replay ? boardStore.replayPositionMs(replay, clock()) + replay.baseMs : clock(); };
     const boards = new Boards({ store, directory, clock, meetingClock, actions: actionJobs, glossaryFor,
       ask: options.board !== undefined ? options.board : gate ? message => gate.ask(message) : null,
-      hasMaterials: id => rootsFor(id).length > 0, memoryFor: id => memoryLines(id) });
+      hasMaterials: id => rootsFor(id).length > 0, memoryFor: id => memoryLines(id), autoAnswers: () => settings.autoAnswers });
     // Only meetings being recorded or replayed (or explicitly asked for) are scanned: an old meeting never spends quota on its own.
     const boardActive = new Set<string>();
     onLiveChunk = id => { boardActive.add(id); };
@@ -772,6 +774,10 @@ export async function startServer(options: {
               if (!isBoardModel(value.boardModel)) throw new HttpError(400, 'boardModel is quick or main.');
               change.boardModel = value.boardModel;
             }
+            if (value.autoAnswers !== undefined) {
+              if (typeof value.autoAnswers !== 'boolean') throw new HttpError(400, 'autoAnswers is true or false.');
+              change.autoAnswers = value.autoAnswers;
+            }
             if (value.miniOpensItself !== undefined) {
               if (typeof value.miniOpensItself !== 'boolean') throw new HttpError(400, 'miniOpensItself is true or false.');
               change.miniOpensItself = value.miniOpensItself;
@@ -786,13 +792,13 @@ export async function startServer(options: {
               if (typeof value.setupSeen !== 'boolean') throw new HttpError(400, 'setupSeen is true or false.');
               change.setupSeen = value.setupSeen;
             }
-            if (!Object.keys(change).length) throw new HttpError(400, 'Give boardModel, miniOpensItself, audioRetention or setupSeen.');
+            if (!Object.keys(change).length) throw new HttpError(400, 'Give boardModel, autoAnswers, miniOpensItself, audioRetention or setupSeen.');
             // Saved one at a time, and applied only once saved: a failed save keeps the previous choice. Each change applies to
             // the settings as the save before it left them, so two changes made together both stay.
             await saveSettings(change);
             void audioRetention.run();
           } else if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
-          send(res, 200, { ...settings, boardModels: (['quick', 'main'] as const).map(id => ({ id, model: ai.current(id) })), aiMode: ai.mode(), aiForcedOff: !cloud, boardEnabled: ai.mode() === 'cloud' && (boardGates || options.board != null) }); return;
+          send(res, 200, { ...settings, boardModels: (['quick', 'main'] as const).map(id => ({ id, model: ai.current(id) })), aiMode: ai.mode(), aiForcedOff: !cloud, autoAnswersEnabled: ai.mode() !== 'off' && boards.enabled, boardEnabled: ai.mode() === 'cloud' && (boardGates || options.board != null) }); return;
         }
         if (url.pathname === '/api/audio-retention') {
           if (req.method === 'POST') {

@@ -239,6 +239,8 @@ export class Boards {
     glossaryFor: (meetingId: string) => Promise<Glossary | null>; hasMaterials: (meetingId: string) => boolean; model?: string;
     /** One line per open project item (M6 §7); none for a meeting without a project. */
     memoryFor?: (meetingId: string) => string[];
+    /** Read at admission, including after waiting for the board lock. Defaults on for existing callers. */
+    autoAnswers?: () => boolean;
     /** The meeting's own time for the scan cadence (replay position during a replay); wall time otherwise. */
     meetingClock?: (meetingId: string) => number;
   };
@@ -424,11 +426,11 @@ export class Boards {
    * submission M3 refused gives the slot back. Evidence that changed since detection, mixed scope, or shutdown: no automatic run.
    */
   private async autoInvestigate(meetingId: string, cardId: string) {
-    if (!this.options.actions || !this.options.hasMaterials(meetingId) || this.closing) return;
+    if (this.options.autoAnswers?.() === false || !this.options.actions || !this.options.hasMaterials(meetingId) || this.closing) return;
     const key = createHash('sha256').update(`${meetingId}:${cardId}:auto`).digest('hex').slice(0, 16);
     const reserved = await this.mutate(meetingId, board => {
       const card = board.cards.find(c => c.id === cardId);
-      if (!card || !autoEligible(card) || board.autoUsed >= BOARD.autoCap || this.closing) return null;
+      if (this.options.autoAnswers?.() === false || !card || !autoEligible(card) || board.autoUsed >= BOARD.autoCap || this.closing) return null;
       if (card.occurrences.some(o => o.nonProject) || !this.current(meetingId, card)) return null;
       board.autoUsed++;
       card.auto = { state: 'reserved', key };

@@ -41,7 +41,7 @@
     <button id="open-meeting" class="chip chip-button" type="button" aria-haspopup="dialog">Add materials</button>
   </div>
   <div class="topbar-right">
-    <span id="connection" class="muted small">Connecting…</span>
+    <span id="connection" class="conn muted small">Connecting…</span>
     <div class="start-wrap">
       <button id="start" class="button primary" aria-haspopup="menu" aria-expanded="false" aria-controls="start-menu">Start<span class="wide-only">&nbsp;recording</span></button>
       <div id="start-menu" class="start-menu" role="menu" aria-label="Start recording" hidden>
@@ -334,6 +334,9 @@
           <option value="quick">Quick model (default)</option>
           <option value="main">Main model</option>
         </select>
+      </label>
+      <label class="check small" for="auto-answers" hidden><input type="checkbox" id="auto-answers" checked>
+        <span><strong>Answer questions from your files automatically</strong><span id="auto-answers-detail" class="muted block">Up to 5 per meeting.</span></span>
       </label>
     </section>
     <section class="settings-section" data-section="activity" hidden>
