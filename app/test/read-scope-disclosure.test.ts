@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
-for (const path of ['../../README.md', '../README.md', '../../docs/architecture.md']) test(`read boundary disclosure is explicit in ${path}`, async () => {
+for (const path of ['../README.md', '../../docs/architecture.md']) test(`read boundary disclosure is explicit in ${path}`, async () => {
   const text = await readFile(new URL(path, import.meta.url), 'utf8');
   assert.match(text, /bundled Node with bundled mathjs/);
   assert.match(text, /nothing is installed or downloaded for (?:them|calculations)/);

@@ -57,7 +57,7 @@ A few decisions that shaped it. The details, with links into the code, are in [t
 
 **AI output has to show its sources.** Notes and cards cite transcript lines; plans can also cite attached files, web pages and calculations. The server checks each quote against what the model was actually given. That proves the words are there, not that the conclusion is right, so everything the AI writes is shown as a draft. Plans are versioned, so an older run can't overwrite a newer one, and a plan is marked when the transcript it relied on changes later.
 
-**AI tools only see what you attach.** When the model reads files, it can open only the meeting's attached materials and the project's memory, never the rest of your Mac. Files named like private keys or credentials are refused, even inside an attached folder. Calculations run in a macOS sandbox with no network, and they can't read or write your files.
+**AI tools only see what you attach.** When the model reads files, it can open only the meeting's attached materials and the project's memory, never the rest of your Mac. Files named like private keys or credentials are refused, even inside an attached folder. Calculations run in a macOS sandbox with no network, and they can't read or write your files. The exact limits are in [AI file and calculation boundary](app/README.md#ai-file-and-calculation-boundary).
 
 Accuracy and latency on a public meeting corpus are in [Benchmarks](docs/benchmarks.md).
 
