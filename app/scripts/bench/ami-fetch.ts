@@ -6,13 +6,13 @@ import { createReadStream } from 'node:fs';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANNOTATIONS_URL, MICS, SC_MEETINGS, audioUrl, benchPaths, type Mic } from './ami.ts';
+import { ANNOTATIONS_URL, MICS, SC_MEETINGS, audioUrl, benchPaths, type AudioMic, type Mic } from './ami.ts';
 
 export type PlannedFile = {
   id: string;
   kind: 'annotations' | 'audio';
   meetingId: string | null;
-  mic: Mic | null;
+  mic: AudioMic | null;
   url: string;
   dest: string;
 };
@@ -34,10 +34,11 @@ export function downloadAction(local: LocalFile, recorded: Pick<ManifestEntry, '
 }
 
 /** The annotations zip plus both microphone files for every SC meeting. Paths stay under `root`. */
-export function planFetches(root?: string): PlannedFile[] {
+export function planFetches(root?: string, selection?: Mic | 'Headset'): PlannedFile[] {
   const paths = benchPaths(root);
   const zip: PlannedFile = { id: 'annotations', kind: 'annotations', meetingId: null, mic: null, url: ANNOTATIONS_URL, dest: paths.zip };
-  const audio = SC_MEETINGS.flatMap(meetingId => MICS.map((mic): PlannedFile => ({
+  const mics: readonly AudioMic[] = selection === 'Headset' ? ['Headset-0', 'Headset-1', 'Headset-2', 'Headset-3'] : selection ? [selection] : MICS;
+  const audio = SC_MEETINGS.flatMap(meetingId => mics.map((mic): PlannedFile => ({
     id: `${meetingId}:${mic}`, kind: 'audio', meetingId, mic, url: audioUrl(meetingId, mic), dest: paths.wav(meetingId, mic),
   })));
   return [zip, ...audio];
@@ -159,34 +160,53 @@ export async function extractWords(zip: string, wordsDir: string): Promise<numbe
   return written;
 }
 
-export async function runFetch(root?: string): Promise<void> {
+export async function runFetch(root?: string, selection?: Mic | 'Headset'): Promise<void> {
   const paths = benchPaths(root);
   const manifest = await loadManifest(paths.manifest);
-  for (const item of planFetches(root)) {
-    const key = manifestKey(paths.ami, item.dest);
-    const present = await localFile(item.dest);
-    const action = downloadAction(present, manifest.files[key]);
-    if (action === 'download') {
-      console.log(`fetch ${item.url}`);
-      await fetchTo(item.url, item.dest);
-    } else console.log(`${action} ${item.dest}`);
-    const saved = action === 'download' ? await localFile(item.dest) : present;
-    if (!saved.sha256) throw new Error(`Missing file after download: ${item.dest}`);
-    manifest.files[key] = { url: item.url, bytes: saved.bytes, sha256: saved.sha256 };
+  const planned = planFetches(root, selection);
+  // Bounded concurrent transfers: the corpus mirror can be slow per connection. Serialize manifest writes per batch.
+  for (let offset = 0; offset < planned.length; offset += 8) {
+    const completed = await Promise.all(planned.slice(offset, offset + 8).map(async item => {
+      const key = manifestKey(paths.ami, item.dest);
+      const present = await localFile(item.dest);
+      const action = downloadAction(present, manifest.files[key]);
+      if (action === 'download') {
+        console.log(`fetch ${item.url}`);
+        await fetchTo(item.url, item.dest);
+      } else console.log(`${action} ${item.dest}`);
+      const saved = action === 'download' ? await localFile(item.dest) : present;
+      if (!saved.sha256) throw new Error(`Missing file after download: ${item.dest}`);
+      return { key, entry: { url: item.url, bytes: saved.bytes, sha256: saved.sha256 } };
+    }));
+    for (const { key, entry } of completed) manifest.files[key] = entry;
     await saveManifest(paths.manifest, manifest);
   }
   const count = await extractWords(paths.zip, paths.words);
   console.log(`words extracted or already present under ${paths.words} (${count} written)`);
+  if (selection === 'Headset') {
+    for (const entry of await unzipList(paths.zip)) {
+      const parts = entry.split('/');
+      if (parts.some(part => !part || part === '..' || part === '.')) continue;
+      const base = parts.at(-1)!;
+      const subdir = parts.includes('segments') && /^[A-Za-z0-9]+\.[A-D]\.segments\.xml$/.test(base) ? 'segments'
+        : parts.includes('corpusResources') && base === 'meetings.xml' ? 'corpusResources' : null;
+      if (!subdir) continue;
+      const dest = resolve(paths.annotations, subdir, base);
+      if ((await stat(dest).catch(() => null))?.size) continue;
+      await mkdir(dirname(dest), { recursive: true });
+      await writeFile(dest, await unzipEntry(paths.zip, entry), { mode: 0o644 });
+    }
+  }
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args.includes('--help')) {
-    console.log('Usage: npm run bench:fetch');
+    console.log('Usage: npm run bench:fetch -- [--mic Headset|Mix-Headset|Array1-01]');
     return;
   }
-  if (args.length) throw new Error('bench:fetch takes no arguments. Set HEARALONG_BENCH_DIR to choose the directory.');
-  await runFetch();
+  if (args.length && (args.length !== 2 || args[0] !== '--mic' || !['Headset', ...MICS].includes(args[1]))) throw new Error('Usage: npm run bench:fetch -- [--mic Headset|Mix-Headset|Array1-01]');
+  await runFetch(undefined, args[1] as Mic | 'Headset' | undefined);
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {

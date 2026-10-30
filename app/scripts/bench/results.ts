@@ -1,9 +1,16 @@
 // Shapes of the raw result files. The report reads these; the runners write them. Samples stay in the JSON and are not required here.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Breakdown } from './breakdown.ts';
+import type { WerResult } from './wer.ts';
 
 export type MachineInfo = {
   commit: string;
+  normalizer?: string;
+  scoringCommit?: string;
+  scoringDirty?: boolean;
+  rescoredFrom?: string;
+  rescoredAt?: string;
   macos: string;
   chip: string;
   ramBytes: number;
@@ -37,6 +44,7 @@ export type WerSession = {
   wer: number;
   failedChunks: number;
   unfinishedChunks?: number;
+  breakdown?: Breakdown;
 };
 
 export type WerFile = MachineInfo & {
@@ -96,14 +104,15 @@ export type LiveFile = MachineInfo & {
   };
 };
 
-export type BenchResult = WerFile | LiveFile;
+export type IhmFile = Omit<WerFile, 'kind'> & { kind: 'ihm'; legacyTotals: WerResult; clips: number; transcriptsFile: string };
+export type BenchResult = WerFile | LiveFile | IhmFile;
 
 export function fileStamp(date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, '-');
 }
 
 /** `wer-<stamp>.json`, with a numeric suffix if that name is already taken. */
-export function resultPath(directory: string, prefix: 'wer' | 'live', date = new Date()): string {
+export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm', date = new Date()): string {
   const base = `${prefix}-${fileStamp(date)}`;
   let path = join(directory, `${base}.json`);
   for (let n = 2; existsSync(path); n++) path = join(directory, `${base}-${n}.json`);
@@ -114,7 +123,8 @@ export function parseResult(value: unknown): BenchResult {
   const row = record(value, 'result');
   if (row.kind === 'wer') return validateCompletion(parseWer(row));
   if (row.kind === 'live') return validateCompletion(parseLive(row));
-  throw new Error('Invalid benchmark result: kind must be "wer" or "live".');
+  if (row.kind === 'ihm') return validateCompletion({ ...parseWer(row), kind: 'ihm', legacyTotals: parseScore(row.legacyTotals, 'legacyTotals'), clips: needCount(row.clips, 'clips'), transcriptsFile: needString(row.transcriptsFile, 'transcriptsFile') });
+  throw new Error('Invalid benchmark result: kind must be "wer", "live", or "ihm".');
 }
 
 export function chunkCompletionError(failed: number, unfinished: number): string | null {
@@ -123,8 +133,8 @@ export function chunkCompletionError(failed: number, unfinished: number): string
 
 /** Also applied by the report to programmatically supplied runs, not only parsed JSON. */
 export function validateCompletion<T extends BenchResult>(run: T): T {
-  const failed = run.kind === 'wer' ? run.sessions.reduce((n, s) => n + s.failedChunks, 0) : run.failedChunks ?? 0;
-  const unfinished = run.kind === 'wer' ? run.sessions.reduce((n, s) => n + (s.unfinishedChunks ?? 0), 0) : run.unfinishedChunks ?? 0;
+  const failed = run.kind !== 'live' ? run.sessions.reduce((n, s) => n + s.failedChunks, 0) : run.failedChunks ?? 0;
+  const unfinished = run.kind !== 'live' ? run.sessions.reduce((n, s) => n + (s.unfinishedChunks ?? 0), 0) : run.unfinishedChunks ?? 0;
   const error = run.error || chunkCompletionError(failed, unfinished) || (run.kind === 'live' && run.final.n === 0 ? 'No final samples were observed.' : null);
   return { ...run, error };
 }
@@ -159,6 +169,7 @@ function parseSession(value: unknown, index: number): WerSession {
     wer: needRatio(row.wer, `sessions[${index}].wer`),
     failedChunks: needCount(row.failedChunks, `sessions[${index}].failedChunks`),
     unfinishedChunks: optionalCount(row.unfinishedChunks, `sessions[${index}].unfinishedChunks`),
+    breakdown: row.breakdown === undefined ? undefined : parseBreakdown(row.breakdown),
   };
 }
 
@@ -198,10 +209,34 @@ function machine(row: Record<string, unknown>): MachineInfo {
     modelIdentity = { basename: needString(model.basename, 'modelIdentity.basename'), sha256, bytes: needCount(model.bytes, 'modelIdentity.bytes') };
   }
   return {
+    normalizer: row.normalizer === undefined ? 'hearalong-1' : needString(row.normalizer, 'normalizer'),
+    scoringCommit: row.scoringCommit === undefined ? undefined : needString(row.scoringCommit, 'scoringCommit'),
+    scoringDirty: row.scoringDirty === undefined ? undefined : needBoolean(row.scoringDirty, 'scoringDirty'),
+    rescoredFrom: row.rescoredFrom === undefined ? undefined : needString(row.rescoredFrom, 'rescoredFrom'),
+    rescoredAt: row.rescoredAt === undefined ? undefined : needString(row.rescoredAt, 'rescoredAt'),
     commit: needString(row.commit, 'commit'), macos: needString(row.macos, 'macos'), chip: needString(row.chip, 'chip'), ramBytes: needNumber(row.ramBytes, 'ramBytes'),
     logicalCores: optionalCount(row.logicalCores, 'logicalCores'), dirty: row.dirty as boolean | undefined,
     nodeVersion: row.nodeVersion === undefined ? undefined : needString(row.nodeVersion, 'nodeVersion'), modelIdentity,
   };
+}
+
+function needBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') bad(`${label} must be a boolean`);
+  return value;
+}
+
+function parseScore(value: unknown, label: string): WerResult {
+  const row = record(value, label);
+  return { substitutions: needCount(row.substitutions, `${label}.substitutions`), deletions: needCount(row.deletions, `${label}.deletions`),
+    insertions: needCount(row.insertions, `${label}.insertions`), hits: needCount(row.hits, `${label}.hits`),
+    referenceWords: needCount(row.referenceWords, `${label}.referenceWords`), wer: needRatio(row.wer, `${label}.wer`) };
+}
+
+function parseBreakdown(value: unknown): Breakdown {
+  const row = record(value, 'breakdown');
+  return { singleSpeaker: parseScore(row.singleSpeaker, 'singleSpeaker'), overlap: parseScore(row.overlap, 'overlap'),
+    shortTurn: parseScore(row.shortTurn, 'shortTurn'), chunkEdge: parseScore(row.chunkEdge, 'chunkEdge'),
+    overlapDeletionShare: needNumber(row.overlapDeletionShare, 'overlapDeletionShare') };
 }
 
 function optionalCount(value: unknown, label: string): number | undefined {

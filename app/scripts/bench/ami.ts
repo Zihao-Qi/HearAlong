@@ -18,6 +18,7 @@ export type MeetingId = (typeof SC_MEETINGS)[number];
 /** Close-talk mix, then one far-field array channel (the condition closest to a person in the room). */
 export const MICS = ['Mix-Headset', 'Array1-01'] as const;
 export type Mic = (typeof MICS)[number];
+export type AudioMic = Mic | `Headset-${number}`;
 
 /** Speaker channels in the manual annotation. A meeting file that is absent is skipped; none at all is an error. */
 export const SPEAKERS = ['A', 'B', 'C', 'D'] as const;
@@ -33,7 +34,7 @@ export function isMic(value: string): value is Mic {
   return (MICS as readonly string[]).includes(value);
 }
 
-export function audioUrl(meetingId: string, mic: Mic): string {
+export function audioUrl(meetingId: string, mic: AudioMic): string {
   return `https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/${meetingId}/audio/${meetingId}.${mic}.wav`;
 }
 
@@ -49,7 +50,7 @@ export type BenchPaths = {
   work: string;
   zip: string;
   audioDir: (meetingId: string) => string;
-  wav: (meetingId: string, mic: Mic) => string;
+  wav: (meetingId: string, mic: AudioMic) => string;
   wordsFile: (meetingId: string, speaker: string) => string;
 };
 
@@ -113,7 +114,7 @@ export function referenceText(words: ReferenceWord[]): string {
   return words.map(word => word.text).join(' ');
 }
 
-function decodeXml(bytes: Buffer): string {
+export function decodeXml(bytes: Buffer): string {
   const head = bytes.subarray(0, 240).toString('ascii');
   const encoding = /encoding\s*=\s*["']([^"']+)["']/i.exec(head)?.[1].toLowerCase();
   if (encoding === 'utf-8' || encoding === 'utf8') return bytes.toString('utf8');
@@ -143,7 +144,7 @@ function readWords(xml: string, file: string): RawWord[] {
   return words;
 }
 
-function attr(source: string, name: string): string | undefined {
+export function attr(source: string, name: string): string | undefined {
   const match = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i').exec(source);
   return match?.[1] ?? match?.[2];
 }
