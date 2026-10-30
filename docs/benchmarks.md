@@ -125,13 +125,13 @@ Accuracy is custom-normalized WER; not directly comparable to published Whisper/
 
 1 run; 1 finished.
 
-Normalizer: hearalong-2. Scoring commit: a2fed910a6dfa941250cdfc69596b48d808f4e25; scoring dirty: true.
+Normalizer: hearalong-2. Scoring commit: ba788c8fb842977be1bf9d4e3cd3e601001c1c00; scoring dirty: false.
 
 Condition: sessions EN2002a, EN2002b, EN2002c, EN2002d, ES2004a, ES2004b, ES2004c, ES2004d, IS1009a, IS1009b, IS1009c, IS1009d, TS3003a, TS3003b, TS3003c, TS3003d × mics Headset.
 
 | Run | Kind | Date | Label | Model basename | Model SHA-256 | Model bytes | Commit | Dirty | Node | macOS | Chip | RAM | Logical cores | Failed chunks | Unfinished chunks |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | ihm | 2026-10-30T16:28:32.292Z | ami-segments-own-headsets | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | a2fed910a6dfa941250cdfc69596b48d808f4e25 | true | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+| 1 | ihm | 2026-10-30T16:56:41.299Z | ami-segments-own-headsets | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | ba788c8fb842977be1bf9d4e3cd3e601001c1c00 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
 
 Check of the Q8 model file against NVIDIA’s published AMI 10.14% (offline, Open ASR Leaderboard). Not an exact reproduction: our normalizer is not whisper-normalizer (numbers, fillers, contractions differ); NVIDIA’s segmentation may differ from AMI’s segments file.
 
@@ -143,7 +143,7 @@ Check of the Q8 model file against NVIDIA’s published AMI 10.14% (offline, Ope
 
 | Run | Custom-normalized WER | S | D | I | N | Audio | Wall |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 9.87% | 3322 | 2011 | 2893 | 83328 | 33952.9 s | 1347.2 s |
+| 1 | 9.87% | 3322 | 2011 | 2893 | 83328 | 33952.9 s | 1627.5 s |
 
 Median custom-normalized WER across 1 eligible run: 9.87% (min 9.87%, max 9.87%).
 
@@ -276,7 +276,7 @@ Median worker RSS mean across 3 eligible runs: 1819.2 MiB (min 1819.0 MiB, max 1
 
 3 runs; 3 finished.
 
-Normalizer: hearalong-2. Scoring commit: a2fed910a6dfa941250cdfc69596b48d808f4e25; scoring dirty: true.
+Normalizer: hearalong-2. Scoring commit: ba788c8fb842977be1bf9d4e3cd3e601001c1c00; scoring dirty: false.
 
 Condition: ES2004a, Mix-Headset, from 300 s, 10 minutes.
 
@@ -394,7 +394,7 @@ Median custom-normalized WER across 3 eligible runs: 25.70% (min 25.70%, max 25.
 
 3 runs; 3 finished.
 
-Normalizer: hearalong-2. Scoring commit: a2fed910a6dfa941250cdfc69596b48d808f4e25; scoring dirty: true.
+Normalizer: hearalong-2. Scoring commit: ba788c8fb842977be1bf9d4e3cd3e601001c1c00; scoring dirty: false.
 
 Condition: sessions EN2002a, EN2002b, EN2002c, EN2002d, ES2004a, ES2004b, ES2004c, ES2004d, IS1009a, IS1009b, IS1009c, IS1009d, TS3003a, TS3003b, TS3003c, TS3003d × mics Array1-01, Mix-Headset.
 
