@@ -11,6 +11,7 @@ type Session = { id: number; recording: string | null; sources: Set<string>; sta
 export class LiveView {
   private session: Session = { id: 0, recording: null, sources: new Set(), state: 'auto', tabEnded: false, stop: null, clockStart: null };
   private pending = new Map<string, number>();
+  private appNotice: Notice | null = null;
   private helperSeenAt = -Infinity;
   private reveals = new Map<string, { cardId: string; n: number; at: number }>();
   private revealCount = 0;
@@ -20,6 +21,8 @@ export class LiveView {
   private seen = new Set<string>(); // recordings that have had their turn: a late frame of one never brings it back
   /** Whether a source belongs to the recording now. */
   has(source: string): boolean { return this.session.sources.has(source); }
+  recordingId(): string | null { return this.session.recording; }
+  appMessage(text: string) { this.appNotice = { short: 'the call stopped', text }; }
   /**
    * Whether a request names the recording now: by its number (the mini view, the helper) or by sources of it (the app's page).
    * A request about an earlier recording, which may arrive late, never touches a new one.
@@ -50,7 +53,12 @@ export class LiveView {
       if (this.seen.has(id)) return;
       if (this.session.recording) this.seen.add(this.session.recording);
       for (const old of this.session.sources) this.pending.delete(old);
+      this.appNotice = null;
       this.session = { id: this.session.id + 1, recording: id, sources: new Set(), state: 'auto', tabEnded: false, stop: null, clockStart: null };
+    }
+    if ((source.startsWith('app:') || source.startsWith('tab:')) && !this.session.sources.has(source)) {
+      this.appNotice = null;
+      if (source.startsWith('app:')) this.session.tabEnded = false;
     }
     this.session.sources.add(source);
     if (pending !== null) this.pending.set(source, pending);
@@ -67,10 +75,11 @@ export class LiveView {
   notices(live: { source: string; quiet: boolean; late?: boolean }[]): Notice[] {
     const notices: Notice[] = [];
     const mine = live.filter(s => this.session.sources.has(s.source));
-    if (this.session.tabEnded && !mine.some(s => s.source.startsWith('tab:'))) notices.push(NOTICES.tabEnded);
+    if (this.appNotice && !mine.some(s => s.source.startsWith('app:'))) notices.push(this.appNotice);
+    if (this.session.tabEnded && !mine.some(s => s.source.startsWith('tab:') || s.source.startsWith('app:'))) notices.push(NOTICES.tabEnded);
     // Behind by the page's own count, or by frames that stopped arriving (a stuck upload sends no new count).
     if (mine.some(s => s.late || (this.pending.get(s.source) ?? 0) >= SAVING_BEHIND_FRAMES)) notices.push(NOTICES.savingBehind);
-    for (const s of mine) if (s.quiet) notices.push(s.source.startsWith('tab:') ? NOTICES.quietTab : NOTICES.quietMic);
+    for (const s of mine) if (s.quiet) notices.push(s.source.startsWith('tab:') ? NOTICES.quietTab : s.source.startsWith('app:') ? { short: 'no sound from the call for 1 min', text: 'No sound from the call for 1 min. Is it still playing?' } : NOTICES.quietMic);
     return notices;
   }
 

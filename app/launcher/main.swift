@@ -56,7 +56,12 @@ final class Helper: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        guard let url = Bundle.main.url(forResource: "launcher", withExtension: "json"),
+        // Mutable launch paths live beside the signed bundle; old bundles/config files remain readable.
+        let external = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("HearAlong Helper.json")
+        let installed = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/HearAlong/helper.json")
+        let settings = [external, installed].first { FileManager.default.fileExists(atPath: $0.path) }
+            ?? Bundle.main.url(forResource: "launcher", withExtension: "json")
+        guard let url = settings,
               let data = try? Data(contentsOf: url), let config = try? JSONDecoder().decode(Config.self, from: data) else {
             fail("The helper's settings are missing. Build it again with npm run build:app.")
             return
@@ -85,6 +90,12 @@ final class Helper: NSObject, NSApplicationDelegate {
         starting = true
         DispatchQueue.global().async {
             if self.isAssistant() {
+#if APP_AUDIO_TESTING
+                if self.env["HEARALONG_FAKE_APP_AUDIO"] == "1" {
+                    DispatchQueue.main.async { self.starting = false; self.startMini() }
+                    return
+                }
+#endif
                 // Already running (npm start): nothing to start; the helper is not needed.
                 DispatchQueue.main.async {
                     self.starting = false
@@ -217,10 +228,12 @@ final class Helper: NSObject, NSApplicationDelegate {
     // MARK: The mini window
 
     private func startMini() {
-        guard owned, mini == nil else { return }
+        guard mini == nil else { return }
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep], reason: "HearAlong is running")
         let testDir = env["MEETING_HELPER_TEST_DIR"].map { URL(fileURLWithPath: $0) }
-        mini = MiniWindow(base: base, origin: "http://127.0.0.1:\(port)", testDir: testDir,
+        let captureLog = logURL
+        let audio = makeAppAudioInput(serverGroup: serverPid, log: { text in try? "[\(ISO8601DateFormatter().string(from: Date()))] \(text)\n".append(to: captureLog) })
+        mini = MiniWindow(base: base, origin: "http://127.0.0.1:\(port)", testDir: testDir, audioInput: audio,
                           isAssistantApp: { [weak self] app in self?.isHearAlong(app) ?? false },
                           activateApp: { [weak self] in
                               guard let self else { return }
@@ -255,7 +268,11 @@ final class Helper: NSObject, NSApplicationDelegate {
     private func stopAll(then finish: @escaping () -> Void) {
         if quitting { return }
         quitting = true
-        mini?.stop()
+        if let mini { mini.stop { self.stopServer(then: finish) } }
+        else { stopServer(then: finish) }
+    }
+
+    private func stopServer(then finish: @escaping () -> Void) {
         guard owned, serverPid > 0 else { finish(); return }
         let pid = serverPid
         // The leader is signalled only while it has not been reaped (its pid cannot belong to anything else until then). The group
@@ -322,9 +339,11 @@ final class MiniWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WKNa
     private var shown = false
     private var asking = false
     private var observer: NSObjectProtocol?
+    private let appCapture: AppCaptureClient
 
-    init(base: URL, origin: String, testDir: URL?, isAssistantApp: @escaping (NSRunningApplication) -> Bool, activateApp: @escaping () -> Void) {
+    init(base: URL, origin: String, testDir: URL?, audioInput: AppAudioInput, isAssistantApp: @escaping (NSRunningApplication) -> Bool, activateApp: @escaping () -> Void) {
         self.base = base; self.origin = origin; self.testDir = testDir; self.isAssistantApp = isAssistantApp; self.activateApp = activateApp
+        self.appCapture = AppCaptureClient(base: base, origin: origin, input: audioInput)
     }
 
     func start() {
@@ -338,10 +357,11 @@ final class MiniWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WKNa
         poll()
     }
 
-    func stop() {
+    func stop(completion: @escaping () -> Void) {
         timer?.invalidate()
         if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         panel?.orderOut(nil)
+        appCapture.stop(message: "The helper quit; the microphone keeps recording.", completion: completion)
     }
 
     // MARK: The server
@@ -357,8 +377,9 @@ final class MiniWindow: NSObject, NSWindowDelegate, WKScriptMessageHandler, WKNa
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.asking = false
-                if status == 403 { self.renewSession(); return }
-                guard status == 200, let json else { return }
+                if status == 403 { self.appCapture.disconnected(); self.renewSession(); return }
+                guard status == 200, let json else { self.appCapture.disconnected(); return }
+                self.appCapture.poll(json)
                 let session = json["session"] as? Int
                 let started = session != nil && session != self.session
 
