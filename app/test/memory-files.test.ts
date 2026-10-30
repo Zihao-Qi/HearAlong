@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, symlink, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -37,6 +37,31 @@ async function fixture(options: { repo?: boolean; answers?: unknown[] } = {}) {
   return { directory, repo, store, memory, proposals, files, project, calls, answers, add, tick: (ms: number) => { now += ms; },
     async close() { await files.close(); store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
+
+test('last-sync skipped count includes refused links and oversized files, bounds names, and clears after repair', async () => {
+  const f = await fixture({ repo: true });
+  try {
+    assert.equal(f.files.state('p').skipped, 0);
+    assert.equal((await f.files.sync('p')).skipped, 0);
+    const folder = join(f.repo, 'project-memory');
+    const target = join(f.directory, 'fictional-note.md');
+    await writeFile(target, 'Inventory the fictional aquarium supplies.');
+    await symlink(target, join(folder, 'inbox', 'linked.md'));
+    await link(target, join(folder, 'inbox', 'hardlinked.md'));
+    await writeFile(join(folder, 'inbox', 'large.md'), 'x'.repeat(1024 * 1024 + 1));
+    const status = await f.files.sync('p');
+    assert.equal(status.skipped, 3);
+    assert.deepEqual(status.skippedFiles?.sort(), ['inbox/hardlinked.md', 'inbox/large.md', 'inbox/linked.md']);
+    for (let i = 0; i < 21; i++) await symlink(target, join(folder, 'inbox', `refused-${i}.md`));
+    const many = await f.files.sync('p');
+    assert.equal(many.skipped, 24);
+    assert.equal(many.skippedFiles?.length, 20);
+    for (const name of await readdir(join(folder, 'inbox'))) await rm(join(folder, 'inbox', name));
+    assert.equal((await f.files.sync('p')).skipped, 0, 'not a cumulative count');
+    await rm(f.repo, { recursive: true });
+    assert.equal((await f.files.sync('p')).skipped, 0, 'missing repo still has a complete status');
+  } finally { await f.close(); }
+});
 
 test('inbox notes longer than 2,000 characters are interpreted in full', async () => {
   const tail = 'Finally, inventory the spare aerator stones.';

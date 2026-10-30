@@ -125,7 +125,7 @@ try {
     await speech.getByRole('button', { name: 'Resume' }).click(); await speech.getByRole('button', { name: 'Pause' }).waitFor();
     await speech.getByRole('button', { name: 'Pause' }).click(); await speech.getByText('Paused at', { exact: false }).waitFor();
     mode = 'fast'; await speech.getByRole('button', { name: 'Resume' }).click(); await until(() => download.state.state === 'done'); await refresh();
-    await page.waitForFunction(() => document.querySelector('[data-setup-row="speech"] .su-detail')?.textContent?.endsWith(' · downloaded'));
+    await page.waitForFunction(() => document.querySelector('[data-setup-row="speech"] .su-detail')?.textContent?.includes(' · downloaded · recordings use about 230 MB an hour, kept 1 day'));
     await shot(page, `${width}-speech-ready-downloaded`);
     await speech.getByRole('button', { name: 'Change' }).focus(); await page.keyboard.press('Enter');
     await page.getByRole('button', { name: 'Show all 16' }).waitFor(); assert.equal(await page.locator('dialog .su-model-list .su-row').count(), 3);
@@ -315,7 +315,7 @@ export async function assertSetupFix2(page: Page, id: number, facts: Record<stri
   switch (id) {
     case 1:
       assert.equal(await page.locator('[data-setup-row="speech"] .su-detail').innerText(),
-        `Parakeet 0.6B · ~/.cache/huggingface/…/parakeet-unified-en-0.6b-gguf${facts.shape === 'snapshot' ? '/model.gguf' : ''} (Pi Voice)`); break;
+        `Parakeet 0.6B · ~/.cache/huggingface/…/parakeet-unified-en-0.6b-gguf${facts.shape === 'snapshot' ? '/model.gguf' : ''} (Pi Voice) · recordings use about 230 MB an hour, kept 1 day`); break;
     case 3:
       assert.equal(await page.locator('dialog [role="alert"]').innerText(), facts.kind === 'invalid' ? 'This file isn’t a speech model.' : facts.kind === 'other' ? 'Example picker failed.' : 'Couldn’t open this file.'); break;
     case 4:
@@ -364,7 +364,7 @@ export async function assertSetupFix1(page: Page, id: number, facts: Record<stri
       assert.equal(await page.evaluate(() => (window as any).delayedMicStream.getTracks().every((t: MediaStreamTrack) => t.readyState === 'ended')), true); break;
     case 6:
       assert.equal(typeof facts.speech.downloadTargetPath, 'string', 'download target is present after restart, even when transfer is idle');
-      assert.match(await page.locator('[data-setup-row="speech"] .su-detail').innerText(), / · downloaded$/);
+      assert.match(await page.locator('[data-setup-row="speech"] .su-detail').innerText(), / · downloaded · recordings use about 230 MB an hour, kept 1 day$/);
       assert.equal(await page.locator('dialog .su-choice .su-in-use').count(), 1); break;
     case 7:
       for (const width of [1280, 390]) assert.deepEqual(facts[width], { Download: true, Pause: true, Resume: true, 'Download again': true, 'Try again': true, 'Check again': true, Allow: true });
@@ -374,10 +374,10 @@ export async function assertSetupFix1(page: Page, id: number, facts: Record<stri
       assert.equal(await page.getByRole('link', { name: 'Open in Chrome' }).evaluate(e => e === document.activeElement), true); break;
     case 9:
       assert.doesNotMatch((await page.locator('.su-detail').allInnerTexts()).join('\n'), /\/private\/var|\/Users\/example|Hugging Face cache/);
-      assert.match(await page.locator('[data-setup-row="speech"] .su-detail').innerText(), /^Whisper base · cache · no live preview$/); break;
+      assert.match(await page.locator('[data-setup-row="speech"] .su-detail').innerText(), /^Whisper base · cache · no live preview · recordings use about 230 MB an hour, kept 1 day$/); break;
     case 10: {
       const text = await page.locator('[data-setup-row="speech"] .su-detail').innerText();
-      assert.equal(text, 'Parakeet 0.6B · ~/.cache/huggingface/…/speech/parakeet-unified-en-0.6b-Q8_0.gguf (Pi Voice)');
+      assert.equal(text, 'Parakeet 0.6B · ~/.cache/huggingface/…/speech/parakeet-unified-en-0.6b-Q8_0.gguf (Pi Voice) · recordings use about 230 MB an hour, kept 1 day');
       assert.equal(text.split('parakeet-unified-en-0.6b-Q8_0.gguf').length - 1, 1); break;
     }
     case 11: {

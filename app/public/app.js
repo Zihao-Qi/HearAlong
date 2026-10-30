@@ -1,4 +1,5 @@
 import { stamp, TYPE_LABELS, NOTICES, SAVING_BEHIND_FRAMES } from '/live-shared.js';
+import { transcriptionStorageMessage } from '/storage-error.js';
 import { choosePlansApi, createPlansView, progressCard } from '/plans.js';
 import { createTranscriptView } from '/transcript-view.js';
 import { createListenPlayer } from '/listen.js';
@@ -348,6 +349,20 @@ $('update-restart').onclick = async () => {
   }
 };
 
+const seenStorageErrors = new Set();
+function renderStorageError(error) {
+  const connection = $('connection');
+  connection.classList.toggle('warn', Boolean(error));
+  // Keep Details (and keyboard focus) through status polls for the same error.
+  if (error && connection.querySelector('button')?.dataset.storageError === error) return;
+  connection.replaceChildren();
+  if (!error) return;
+  const details = el('button', 'Details', 'act');
+  details.dataset.storageError = error;
+  details.type = 'button'; details.onclick = () => openSettings('activity');
+  connection.append(document.createTextNode(transcriptionStorageMessage(error)), details);
+  if (!seenStorageErrors.has(error)) { seenStorageErrors.add(error); log(`Transcription storage: ${error}`, true); }
+}
 async function refreshStatus() {
   const sequence = ++statusSequence;
   const generation = selectionGeneration;
@@ -361,7 +376,7 @@ async function refreshStatus() {
     listen.recording(fresh.recordingAnywhere || capture || requestingMic);
     listen.meeting(fresh.meetings.find(m => m.id === meetingId));
     if (fresh.shuttingDown) quitting(); // also with no meeting selected (no transcript polling)
-    $('connection').textContent = fresh.transcriptionStorageError ? `Transcription paused: ${fresh.transcriptionStorageError}. Retrying…` : '';
+    renderStorageError(fresh.transcriptionStorageError);
     // Only a snapshot requested after the current selection may say that meeting no longer exists.
     if (generation === selectionGeneration && !capture && !requestingMic && !status.meetings.some(m => m.id === meetingId)) selectMeeting(status.meetings[0]?.id ?? null);
     renderMeetingMenu();
@@ -369,11 +384,13 @@ async function refreshStatus() {
     $('settings-ai-change').hidden = !!ai?.forcedOff;
     $('cloud').textContent = ai?.forcedOff ? 'Off for this start (MEETING_CLOUD=0).' : ai?.mode === 'local' ? 'On this Mac · nothing leaves it.' : ai?.mode === 'off' ? 'Off · transcription only.' : `Cloud · ${ai?.main?.id?.split('/')[0] ?? 'through Pi'}`;
     $('board-model').closest('label').hidden = ai?.mode !== undefined && ai.mode !== 'cloud';
+    if (ai?.mode === 'off') $('auto-answers').closest('label').hidden = true;
     $('ai-cloud-notice').hidden = !ai?.cloudNotice || ai.mode !== 'cloud';
     if (ai?.cloudNotice) $('ai-cloud-notice-text').textContent = `AI still runs in the cloud with ${ai.cloudConsent?.providers.join(', ') ?? 'your provider'}, as before. You can now keep it on this Mac instead.`;
     renderStatusDot();
   } catch (error) {
     if (quitView.seen) { $('quit-text').textContent = 'HearAlong has quit. You can close this window.'; return; }
+    $('connection').classList.remove('warn');
     $('connection').textContent = /local session/.test(error.message) ? 'Server restarted — reload this page' : 'Server unavailable';
   } finally { controls(); }
 }
@@ -1641,8 +1658,8 @@ function renderBoard(owner) {
   // The filters and order only matter once there are cards.
   $('stage-filter').closest('.board-filter').hidden = !all.length;
   $('board-sort').hidden = notesView.tab !== 'board' || !all.length; // a board control, on the Board tab only
-  $('scan-board').title = "Let the quick model read this meeting's transcript and propose cards"
-    + (data.autoUsed ? `. ${data.autoUsed} of ${data.autoCap} automatic answers used in this meeting.` : '');
+  $('scan-board').title = "Let the quick model read this meeting's transcript and propose cards";
+  renderAutoAnswers();
   const state = !data.enabled ? '' : data.pausedUntil ? `Paused after a rate limit until ${new Date(data.pausedUntil).toLocaleTimeString()}.`
     : data.scanning ? 'Reading the transcript…' : data.catchingUp ? 'Catching up…' : data.lastError ? `Last scan failed: ${data.lastError}` : '';
   $('board-state').textContent = [state, data.warning ? `⚠ ${data.warning}` : '',
@@ -1720,6 +1737,7 @@ function resetBoardView(owner) {
   Object.assign(boardView, { owner, data: null, initialised: false });
   $('board-cards').replaceChildren();
   $('pinned-card').hidden = true;
+  renderAutoAnswers();
   delete $('pinned-card').dataset.signature;
 }
 $('board-panel').addEventListener('scroll', () => {
@@ -1744,12 +1762,20 @@ setSort(boardView.sort);
 $('show-dismissed').onclick = () => { boardView.showDismissed = !boardView.showDismissed; if (boardView.data) renderBoard(boardView.owner); };
 $('scan-board').onclick = guarded(async () => { await post(`${base()}/board/scan`); log('Scanning this meeting for board cards.'); await refreshBoard(); });
 
-// ---------- Settings: the live board's model, and whether the mini window opens by itself ----------
+// ---------- Settings: automatic answers, the live board's model, and the mini window ----------
+function renderAutoAnswers() {
+  const used = boardView.owner === meetingId ? boardView.data?.autoUsed ?? 0 : 0;
+  $('auto-answers-detail').textContent = 'Up to 5 per meeting.' + (!$('auto-answers').checked
+    ? ' You can still press Answer on a question.' : used > 0 ? ` ${used} used so far.` : '');
+}
 async function loadSettings() {
   try {
     const settings = await api('/api/settings');
     $('audio-retention').value = settings.audioRetention;
     $('board-model').value = settings.boardModel;
+    $('auto-answers').checked = settings.autoAnswers !== false;
+    $('auto-answers').closest('label').hidden = !settings.autoAnswersEnabled;
+    renderAutoAnswers();
     $('board-model').disabled = !settings.boardEnabled;
     $('settings-ai-change').hidden = !!settings.aiForcedOff;
     $('board-model').closest('label').hidden = settings.aiMode !== undefined && settings.aiMode !== 'cloud';
@@ -1759,6 +1785,11 @@ async function loadSettings() {
 $('board-model').onchange = guarded(async () => {
   const settings = await send('/api/settings', 'PUT', { boardModel: $('board-model').value });
   log(`Live board now uses ${settings.boardModels.find(m => m.id === settings.boardModel).model}; it applies from the next scan.`);
+});
+$('auto-answers').onchange = guarded(async () => {
+  renderAutoAnswers();
+  try { await send('/api/settings', 'PUT', { autoAnswers: $('auto-answers').checked }); }
+  finally { await loadSettings(); }
 });
 // A failed save shows its error by the box and puts the box back as it was.
 $('mini-by-itself').onchange = guarded(async () => {
@@ -2714,6 +2745,7 @@ async function refreshProject() {
     }
     bindProjectData(data);
     projectView.data = data;
+    logSkippedFiles(project.id, data.files);
     projectView.run = run.run;
     projectView.owner = owner;
     if (projectView.filter === null) {
@@ -3860,14 +3892,28 @@ $('check-repo').onclick = guarded(async () => {
   log(result.proposed ? `${result.proposed} to-do(s) may be done; see Needs your OK in the Project tab.` : `Checked ${result.commits} commit(s); nothing looks finished${result.more ? ' (older commits were not read)' : ''}.`);
   await refreshProject();
 });
+const seenSkippedFiles = new Set();
+function logSkippedFiles(projectId, files) {
+  for (const name of files?.skippedFiles ?? []) {
+    const key = JSON.stringify([projectId, name]);
+    if (!seenSkippedFiles.has(key)) { seenSkippedFiles.add(key); log(`Memory file refused (${name})`, true); }
+  }
+}
 async function renderProjectFiles() {
   if (!projectView.project) return;
   const { projectBase, api } = projectAccess();
   try {
     const data = await api(`${projectBase()}/memory`);
     const files = data.files;
-    $('project-files').textContent = files.state === 'repo missing' ? 'The repo folder is missing: memory files are paused. Save the folder’s new location above.'
+    const line = $('project-files');
+    line.classList.toggle('warn-text', files.state === 'not ours');
+    line.textContent = files.state === 'repo missing' ? 'The repo folder is missing: memory files are paused. Save the folder’s new location above.'
+      : files.state === 'not ours' ? 'Memory files are off: project-memory/ has files HearAlong didn’t write.'
       : files.folder ? `Memory files: ${files.folder}` : 'Memory files are written after the first change.';
+    if (files.state === 'ok' && files.skipped > 0) {
+      line.append(' · ', el('span', `${files.skipped} ${files.skipped === 1 ? 'file' : 'files'} skipped (links or over 1 MB)`, 'warn-text'));
+    }
+    logSkippedFiles(projectView.project.id, files);
   } catch { /* shown on the next refresh */ }
 }
 $('settings').querySelector('.settings-nav button[data-section="project"]').addEventListener('click', () => void renderProjectFiles());

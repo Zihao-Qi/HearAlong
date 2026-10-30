@@ -156,6 +156,7 @@ async function main() {
     ['pane-head', check('pane-head-check', join(out, 'pane-head'))],
     ['plans', [...node, '--import', './scripts/check-env.ts', 'scripts/plans-check.ts', join(out, 'plans')]],
     ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
+    ['ui-pass', check('ui-pass-check', join(out, 'ui-pass'))],
     ['api-keys', check('api-keys-check', join(out, 'api-keys'))],
     ['ai-mode', check('ai-mode-check', join(out, 'ai-mode'))],
     ['progress', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-check.ts', join(out, 'progress')]],

@@ -181,6 +181,39 @@ test('automatic investigation: only clear materials questions, at most five, nev
   } finally { await f.close(); }
 });
 
+test('automatic answers setting stops admission mid-scan without spending slots; manual Answer stays available', async () => {
+  const lines = Array.from({ length: 3 }, (_, i) => `For cupboard ${i}, where does the club keep the matching spare padlock key?`);
+  const f = await fixture(lines, 10_000);
+  let boards: Boards | undefined;
+  try {
+    let enabled = false, stopOnSubmit = false;
+    const actions = stubActions();
+    const submit = actions.api.submit;
+    actions.api.submit = async (...args: any[]) => {
+      const result = await submit(...args);
+      if (stopOnSubmit) enabled = false;
+      return result;
+    };
+    const w = scanWindow(f.segments(), {})!;
+    const items = lines.map((line, i) => ({ type: 'question', text: `Where is the spare key for cupboard ${i}?`, cites: [w.lines[i].ref],
+      quote: line.split(' ').slice(0, 8).join(' '), confidence: 'high', materials: true, nonProject: false }));
+    let next = items.slice(0, 1);
+    boards = new Boards({ store: f.store, directory: f.directory, clock: Date.now, actions: actions.api, glossaryFor: async () => null,
+      hasMaterials: () => true, autoAnswers: () => enabled, ask: async () => answer(next) });
+    await boards.requestScan(f.meeting.id);
+    assert.equal(actions.submitted.length, 0, 'off: no automatic job');
+    assert.equal((await boards.status(f.meeting.id)).autoUsed, 0, 'off consumes no cap slots');
+    const [card] = (await boards.status(f.meeting.id)).cards;
+    await boards.investigate(f.meeting.id, card.id);
+    assert.equal(actions.submitted.length, 1, 'manual Answer still works');
+    for (const line of f.segments()) f.store.applyEdits(line.id, line.revision, `${line.text} Please check.`, []);
+    enabled = true; stopOnSubmit = true; next = items.slice(1);
+    await boards.requestScan(f.meeting.id);
+    assert.equal(actions.submitted.length, 2, 'the first automatic job can finish, but the next cannot start');
+    assert.equal((await boards.status(f.meeting.id)).autoUsed, 1, 'unchanged ledger counts only the admitted answer');
+  } finally { await boards?.close(); await f.close(); }
+});
+
 test('the Investigate matrix and the user path keep every attempt', async () => {
   const card = (type: Card['type'], extra: Partial<Card> = {}): Card => ({ id: 'c', type, text: 't', confidence: 'high', materials: true, nonProject: false, firstMs: 0, createdAt: 0, occurrences: [], dismissed: false, attempts: [], ...extra });
   assert.deepEqual(investigation(card('question')), { action: 'answer', prompt: 't' });

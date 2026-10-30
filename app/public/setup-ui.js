@@ -325,7 +325,7 @@ async function cloudAiControls(ai, changed, { d, body, error, showError }) {
     const consentBox = node('div', undefined, 'su-consent'), consentTitle = node('strong'), consentLabel = node('label'), consentText = node('span');
     const consent = node('input'); consent.type = 'checkbox'; consent.id = 'su-cloud-consent';
     consentLabel.append(consent, consentText);
-    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board and notes. Lines you select and excerpts of your materials, for Explain and plans. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
+    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board and notes. Lines you select and excerpts of your materials, for Explain, plans and automatic answers to clear questions on the Board. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
     let consentKey;
     const save = button('Save', async () => {
       save.disabled = true; error.hidden = true;
@@ -504,6 +504,8 @@ export class SetupUI {
     this.active = true; ++this.generation; this.failures = 0;
     if (snapshot) { this.status = snapshot; this.render(); }
     else this.container.replaceChildren(node('p', 'Checking setup…', 'su-muted'));
+    const settings = await setupRequest('/api/settings').catch(() => null);
+    if (settings) this.audioRetention = settings.audioRetention;
     await this.refresh();
   }
   stop({ dispose = false } = {}) {
@@ -573,7 +575,7 @@ export class SetupUI {
     switch (r.state) {
       case 'scanning': kind = 'busy'; detail = 'Looking on this Mac…'; break;
       case 'ready':
-        kind = 'ok'; detail = `${r.label} · ${this.details ? `${displayPath(r.path, r.source)} (${source})` : source}${r.streaming === false ? ' · no live preview' : ''}`; actions = [change('Change')]; break;
+        kind = 'ok'; detail = `${r.label} · ${this.details ? `${displayPath(r.path, r.source)} (${source})` : source}${r.streaming === false ? ' · no live preview' : ''} · recordings use about 230 MB an hour, ${this.audioRetention === 'always' ? 'kept until you delete them' : `kept 1 ${{ week: 'week', month: 'month' }[this.audioRetention] ?? 'day'}`}`; actions = [change('Change')]; break;
       case 'downloading': {
         kind = 'busy'; detail = `${mb(d.bytes)} of ${mb(total)} MB`;
         if (d.etaSeconds !== null) detail += ` · about ${d.etaSeconds >= 60 ? `${Math.round(d.etaSeconds / 60)} min` : `${Math.max(1, d.etaSeconds)} s`} left`;
@@ -605,7 +607,7 @@ export class SetupUI {
   }
   ffmpeg(r) {
     if (r.state === 'found') return row('FFmpeg', `Found${this.details && r.path ? ` · ${r.path}` : ''}`, 'ok');
-    const detail = node('span'); detail.append('Install it in Terminal, or from ', link('ffmpeg.org', 'https://ffmpeg.org/download.html'));
+    const detail = node('span'); detail.append('Only for importing audio or video files. Install it in Terminal, or from ', link('ffmpeg.org', 'https://ffmpeg.org/download.html'));
     return row('FFmpeg', detail, 'todo', [button(this.checkingRow === 'ffmpeg' ? 'Checking…' : 'Check again', this.action('recheck', undefined, 'ffmpeg'))], [copyCommand('brew install ffmpeg')]);
   }
   ai(r) {
@@ -690,10 +692,11 @@ export class SetupUI {
       open.className = 'su-button'; open.removeAttribute('target');
       const chromeRow = row('Chrome', 'Recording needs Google Chrome', 'todo', [open]); chromeRow.dataset.setupRow = 'chrome'; optional.push(chromeRow);
     }
-    if (this.details) { const card = node('div', undefined, 'su-card'); card.append(speech, ff, ...optional); this.container.replaceChildren(card); }
+    optional.push(ff);
+    if (this.details) { const card = node('div', undefined, 'su-card'); card.append(speech, ...optional); this.container.replaceChildren(card); }
     else {
       const group = (label, children) => { const g = node('section', undefined, 'su-group'), card = node('div', undefined, 'su-card'); card.append(...children); g.append(node('h2', label), card); return g; };
-      this.container.replaceChildren(group('Needed', [speech, ff]), group('Optional', optional));
+      this.container.replaceChildren(group('Needed', [speech]), group('Optional', optional));
     }
     if (focusRow) {
       const buttons = [...this.container.querySelectorAll(`[data-setup-row="${focusRow}"] button:not(:disabled), [data-setup-row="${focusRow}"] a.su-button`)];

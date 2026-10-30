@@ -140,7 +140,7 @@ export function render(memory: Memory, project: string, asOf: number, meetingTit
   return files;
 }
 
-export type FilesStatus = { folder: string | null; state: 'ok' | 'repo missing' | 'not ours' | 'off'; captured: number; error?: string };
+export type FilesStatus = { folder: string | null; state: 'ok' | 'repo missing' | 'not ours' | 'off'; captured: number; skipped: number; skippedFiles?: string[]; error?: string };
 /** An agent's note the user should know about: it could not be read (retried after 1, 5 and 30 minutes), or nothing came of it. */
 export type InboxNotice = { hash: string; name: string; text: string; state: 'failed' | 'empty'; error?: string; attempts?: number; at: number };
 const RETRY_MS = [60_000, 5 * 60_000, 30 * 60_000];
@@ -171,7 +171,7 @@ export class MemoryFiles {
     `);
   }
   folder(project: Project) { return project.repoPath ? join(project.repoPath, 'project-memory') : join(this.options.directory, 'projects', project.id, 'project-memory'); }
-  state(projectId: string): FilesStatus { return this.status.get(projectId) ?? { folder: null, state: 'off', captured: 0 }; }
+  state(projectId: string): FilesStatus { return this.status.get(projectId) ?? { folder: null, state: 'off', captured: 0, skipped: 0 }; }
 
   /**
    * One sync at a time per project (scan, read back, then write). Requests made while one runs share a single next sync,
@@ -200,20 +200,24 @@ export class MemoryFiles {
     const project = this.options.project(projectId);
     const folder = this.folder(project);
     if (project.repoPath && !(await stat(project.repoPath).then(s => s.isDirectory(), () => false))) {
-      const status: FilesStatus = { folder, state: 'repo missing', captured: this.pendingCaptures(projectId).length };
+      const status: FilesStatus = { folder, state: 'repo missing', captured: this.pendingCaptures(projectId).length, skipped: 0 };
       this.status.set(projectId, status);
       return status; // never recreate a repo folder; memory keeps working in the app
     }
     const problems: string[] = [];
+    const skippedFiles = new Set<string>();
+    const skipped = () => ({ skipped: skippedFiles.size, skippedFiles: [...skippedFiles].slice(0, 20) });
     const refused = (error: unknown) => {
       const message = (error as Error).message;
+      const name = /^Memory file refused \(([\s\S]*)\):/.exec(message)?.[1];
+      if (name !== undefined) skippedFiles.add(name);
       problems.push(message);
       this.options.log?.(`Memory files: ${message}`);
     };
     try {
       await memoryPath(folder, '');
       if (!(await this.ours(project, folder))) {
-        const status: FilesStatus = { folder, state: 'not ours', captured: 0 };
+        const status: FilesStatus = { folder, state: 'not ours', captured: 0, ...skipped() };
         this.status.set(projectId, status);
         return status; // a project-memory/ folder the app did not write is left alone (§8.1)
       }
@@ -221,7 +225,7 @@ export class MemoryFiles {
       await memoryPath(folder, 'inbox');
     } catch (error) {
       refused(error);
-      const status: FilesStatus = { folder, state: 'not ours', captured: this.pendingCaptures(projectId).length, error: problems.join('; ').slice(0, 1000) };
+      const status: FilesStatus = { folder, state: 'not ours', captured: this.pendingCaptures(projectId).length, ...skipped(), error: problems.join('; ').slice(0, 1000) };
       this.status.set(projectId, status);
       return status;
     }
@@ -233,7 +237,7 @@ export class MemoryFiles {
       try { await this.writeOne(project, folder, file, content); } catch (error) { refused(error); }
     }
     this.watch(projectId, folder);
-    const status: FilesStatus = { folder, state: 'ok', captured: this.pendingCaptures(projectId).length, ...(problems.length ? { error: problems.join('; ').slice(0, 1000) } : {}) };
+    const status: FilesStatus = { folder, state: 'ok', captured: this.pendingCaptures(projectId).length, ...skipped(), ...(problems.length ? { error: problems.join('; ').slice(0, 1000) } : {}) };
     this.status.set(projectId, status);
     return status;
   }

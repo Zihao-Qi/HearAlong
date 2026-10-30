@@ -33,6 +33,9 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
+.warn-text, .conn.warn { color: #5C4400; }
+.conn.warn { white-space: nowrap; }
+.conn .act { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 
 .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: var(--topbar-pad-y) var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
 .topbar-left, .topbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--topbar-controls-gap); }
