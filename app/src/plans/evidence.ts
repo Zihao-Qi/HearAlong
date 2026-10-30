@@ -4,12 +4,14 @@
 // against this only: the text Pi actually saw, at the lines its call returned. A result over its cap is saved cut and marked;
 // a run over its cap stops saving, and a run whose evidence could not be saved cannot become complete.
 import { createHash, randomUUID } from 'node:crypto';
-import { readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { lstat, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { toolResultOf, type ToolResult } from '../pi-task.ts';
 import { isPdf, type PdfRoot } from '../pdf-text.ts';
 import type { RootRef } from './input.ts';
+import { allowedPath, readRoots } from '../../pi-extensions/read-scope.ts';
+import type { SearchEntry } from '../../pi-extensions/node-search.ts';
 
 export const EVIDENCE_LIMITS = { resultBytes: 100_000, pageBytes: 50_000, runBytes: 4_000_000 };
 /**
@@ -113,23 +115,34 @@ function readLines(result: ToolResult): LineBlock | null {
 }
 
 /** A grep's output per file: its match lines ("path:12: text") and context lines ("path-11- text"), in order. */
-function grepLines(text: string): { file: string; line: number; text: string; cut: boolean }[] {
+function grepLines(text: string, snapshotLabels?: string[]): { file: string; line: number; text: string; cut: boolean }[] {
   const body = text.replace(/\n\n\[[^\n]*\]$/, '');
   if (body === 'No matches found') return [];
   const rows = body.split('\n');
+  if (rows.at(-1) === '') rows.pop();
   const files = new Set<string>();
   for (const row of rows) { const m = /^(.*?):(\d+): /.exec(row); if (m) files.add(m[1]); }
+  const labels = snapshotLabels?.slice().sort((a, b) => b.length - a.length);
   const out: { file: string; line: number; text: string; cut: boolean }[] = [];
   for (const row of rows) {
     let found: { file: string; line: number; text: string } | null = null;
+    // Longest exact authorized label wins: ':' and '-N-' can legally occur inside a filename.
+    for (const file of labels ?? []) {
+      if (!row.startsWith(file)) continue;
+      const m = /^(?::(\d+): |-(\d+)- )(.*)$/.exec(row.slice(file.length));
+      if (m) { found = { file, line: Number(m[1] ?? m[2]), text: m[3] }; break; }
+    }
     const match = /^(.*?):(\d+): (.*)$/.exec(row);
-    if (match && files.has(match[1])) found = { file: match[1], line: Number(match[2]), text: match[3] };
-    else for (const file of files) {
+    if (!found && match && files.has(match[1])) found = { file: match[1], line: Number(match[2]), text: match[3] };
+    if (!found) for (const file of files) {
       if (!row.startsWith(`${file}-`)) continue;
       const m = /^(\d+)- (.*)$/.exec(row.slice(file.length + 1));
       if (m) { found = { file, line: Number(m[1]), text: m[2] }; break; }
     }
-    if (!found || found.text === '(unable to read file)') continue;
+    // Reject the whole ambiguous legacy result: a filename newline may have split one record into several.
+    if (!found || !found.file || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(found.file)
+      || !Number.isSafeInteger(found.line) || found.line < 1) return [];
+    if (found.text === '(unable to read file)') continue;
     // Long lines come back cut, marked "... [truncated]": the part shown is all Pi saw of them.
     const cut = found.text.endsWith('... [truncated]');
     out.push({ ...found, text: cut ? found.text.slice(0, -'... [truncated]'.length) : found.text, cut });
@@ -287,17 +300,40 @@ export class EvidenceRecorder {
     if (r.name === 'grep' && !r.isError) {
       const base = toolPath(typeof args.path === 'string' ? args.path : '.', this.options.cwd);
       const folder = await stat(base).then(s => s.isDirectory(), () => false);
+      const snapshot: unknown = (r.details as { searchFiles?: unknown } | undefined)?.searchFiles;
+      const emitted = snapshot === undefined ? undefined : new Map<string, SearchEntry>();
+      if (emitted) {
+        if (!Array.isArray(snapshot)) return null;
+        for (const entry of snapshot) {
+          if (!entry || typeof entry.path !== 'string' || entry.directory !== false || typeof entry.identity !== 'string'
+            || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/u.test(entry.path)) return null;
+          emitted.set(entry.path, entry);
+        }
+      }
       const byFile = new Map<string, { lines: Map<number, string>; cutLines: Set<number> }>();
-      for (const row of grepLines(r.text)) {
+      const labels = emitted ? [...emitted.keys()].map(path => folder ? relative(base, path).split(sep).join('/') : basename(path)) : undefined;
+      for (const row of grepLines(r.text, labels)) {
         const file = byFile.get(row.file) ?? { lines: new Map(), cutLines: new Set() };
         if (!file.lines.has(row.line)) { file.lines.set(row.line, row.text); if (row.cut) file.cutLines.add(row.line); }
         byFile.set(row.file, file);
       }
       const files: { at: Located; abs: string; lines: Map<number, string>; cutLines: Set<number> }[] = [];
       for (const [name, file] of byFile) {
-        const abs = folder ? join(base, name) : base;
+        // A parsed label is not authority. It must name a file within this call's target and its emitted snapshot.
+        const abs = folder ? resolve(base, name) : base;
+        if (folder ? isAbsolute(name) || name.split(/[\\/]/).some(part => part === '..') || !within(base, abs) || abs === base
+          : name !== basename(base) && name !== base) continue;
+        if (emitted) {
+          if (!emitted.has(abs)) continue;
+        } else {
+          // Compatibility with old/text-only tools: require an existing regular, scope-allowed target (metadata only).
+          try {
+            const info = await lstat(abs);
+            if (!info.isFile() || info.nlink > 1 || await realpath(abs) !== abs || !allowedPath(abs, this.options.cwd, readRoots([base]))) continue;
+          } catch { continue; }
+        }
         const at = await this.options.locate(abs);
-        if (at) files.push({ at, abs: await real(abs), ...file });
+        if (at) files.push({ at, abs: emitted ? abs : await real(abs), ...file });
       }
       if (!files.length) return null;
       return budget => {
