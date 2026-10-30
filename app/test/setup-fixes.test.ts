@@ -166,22 +166,31 @@ test('fix 10: a failed settings save does not prevent database and lock cleanup'
 test('fix 11: slow opendir is bounded and its late directory handle is closed', async t => {
   const path = await directory(t), original = fs.opendir;
   await fs.mkdir(join(path, 'models'));
-  let lateClosed = false;
+  const entered = deferred(), release = deferred(), closed = deferred();
+  let now = 0, lateReturned = false;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   t.mock.method(fs, 'opendir', async (...args: Parameters<typeof fs.opendir>) => {
     if (String(args[0]) === join(path, 'models')) {
-      await new Promise(r => setTimeout(r, 250));
       const dir = await original(...args), close = dir.close.bind(dir);
-      dir.close = (() => { lateClosed = true; return close(); }) as typeof dir.close;
+      dir.close = (async () => { await close(); closed.resolve(); }) as typeof dir.close;
+      entered.resolve();
+      await release.promise;
+      lateReturned = true;
       return dir;
     }
     return original(...args);
   }); syncBuiltinESMExports();
   try {
-    const started = performance.now();
-    const scan = await new SpeechModels().scan({ ...scanOptions(path), maxScanMs: 30 });
-    assert.ok(performance.now() - started < 180, 'scan returns before delayed opendir'); assert.equal(scan.truncated, true);
-    await waitFor(() => lateClosed);
-  } finally { await new Promise(r => setTimeout(r, 280)); t.mock.restoreAll(); syncBuiltinESMExports(); }
+    const pending = new SpeechModels().scan({ ...scanOptions(path), maxScanMs: 30 });
+    await entered.promise; // Only expire the budget once opendir really is in flight.
+    now = 30; t.mock.timers.tick(30);
+    const scan = await pending;
+    assert.equal(lateReturned, false, 'scan returns before delayed opendir');
+    assert.equal(scan.truncated, true);
+    release.resolve();
+    await closed.promise;
+  } finally { release.resolve(); t.mock.timers.reset(); t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 test('fix 11: slow file stat is bounded by the scan deadline', async t => {

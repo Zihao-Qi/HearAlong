@@ -2,7 +2,7 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,18 +92,29 @@ test('an explicit override resolving to default app/data cannot bypass the legac
   assert.deepEqual(snapshot(f.old), before);
 });
 
-test('server CLI prints one notice and exits before creating a store when only legacy data exists', t => {
+test('server CLI prints one notice and exits before creating a store when only legacy data exists', async t => {
   const f = fixture(t);
   // Copy code only: ROOT must point at fictional folders, never the owner's real checkout/data.
   fs.cpSync(join(source, 'src'), join(f.app, 'src'), { recursive: true });
   for (const folder of ['node_modules', 'pi-extensions', 'public']) fs.symlinkSync(join(source, folder), join(f.app, folder), 'dir');
   fs.writeFileSync(join(f.app, 'package.json'), '{"type":"module"}');
   const before = snapshot(f.old);
-  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--import', join(source, 'scripts/check-isolation.ts'), 'src/server.ts'], {
-    cwd: f.app, encoding: 'utf8', timeout: 20_000,
+  const child = spawn(process.execPath, ['--experimental-strip-types', '--import', join(source, 'scripts/check-isolation.ts'), 'src/server.ts'], {
+    cwd: f.app, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PORT: '0', NODE_NO_WARNINGS: '1', MEETING_OPEN_BROWSER: '0' },
   });
-  assert.ifError(result.error);
+  let stdout = '', stderr = '';
+  child.stdout.setEncoding('utf8').on('data', text => { stdout += text; });
+  child.stderr.setEncoding('utf8').on('data', text => { stderr += text; });
+  const completed = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve); // close includes draining both output streams, unlike exit.
+  });
+  t.after(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await completed.catch(() => {});
+  });
+  const result = { status: await completed, stdout, stderr };
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(result.stdout, '');
   assert.equal(result.stderr, `${notice}\n`);

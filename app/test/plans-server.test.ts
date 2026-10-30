@@ -107,6 +107,7 @@ async function setup(meetings = 1, aiEnv: NodeJS.ProcessEnv = { ...process.env, 
     while (!(await check())) { if (Date.now() > end) assert.fail(`timed out waiting for ${what}`); await new Promise(r => setTimeout(r, 25)); }
   };
   const writeNotes = async (id: string) => {
+    await until(async () => !(await call(`/api/meetings/${id}/notes`)).body.job, 'the previous notes job to release its slot');
     const before = (await call(`/api/meetings/${id}/notes`)).body.notes?.version ?? 0;
     assert.equal((await call(`/api/meetings/${id}/notes`, 'POST', {})).status, 202);
     await until(async () => ((await call(`/api/meetings/${id}/notes`)).body.notes?.version ?? 0) > before, 'the notes');
@@ -560,8 +561,7 @@ test('manual Plan and an automatic admission serialize: onManualPlan leaves only
     await s.writeNotes(id);
     await reached.promise;
     const manual = s.app.plans.start(id, { opId: op() });
-    // Without serialization the manual request can enter while automatic replacement awaits persistence.
-    await new Promise(r => setTimeout(r, 30));
+    // start() synchronously queues admission behind the held automatic replacement.
     held.release();
     const result = await manual;
     await automatic;

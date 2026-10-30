@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { startServer } from '../src/server.ts';
 import { Corrector } from '../src/correction.ts';
 import { Boards } from '../src/board.ts';
 import { ModelRpc } from '../src/pi-rpc.ts';
-import { fakePi, table, until } from './helpers/setup-pi.ts';
+import { fakePi, table } from './helpers/setup-pi.ts';
 
 test('local board and correction schedulers wait through recording and resume after Stop', async t => {
   let remove!: () => unknown;
@@ -21,9 +20,20 @@ test('local board and correction schedulers wait through recording and resume af
   t.mock.method(Corrector.prototype, 'tick', async () => { corrections++; return 'done'; });
   t.mock.method(Boards.prototype, 'tick', async () => { boards++; });
   const interval = globalThis.setInterval;
-  t.mock.method(globalThis, 'setInterval', (fn: (...args: any[]) => void, ms: number, ...args: any[]) => interval(fn, ms === 5000 ? 20 : ms, ...args));
+  const ticks = new Map<number, () => void>();
+  t.mock.method(globalThis, 'setInterval', (fn: (...args: any[]) => void, ms: number, ...args: any[]) => {
+    if (ms !== 20 && ms !== 5000) return interval(fn, ms, ...args);
+    assert.equal(ticks.has(ms), false, `unique scheduler at ${ms} ms`);
+    ticks.set(ms, () => fn(...args));
+    // Keep a real clearable/unref-able handle, but let this test drive the scheduler.
+    return interval(() => {}, 2 ** 30);
+  });
+  const tick = () => {
+    assert.deepEqual([...ticks.keys()].sort((a, b) => a - b), [20, 5000]);
+    for (const run of ticks.values()) run();
+  };
   const app = await startServer({ directory, port: 0, recognizer: { available: () => true, transcribe: async () => ({ text: 'Example fictional transcript.', words: [], backend: 'fake', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' }), close() {} }, drafts: null, correctionTickMs: 20,
-    ai: { env: f.env }, setup: { scan: { home: f.directory, hfHome: null, envModelPath: null }, ffmpeg: async () => ({ found: true }) } });
+    clock: () => 1_000_000, ai: { env: f.env }, setup: { scan: { home: f.directory, hfHome: null, envModelPath: null }, ffmpeg: async () => ({ found: true }) } });
   t.after(async () => { await app.close(); await remove(); });
   const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
   const request = (path: string, init: RequestInit = {}) => fetch(app.url + path, { ...init, headers: { Cookie: cookie, Origin: app.url, ...init.headers } });
@@ -35,12 +45,13 @@ test('local board and correction schedulers wait through recording and resume af
     assert.equal(response.status, 201);
     if (i === 0) { corrections = 0; boards = 0; }
   }
-  await delay(100);
+  tick();
   assert.equal(corrections, 0); assert.equal(boards, 0);
   assert.ok(interrupts >= 2, 'recording interrupts both real RPC lanes, including already-running work');
   assert.equal((await f.calls()).some(call => call.args.includes('json') || call.args.includes('rpc')), false);
   assert.equal((await request(path + '/board/scan', { method: 'POST', body: '{}' })).status, 409);
   const stopped = await request(path + '/pcm/end', { method: 'POST', body: JSON.stringify({ source, lastSequence: 24, stopping: true }), headers: { 'Content-Type': 'application/json' } });
   assert.equal(stopped.status, 200);
-  await until(() => corrections > 0 && boards > 0);
+  tick();
+  assert.ok(corrections > 0); assert.ok(boards > 0);
 });
