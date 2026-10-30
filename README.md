@@ -130,7 +130,3 @@ TypeScript on Node.js (server), plain JavaScript (UI), SQLite, Swift (macOS help
 ## License
 
 MIT, see [LICENSE](LICENSE). Vendored libraries keep their own licenses: see [app/public/vendor/README.md](app/public/vendor/README.md) and [THIRD-PARTY-LICENSES/](THIRD-PARTY-LICENSES/).
-
----
-
-Built by Zihao Qi with AI coding agents; see [Engineering process](#engineering-process).
