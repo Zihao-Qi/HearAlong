@@ -130,6 +130,16 @@ export async function startServer(options: {
   let aiSetup: AiSetup | undefined;
   let releasePiAdmission: (() => void) | undefined;
   let apiKeys: ApiKeys | undefined;
+  // Failure can arrive before normal close exists. Keep ownership as each resource is acquired;
+  // normal close below retains its existing order (including the HTTP drain and local-lane stop).
+  const startupLoops = new Set<NodeJS.Timeout | undefined>();
+  const correctionTicks = new Set<Promise<unknown>>();
+  const startup: {
+    pdfText?: PdfText; quick?: Quick | null; notes?: NotesJobs; proposals?: Proposals; files?: MemoryFiles;
+    actions?: ActionJobs; gate?: ModelRpc | null; boards?: Boards; explorations?: Explorations;
+    closeHttp?: () => Promise<void>; stopBuilds?: () => Promise<unknown>; stopAppCapture?: () => Promise<void>;
+    settings?: () => Promise<unknown>;
+  } = {};
   try {
     const publicRoot = options.publicRoot ?? join(options.codeRoot ?? ROOT, 'public');
     const staticFiles: Record<string, [string, string]> = {
@@ -208,6 +218,7 @@ export async function startServer(options: {
       for (const key of ['apiKeys', 'apiKeysUnconfirmed'] as const) if (Array.isArray(saved[key])) settings[key] = [...new Set((saved[key] as unknown[]).filter(isKeyProvider))];
     } catch { /* defaults */ }
     let settingsWrite: Promise<unknown> = Promise.resolve();
+    startup.settings = () => settingsWrite;
     const saveSettings = async (change: Partial<typeof settings>) => {
       const write = settingsWrite.catch(() => {}).then(async () => {
         const candidate = { ...settings, ...change };
@@ -250,12 +261,13 @@ export async function startServer(options: {
       capture.sweep().then(() => onAudioSweep()).catch(error => console.warn(`Audio sweep failed: ${(error as Error).message}`));
     }, 2000);
     sweep.unref();
+    startupLoops.add(sweep);
     // Projects own materials and glossaries; a meeting sees its project's plus its own extra materials (M6, §8).
     const projects = new Projects(store, directory);
     await projects.migrate();
     const rootsFor = (meetingId: string) => projects.rootsFor(meetingId);
     // The text of PDF materials, kept in the data folder; extracted in the background at startup and when a root is attached.
-    const pdfText = new PdfText(directory, { log: message => console.warn(message) });
+    const pdfText = startup.pdfText = new PdfText(directory, { log: message => console.warn(message) });
     pdfText.warm([...projects.list().flatMap(p => projects.roots(projectScope(p.id))), ...store.meetings().flatMap(m => projects.roots(meetingScope(m.id)))]);
     const memory = new Memory(store, options.clock ?? Date.now);
     /** The board's view of memory (§7): open items, one line each, most recently changed first, about 3,000 tokens at most. */
@@ -305,7 +317,7 @@ export async function startServer(options: {
     const signInCommand = resolvePi({ env: signInEnv, root: '/dev/null' }) ? 'pi'
       : `cd '${ROOT.replace(/'/g, `'\\''`)}' && npx pi`;
     const setupStatus = () => { const status = speechSetup.status(); return { ...status, rows: [...status.rows, { ...ai.status(), signInCommand }] }; };
-    const quick: Quick | null = options.quick !== undefined ? options.quick
+    const quick: Quick | null = startup.quick = options.quick !== undefined ? options.quick
       : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, unavailable: () => localLiveUnavailable(), systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;
     const heavy: Heavy | null = options.heavy !== undefined ? options.heavy
       : cloud ? async (prompt, o) => runPiTask(prompt, { model: await ai.require('main'), cwd: o.cwd, readRoots: o.readRoots, sessionDir: o.sessionDir, signal: o.signal, tools: 'read,grep,find,ls', timeoutMs: 600_000 }) : null;
@@ -318,13 +330,13 @@ export async function startServer(options: {
     let afterNotes = (_meetingId: string) => {};
     // One quota cooldown for every sol job (M7b §4): a rate-limit error in any of them pauses the others for as long.
     const cooldowns = new Cooldowns(clock);
-    const notesJobs = new NotesJobs({ store, directory, runner: notesRunner, clock, glossaryFor, onSaved: id => afterNotes(id), cooldowns });
+    const notesJobs = startup.notes = new NotesJobs({ store, directory, runner: notesRunner, clock, glossaryFor, onSaved: id => afterNotes(id), cooldowns });
     // Memory proposals use sol with no tools (as notes); "Tell the project…" uses the quick model for a sentence.
-    const proposals = new Proposals(store, memory, { runner: notesRunner, briefRunner: notesRunner, directory, clock,
+    const proposals = startup.proposals = new Proposals(store, memory, { runner: notesRunner, briefRunner: notesRunner, directory, clock,
       notesFor: id => notesJobs.file(id).load(), projectOf: id => projects.projectOf(id), onChange: id => files.touch(id), cooldowns });
     const tellRunner: NotesRunner | null = cloud && options.heavy !== null ? piNotesRunner(() => ai.require('quick')) : options.notes ?? null;
     // The memory files in each project's repo (§3.3, §6); the quick model reads agents' notes and guesses sources.
-    const files: MemoryFiles = new MemoryFiles(store, memory, proposals, { directory, clock, project: id => projects.get(id), projects: () => projects.list(),
+    const files: MemoryFiles = startup.files = new MemoryFiles(store, memory, proposals, { directory, clock, project: id => projects.get(id), projects: () => projects.list(),
       meetingTitle: id => { try { return store!.meeting(id).title; } catch { return 'a meeting'; } }, interpreter: tellRunner, guesser: tellRunner, log: message => console.warn(message) });
     for (const project of projects.list()) files.touch(project.id, 0);
     const lastOpened = new Map<string, number>();
@@ -399,16 +411,17 @@ export async function startServer(options: {
     const webUnavailable = () => ai.mode() === 'local' ? 'Web lookups are unavailable in On this Mac mode.' : null;
     const actionJobs = new ActionJobs({ store, directory, runner: actionRunner, clock, glossaryFor, memory: memorySnapshots,
       rootsFor, webAvailable: () => ai.web, webUnavailable, pdfText, cooldowns });
+    startup.actions = actionJobs;
     await actionJobs.load();
     // Both warm lanes select at call time; old processes drain accepted work on a model change.
     const boardGates = options.board === undefined && cloud && options.heavy !== null;
-    const gate = boardGates ? new ModelRpc(() => ai.require(settings.boardModel), {
+    const gate = startup.gate = boardGates ? new ModelRpc(() => ai.require(settings.boardModel), {
       cwd: scratchRoot, unavailable: () => localLiveUnavailable(), timeoutMs: 90_000, log: message => console.log(`[pi board] ${message}`),
     }) : null;
     // The scan cadence follows the meeting's own time: the replay position during a replay (60 s of meeting, not of wall time).
     const boardStore = store;
     const meetingClock = (id: string) => { const replay = boardStore.replay(id); return replay ? boardStore.replayPositionMs(replay, clock()) + replay.baseMs : clock(); };
-    const boards = new Boards({ store, directory, clock, meetingClock, actions: actionJobs, glossaryFor,
+    const boards = startup.boards = new Boards({ store, directory, clock, meetingClock, actions: actionJobs, glossaryFor,
       ask: options.board !== undefined ? options.board : gate ? message => gate.ask(message) : null,
       hasMaterials: id => rootsFor(id).length > 0, memoryFor: id => memoryLines(id), autoAnswers: () => settings.autoAnswers });
     // Only meetings being recorded or replayed (or explicitly asked for) are scanned: an old meeting never spends quota on its own.
@@ -418,6 +431,10 @@ export async function startServer(options: {
     // Glossary builds, keyed by glossary scope: two meetings of one project share one build.
     const building = new Map<string, { startedAt: number; error?: string }>();
     const builds = new Map<string, { controller: AbortController; done: Promise<void> }>();
+    startup.stopBuilds = async () => {
+      for (const build of builds.values()) build.controller.abort();
+      await Promise.allSettled([...builds.values()].map(build => build.done));
+    };
     const lastPcmAt = new Map<string, number>();
     // A recording session per meeting: the sources that sent audio and have not ended (Stop sends /pcm/end per source).
     const recording = new Map<string, Set<string>>();
@@ -439,7 +456,7 @@ export async function startServer(options: {
     const localLiveUnavailable = () => ai.mode() === 'local' && recordingAnywhere() ? 'The local Board and corrections wait until recording stops.' : null;
     // The plans' Pi: the real one with cloud models on (an explicit `heavy: null` turns it off, as for notes), or a test's.
     const planPi = options.plans !== undefined ? options.plans : cloud && options.heavy !== null ? runPiTask : null;
-    const explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => ai.web, local: () => ai.mode() === 'local', onEnd: job => planJobs.ended(job),
+    const explorations = startup.explorations = new Explorations({ directory, clock, cooldowns, runPi: planPi ?? undefined, usesWeb: () => ai.web, local: () => ai.mode() === 'local', onEnd: job => planJobs.ended(job),
       recording: () => recordingAnywhere() ? 'the recording to end' : replaying() ? 'the replay to end' : null,
       meetingWork: () => {
         const meetings = appStoreRef.meetings();
@@ -484,17 +501,20 @@ export async function startServer(options: {
     onAudioSweep = () => audioRetention.observe();
     retentionLoop = setInterval(() => { audioRetention.runInBackground(); }, 60 * 60_000);
     retentionLoop.unref();
+    startupLoops.add(retentionLoop);
     const correctionLoop = corrector ? setInterval(() => {
       if ((options.quick === undefined && ai.mode() === 'off') || (ai.mode() === 'local' && recordingAnywhere())) return;
       for (const meeting of appStoreRef.meetings()) {
         const calls = corrector.state(meeting.id).stats.calls;
-        corrector.tick(meeting.id, finished(meeting.id)).then(() => {
+        const tick = corrector.tick(meeting.id, finished(meeting.id)).then(() => {
           const s = corrector.state(meeting.id).stats;
           if (s.calls !== calls) console.log(`Correction ${meeting.id.slice(0, 8)}: ${s.calls} calls, ${s.linesSent ?? 0} lines sent, ${s.linesSkipped ?? 0} filler lines skipped, tokens in ${s.tokensIn ?? 0} (cached ${s.tokensCached ?? 0}) out ${s.tokensOut ?? 0}${s.callsWithoutUsage ? `, ${s.callsWithoutUsage} calls without usage` : ''}`);
-        }).catch(error => console.warn(`Correction failed: ${(error as Error).message}`));
+        }).catch(error => console.warn(`Correction failed: ${(error as Error).message}`)).finally(() => { correctionTicks.delete(tick); });
+        correctionTicks.add(tick);
       }
     }, options.correctionTickMs ?? 5000) : undefined;
     correctionLoop?.unref();
+    startupLoops.add(correctionLoop);
     // End of a meeting: the final scan waits for the tail to be transcribed, but at most 60 s after the speech ended. A meeting
     // stays watched for 10 minutes after that, so corrections finishing late are still scanned; later edits need "Scan this meeting".
     const endedAt = new Map<string, number>();
@@ -531,6 +551,7 @@ export async function startServer(options: {
       }
     }, 5000);
     boardLoop.unref();
+    startupLoops.add(boardLoop);
     // The destination scope, roots and starting version are fixed before the model call; the save is a compare-and-swap.
     const buildGlossary = async (meetingId: string, scope: string, signal: AbortSignal) => {
       const roots = rootsFor(meetingId).map(root => root.path);
@@ -583,6 +604,7 @@ export async function startServer(options: {
       if (now - idleSince >= options.idleMs!) { clearInterval(idleLoop); options.onIdle?.(); }
     }, 1000) : undefined;
     idleLoop?.unref();
+    startupLoops.add(idleLoop);
     let shuttingDown = false;
     // The mini view (M7 native mini window, docs/design/M7-native-mini.md): drawn from the server alone, so it stays current while
     // the app's page is hidden and throttled (another app in full screen); Stop and cards reach the page through frame replies.
@@ -607,6 +629,8 @@ export async function startServer(options: {
       endLostApp().catch(error => console.warn(`Could not seal a disconnected app source: ${(error as Error).message}`));
     }, 1000);
     appCaptureSweep.unref();
+    startupLoops.add(appCaptureSweep);
+    startup.stopAppCapture = async () => { appCapture.stop(); await endingLostApp; };
     const segmentsTag = new SegmentsTag();
     /** The recording now, with only the sources of its own recording (a reloaded page's old sources are not). */
     const recordingNow = () => {
@@ -1435,6 +1459,13 @@ export async function startServer(options: {
         res.destroy(error instanceof Error ? error : new Error(String(error)));
       });
     });
+    startup.closeHttp = async () => {
+      closing = true;
+      await new Promise<void>(resolve => {
+        server.close(() => resolve());
+        server.closeAllConnections();
+      });
+    };
     server.requestTimeout = 120_000;
     server.headersTimeout = 10_000;
     await new Promise<void>((resolve, reject) => {
@@ -1529,20 +1560,41 @@ export async function startServer(options: {
     audioRetention.runInBackground();
     return app;
   } catch (error) {
-    setup?.stopSwitches();
-    await aiSetup?.close();
-    await apiKeys?.close();
-    await setup?.download.close().catch(error => console.warn(`Could not close speech download: ${(error as Error).message}`));
-    retention?.close();
-    clearInterval(retentionLoop);
-    clearInterval(sweep);
-    await live?.close();
-    await drafts?.close();
-    await jobs?.close();
-    await setup?.close().catch(error => console.warn(`Could not close speech setup: ${(error as Error).message}`));
-    store?.close();
-    releasePiAdmission?.();
-    await release();
+    // Stop every repeating loop before the first await, then join owned work before closing its store.
+    // Unlike normal close there is no usable server to drain; preserve the startup error even if cleanup fails.
+    for (const loop of startupLoops) clearInterval(loop);
+    for (const close of [
+      () => startup.closeHttp?.(),
+      () => setup?.stopSwitches(),
+      () => aiSetup?.close(),
+      () => apiKeys?.close(),
+      () => setup?.download.close(),
+      () => retention?.close(),
+      () => startup.stopBuilds?.(),
+      () => startup.explorations?.close(),
+      () => startup.stopAppCapture?.(),
+      () => live?.close(),
+      () => drafts?.close(),
+      () => startup.notes?.close(),
+      () => startup.proposals?.close(),
+      () => startup.files?.close(),
+      // Release queued local callers before joining board/correction work, as normal close does.
+      () => startup.quick?.close?.(),
+      () => startup.gate?.close(),
+      () => Promise.allSettled([...correctionTicks]),
+      () => startup.boards?.close(),
+      () => startup.pdfText?.close(),
+      () => startup.actions?.close(),
+      () => jobs?.close(),
+      () => setup?.close(),
+      () => startup.settings?.(),
+      () => store?.close(),
+      () => releasePiAdmission?.(),
+      release,
+    ]) {
+      try { await close(); }
+      catch (cleanupError) { console.warn(`Startup cleanup: ${(cleanupError as Error).message}`); }
+    }
     throw error;
   }
 }

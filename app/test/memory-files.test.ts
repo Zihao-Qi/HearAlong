@@ -38,6 +38,103 @@ async function fixture(options: { repo?: boolean; answers?: unknown[] } = {}) {
     async close() { await files.close(); store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 
+test('new un-ID’d bullets go through the interpreter and wait for approval without duplicate captures', async () => {
+  const text = 'Inventory the fictional coral nursery labels';
+  const f = await fixture({ repo: true, answers: [{ results: [{ source: 'S1', changes: [{ kind: 'new', type: 'todo', text }] }] }] });
+  try {
+    await f.files.sync('p');
+    const path = join(f.repo, 'project-memory', 'todos.md');
+    const edited = `${await readFile(path, 'utf8')}\n- [ ] ${text}\n`;
+    await writeFile(path, edited);
+    await f.files.sync('p');
+    assert.equal(f.calls.length, 1);
+    assert.ok(f.calls[0].includes(`${text} (a line added to todos.md)`));
+    const [proposal] = f.proposals.list('p');
+    assert.equal(f.proposals.list('p').length, 1);
+    assert.equal(proposal.status, 'pending');
+    assert.ok(proposal.flags.includes('no source given'));
+    assert.equal(proposal.source.kind, 'file');
+    assert.equal(f.memory.items('p').length, 0, 'unapproved additions are not durable memory');
+    assert.equal(await readFile(path, 'utf8'), edited);
+    await f.files.sync('p');
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.files.pendingCaptures('p').length, 1);
+    assert.equal(f.proposals.list('p').length, 1);
+    f.proposals.accept('p', proposal.id, { requestId: randomUUID() });
+    f.files.resolveCaptures('p');
+    await f.files.sync('p');
+    await f.files.sync('p');
+    assert.deepEqual(f.memory.items('p').map(i => i.text), [text]);
+    assert.match(await readFile(path, 'utf8'), /T-1 · Inventory the fictional coral nursery labels/);
+    assert.equal(f.files.pendingCaptures('p').length, 0);
+  } finally { await f.close(); }
+});
+
+test('manual inbox retry resets nextAt and records the preserved edit exactly once', async () => {
+  const text = 'Count the fictional nursery thermometers';
+  const f = await fixture({ repo: true, answers: [new Error('fictional interpreter outage'), { results: [{ source: 'S1', changes: [{ kind: 'new', type: 'todo', text }] }] }] });
+  try {
+    await f.files.sync('p');
+    const inbox = join(f.repo, 'project-memory', 'inbox', 'thermometers.md');
+    const note = `${text} — the user said so.`;
+    await writeFile(inbox, note);
+    await f.files.sync('p');
+    const [notice] = f.files.inboxNotices('p');
+    assert.equal(notice.state, 'failed');
+    const record = () => f.store.db.prepare('SELECT * FROM memory_inbox WHERE hash=?').get(notice.hash) as { text: string; state: string; result: string };
+    assert.ok(JSON.parse(record().result).nextAt > notice.at);
+    assert.equal(record().text, note);
+    assert.equal(await readFile(inbox, 'utf8'), note);
+    await f.files.sync('p');
+    assert.equal(f.calls.length, 1, 'backoff prevents an automatic early retry');
+    f.files.retryInbox('p', notice.hash);
+    assert.equal(JSON.parse(record().result).nextAt, 0);
+    await f.files.sync('p');
+    assert.equal(f.calls.length, 2, 'manual retry runs without advancing the clock');
+    assert.ok(f.calls.every(call => call.includes(note)));
+    assert.equal(record().state, 'read');
+    assert.deepEqual(f.memory.items('p').map(i => i.text), [text]);
+    assert.equal(f.memory.events('p').length, 1);
+    const archive = join(f.directory, 'projects', 'p', 'inbox-read');
+    const [name] = await readdir(archive);
+    assert.equal(await readFile(join(archive, name), 'utf8'), note);
+    await assert.rejects(readFile(inbox), { code: 'ENOENT' });
+    await writeFile(inbox, note); // A checkout restores the exact same edit.
+    await f.files.sync('p');
+    await f.files.sync('p');
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.memory.events('p').length, 1);
+    assert.equal((await readdir(archive)).length, 1);
+    assert.equal(f.proposals.list('p').length, 0);
+  } finally { await f.close(); }
+});
+
+test('malformed ID-bearing bullets refuse the whole capture, including valid edits and new bullets', async () => {
+  const f = await fixture({ repo: true });
+  try {
+    f.add('todo', 'Inspect the fictional nursery pump');
+    await f.files.sync('p');
+    const path = join(f.repo, 'project-memory', 'todos.md');
+    const written = await readFile(path, 'utf8');
+    const malformed = ['- [x] T-2 missing separator', '* D-9: broken decision', '- Q-3 — broken question'];
+    assert.equal(parseLines(malformed.join('\n')).problems.length, 3);
+    assert.equal(parseLines(malformed.join('\n')).lines.length, 0, 'never reinterpret malformed IDs as new text');
+    const edited = `${written.replace('- [ ] T-1', '- [x] T-1')}\n${malformed.join('\n')}\n- Buy fictional labels\n`;
+    await writeFile(path, edited);
+    await f.files.sync('p');
+    const [capture] = f.files.pendingCaptures('p');
+    assert.equal(JSON.parse(capture.problems!).length, 3);
+    assert.match(capture.problems!, /could not read/);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.proposals.list('p').length, 0);
+    assert.equal(f.memory.item('p', 'T-1')!.status, 'open');
+    assert.equal(f.memory.items('p').length, 1);
+    assert.equal(await readFile(path, 'utf8'), edited, 'refused bytes stay available for correction');
+    await f.files.sync('p');
+    assert.equal(f.files.pendingCaptures('p').length, 1);
+  } finally { await f.close(); }
+});
+
 test('last-sync skipped count includes refused links and oversized files, bounds names, and clears after repair', async () => {
   const f = await fixture({ repo: true });
   try {
