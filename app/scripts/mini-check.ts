@@ -194,21 +194,26 @@ async function run() {
   const quiet = { short: 'no sound from the mic for 1 min', text: 'No sound from the microphone for 1 min. Is it muted?' };
   const addQuiet = (list: { text: string }[] = []) => list.some(n => n.text === quiet.text) ? list : [...list, quiet];
   const liveApi = (url: URL) => url.pathname === '/api/live'; // with or without the paragraphs the page holds
-  const fakeQuiet = async () => {
-    await context.route(liveApi, async route => {
-      const response = await route.fetch();
-      const body = await response.json();
-      if (body.recording) body.recording.notices = addQuiet(body.recording.notices);
-      await route.fulfill({ response, json: body });
-    });
-    await page.route('**/segments*', async route => {
-      const response = await route.fetch();
-      const body = await response.json();
-      body.notices = addQuiet(body.notices);
-      await route.fulfill({ response, json: body });
-    });
-  };
-  const unfakeQuiet = async () => { await context.unroute(liveApi); await page.unroute('**/segments*'); };
+  // Keep one owner for each response for the page's lifetime. Removing interception while fetch() is in flight can let
+  // Chromium continue the request before this callback fulfills it ("Route is already handled"). Toggle fixture data instead.
+  let quietEnabled = false;
+  let heldSegments: { entered: () => void; released: Promise<void> } | undefined;
+  await context.route(liveApi, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (quietEnabled && body.recording) body.recording.notices = addQuiet(body.recording.notices);
+    await route.fulfill({ response, json: body });
+  });
+  await page.route('**/segments*', async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const hold = new URL(route.request().url()).searchParams.has('mini-route-hold') ? heldSegments : undefined;
+    if (hold) { hold.entered(); await hold.released; }
+    if (quietEnabled) body.notices = addQuiet(body.notices);
+    await route.fulfill({ response, json: body, headers: { ...response.headers(), ...(hold ? { 'x-mini-route-owner': 'fixture' } : {}) } });
+  });
+  const fakeQuiet = async () => { quietEnabled = true; };
+  const unfakeQuiet = async () => { quietEnabled = false; };
   for (const [w, h] of [[260, 240], [360, 268], [640, 320]]) {
     await pip.setViewportSize({ width: w, height: h });
     const samples = [];
@@ -239,7 +244,8 @@ async function run() {
   // most two lines; the card stays whole at the bottom and the lines keep some room.
   await pip.setViewportSize({ width: 260, height: 200 });
   await fakeQuiet();
-  await page.route('**/pcm', async route => { await new Promise(r => setTimeout(r, 6500)); await route.continue().catch(() => {}); }); // a request the page gave up on is already handled
+  const slowPcm = async (route: Route) => { await new Promise(r => setTimeout(r, 6500)); await route.continue().catch(() => {}); }; // the upload may already be cancelled
+  await page.route('**/pcm', slowPcm);
   // Several problems: their short forms, so all of them fit (the full texts are the box's title).
   await mf.waitForFunction(() => /^Saving behind · no sound from the mic/.test(document.querySelector('.notice')?.textContent ?? '') && /falling behind/.test((document.querySelector('.notice') as HTMLElement | null)?.title ?? ''), null, { timeout: 15_000 });
   const crowded = await measure(mf);
@@ -261,9 +267,24 @@ async function run() {
   check('two problems: the chip leads with them', /^Recording · saving behind · no sound from the mic/.test(chip.text) && /falling behind/.test(chip.title), `${chip.text} | ${chip.title}`);
   await pip.screenshot({ path: join(outDir, 'mini-two-problems.png') });
   step('detach slow PCM routes', 30_000);
-  // A cancelled upload's callback may never finish. Detach it, rather than waiting on its continuation.
-  // New uploads use the real server again; the existing notice assertion below still requires recovery.
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  // Hold one segments response across upload-fixture removal. It must still be answered by its original owner, not
+  // silently continued by removing all page interception. This deterministically exercises the former fulfill race.
+  let entered!: () => void, release!: () => void;
+  const heldReplyArrived = new Promise<void>(r => { entered = r; });
+  heldSegments = { entered, released: new Promise<void>(r => { release = r; }) };
+  try {
+    await page.evaluate(() => {
+      (window as any).miniRouteOwner = null;
+      void fetch(`/api/meetings/${localStorage.getItem('meeting-id')}/segments?mini-route-hold=1`)
+        .then(r => { (window as any).miniRouteOwner = r.headers.get('x-mini-route-owner') ?? 'server'; });
+    });
+    await heldReplyArrived;
+    // Detach only this upload fixture. Keep the segments route registered until its replies have finished.
+    await page.unroute('**/pcm', slowPcm);
+    release();
+    await page.waitForFunction(() => (window as any).miniRouteOwner !== null);
+    check('removing slow uploads preserves ownership of an in-flight segments reply', await page.evaluate(() => (window as any).miniRouteOwner === 'fixture'));
+  } finally { release(); heldSegments = undefined; }
   step('remove quiet fixtures', 30_000);
   await unfakeQuiet();
   step('wait for saving-behind and quiet notices to clear', 30_000);
@@ -615,7 +636,8 @@ async function run() {
   // stopping; nothing in it can cancel or stop again.
   await mf.locator('.stop').click();
   missing = true;
-  await page.route('**/pcm/end', async route => { await new Promise(r => setTimeout(r, 3000)); await route.continue(); });
+  const delayedEnd = async (route: Route) => { await new Promise(r => setTimeout(r, 3000)); await route.continue(); };
+  await page.route('**/pcm/end', delayedEnd);
   const closed = pip.waitForEvent('close');
   await page.locator('#stop').click();
   await mf.waitForFunction(() => document.querySelector('.status')?.textContent?.includes('Stopping'), null, { timeout: 2500 }).catch(() => {});
@@ -624,7 +646,7 @@ async function run() {
   await closed;
   await page.locator('#live-chip').waitFor({ state: 'hidden', timeout: 15_000 });
   step('detach delayed end routes', 30_000);
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  await page.unroute('**/pcm/end', delayedEnd);
   check('stopped: the window closed and the focus is on Start', await page.locator('#start').isVisible() && await page.locator('#mini-view').isHidden() && await page.evaluate(() => document.activeElement?.id) === 'start');
   // The same meeting recorded again: the kept page hears of it only now, with the tag of the first recording.
   const firstKeys = await retained.evaluate(() => ([...document.querySelectorAll('#m-scroll .ln')] as HTMLElement[]).map(r => r.dataset.key));
@@ -700,7 +722,7 @@ async function run() {
   const inert = await page.evaluate(() => [...document.body.children].filter(n => n.id !== 'quit-banner').every(n => (n as HTMLElement).inert));
   check('a quit: banner shown, the page behind it inert, Start disabled', inert && await page.locator('#start').isDisabled() && /quitting/.test(await page.locator('#quit-text').innerText()));
   step('detach quit fixture routes', 30_000);
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  await page.unrouteAll({ behavior: 'wait' });
   check('no page errors', errors.length === 0, errors.join(' | '));
 }
 let cleanupFailed = false;

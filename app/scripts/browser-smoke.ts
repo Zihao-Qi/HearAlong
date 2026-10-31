@@ -54,7 +54,10 @@ const noModels = process.env.MEETING_TEST_NO_MODELS === '1';
 const setup = await dashboardSetup(directory, noModels);
 const saved = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
 await writeFile(join(directory, 'settings.json'), JSON.stringify({ ...saved, aiMode: 'cloud', cloudConsent: { providers: ['scripted'], time: 1 } }));
-const serve = () => startServer({ directory, port: 0, quick: null, heavy: null, notes, actions, board,
+// A seven-second fixture replay at 16× lasts only 437.5 ms. Hold its server clock while asserting the active chip;
+// otherwise a delayed first transcript poll can legitimately see only the completed replay.
+let replayNow: number | null = null;
+const serve = () => startServer({ directory, port: 0, clock: () => replayNow ?? Date.now(), quick: null, heavy: null, notes, actions, board,
   ...(noModels ? { setup, recognizer: { async transcribe() { return { text: 'The workshop has thirty-six lanterns ready for the evening parade. Please check the repair cafe intake limit for Saturday.',
     backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, words: [], timestampKind: 'none' as const }; }, close() {} },
   drafts: new LiveDrafts({ modelPath: 'unused', workerScript: new URL('../test/fixtures/fake-stream-worker.ts', import.meta.url) }) } : {}) });
@@ -85,6 +88,12 @@ try {
     await page.locator('#meeting-list button', { hasText: title }).first().click();
     await page.locator('#meeting-title', { hasText: title }).waitFor();
   };
+  if (process.env.BROWSER_SMOKE_REPLAY_DELAY_MS) await page.route('**/segments*', async route => {
+    // Delay the poll itself, not a snapshot already captured while Replay was active.
+    if (replayNow !== null) await new Promise(r => setTimeout(r, Number(process.env.BROWSER_SMOKE_REPLAY_DELAY_MS)));
+    const response = await route.fetch();
+    await route.fulfill({ response });
+  });
   await page.goto(app.url);
   await page.locator('#live-chip').waitFor({ state: 'hidden' });
   assert.equal(app.store.meetings().length, 0);
@@ -94,8 +103,11 @@ try {
   await page.locator('#open-replay').click();
   await page.locator('#replay-file').setInputFiles(audio);
   await page.locator('#replay-speed').selectOption('16');
-  await page.locator('#replay').click();
-  await page.locator('#live-chip').getByText(/Replay/).waitFor();
+  replayNow = Date.now();
+  try {
+    await page.locator('#replay').click();
+    await page.locator('#live-chip').getByText(/Replay/).waitFor();
+  } finally { replayNow = null; }
   await page.waitForFunction(() => document.getElementById('transcript')?.textContent?.includes('lanterns'), null, { timeout: 60_000 });
   const replayMeeting = app.store.meetings()[0];
   assert.ok(app.store.segments(replayMeeting.id).length >= 1, 'segments were published');
@@ -132,9 +144,12 @@ try {
   await page.locator('#settings [data-close-panel]').click();
   await newMeeting('Synthetic live meeting');
   await page.locator('#start').click();
+  // Count acknowledged microphone frames, not elapsed wall time: startup/worklet scheduling can consume part of 6.2 s.
+  const sixFrames = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/pcm') && r.status() === 201
+    && Number(r.request().headers()['x-sequence']) >= 5 && r.request().headers()['x-audio-source']?.startsWith('mic:') === true);
   await page.locator('#start-mic').click();
   await page.locator('#live-chip').getByText('Recording').waitFor();
-  await page.waitForTimeout(6200);
+  await sixFrames;
   const during = await page.evaluate(async () => { const id = localStorage.getItem('meeting-id'); return (await fetch(`/api/meetings/${id}/segments`)).json(); });
   assert.equal(during.draftsAvailable, true, 'live drafts run while recording');
   await page.locator('#stop').click();

@@ -1,4 +1,4 @@
-// FIX2 fixture/interaction driver. Assertions are in setup-check.ts.
+// Focused setup fixtures; contracts are shared with ui-pass in setup-assertions.ts.
 import assert from 'node:assert/strict';
 import { chromium, type Page } from 'playwright-core';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -25,7 +25,7 @@ export async function runSetupFix2Checks(check: Check) {
     const state = { rows: [ { id: 'speech', state: 'none', download: { state: 'idle' }, downloadTargetPath: '/example/models/download.gguf' }, { id: 'ffmpeg', state: 'missing' }, ai ] };
     await page.route('**/api/setup', route => route.fulfill({ json: state }));
     await page.route('**/api/setup/speech-models', route => route.fulfill({ json: { models: [], truncated: false } }));
-    await page.route('**/api/setup/ai/models?refresh=1', route => route.fulfill({ json: { state: 'ok', models: [{ id: 'example/main' }, { id: 'example/quick' }], count: 2, providers: ['example'] } }));
+    await page.route('**/api/setup/ai/models?refresh=1*', route => route.fulfill({ json: { state: 'ok', models: [{ id: 'example/main' }, { id: 'example/quick' }], count: 2, providers: ['example'] } }));
     await page.goto(`${app.url}/setup`);
     await page.evaluate(async ({ state, details }) => {
       const path = '/setup-ui.js'; const { SetupUI } = await import(path);
@@ -65,7 +65,7 @@ export async function runSetupFix2Checks(check: Check) {
               const opener = page.locator(`[data-setup-row="${role}"] button`).first(); await opener.click();
               await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).waitFor();
               await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).focus();
-              await page.mouse.click(3, 3); await page.waitForTimeout(100);
+              await page.mouse.click(3, 3); await page.getByRole('dialog').waitFor({ state: 'detached' });
               outcomes.push({ role, open: await page.getByRole('dialog').count(), focused: await opener.evaluate(e => e === document.activeElement) });
               await shot(page, `04-${width}-${role}-backdrop`); await page.keyboard.press('Escape');
             }

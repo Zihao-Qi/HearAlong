@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { startServer } from '../src/server.ts';
 import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
+import { checkDelayedPlaybackScroll } from './listen-scroll-page-cases.ts';
 
 const out = resolve(process.argv[2] ?? 'artifacts/listen');
 await mkdir(out, { recursive: true });
@@ -216,6 +217,7 @@ window.view.render(window.snapshot);window.ready=true;
       assert.deepEqual(positions, { before: 4500, during: 0, closed: 0, nextPoll: 0, following: false, jumped: 4500 });
     } finally { await follow.close(); }
   });
+  await check('playback and polling respect a manual scroll before its event is delivered', () => checkDelayedPlaybackScroll(context, app.url));
   assert.deepEqual(errors, []);
 } finally {
   await browser?.close(); await app.close(); await rm(directory, { recursive: true, force: true });

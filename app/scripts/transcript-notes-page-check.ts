@@ -83,18 +83,37 @@ try {
   }
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'en-US' });
   await context.addInitScript(id => { localStorage.setItem('meeting-id', id); localStorage.setItem('right-tab', 'notes'); }, meeting.id);
+  await context.addInitScript((jsonDelay: number) => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      if (new URL(response.url).pathname.endsWith('/segments')) {
+        const json = response.json.bind(response);
+        response.json = async () => {
+          const snapshot = await json();
+          if (jsonDelay) await new Promise(r => setTimeout(r, jsonDelay));
+          // refreshSegments consumes this JSON and renders synchronously in its continuation. A frame after that turn
+          // acknowledges the consumed fixture generation, including handoffs that deliberately keep selected DOM unchanged.
+          requestAnimationFrame(() => { (window as any).transcriptRenderedRevision = snapshot.checkRevision; });
+          return snapshot;
+        };
+      }
+      return response;
+    };
+  }, Number(process.env.TRANSCRIPT_CHECK_DELAY_MS ?? 0));
   const page = await context.newPage();
   page.on('pageerror', e => errors.push(e.message));
   await watchTranscriptKeys(page);
   const words = 'Please stack the blue crates beside the kiln before opening'.split(' ').map((text, i) => ({ text, startMs: 526000 + i * 240, endMs: 526240 + i * 240 }));
-  let lateOverlap = false, override: any = null;
+  let lateOverlap = false, override: any = null, snapshotRevision = 0;
   await page.route('**/api/meetings/*/segments*', async route => {
+    const currentOverride = override, revision = snapshotRevision, overlap = lateOverlap;
     // Overrides below are full snapshots, not suffixes of the server's transcript.
     const response = await route.fetch({ url: route.request().url().split('?')[0] });
     const json = await response.json();
-    if (lateOverlap) json.captureGaps.push({ atMs: 514000, fromWallMs: from - 100, toWallMs: to, reason: 'sleep' });
+    if (overlap) json.captureGaps.push({ atMs: 514000, fromWallMs: from - 100, toWallMs: to, reason: 'sleep' });
     const snapshot = { ...json, drafts: [{ source: mic, speaker: 'Me', window: 'note-preview', windowStartMs: 526000,
-      coveredUntilMs: words.at(-1)!.endMs, words, text: words.map(w => w.text).join(' '), behind: false }], pending: [], ...override };
+      coveredUntilMs: words.at(-1)!.endMs, words, text: words.map(w => w.text).join(' '), behind: false }], pending: [], ...currentOverride, checkRevision: revision };
     assertUniqueTranscriptKeys(snapshot);
     await route.fulfill({ response, json: snapshot });
   });
@@ -138,8 +157,8 @@ try {
   });
   await page.locator('#selection-menu').waitFor();
   lateOverlap = true;
-  await page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/segments'));
-  await page.waitForTimeout(100);
+  const overlapRevision = ++snapshotRevision;
+  await page.waitForFunction(revision => (window as any).transcriptRenderedRevision === revision, overlapRevision);
   assert.equal(await page.locator('.capture-gap').count(), 1, 'a late overlapping source cannot duplicate a held gap row');
   assert.ok(!(await page.evaluate(() => getSelection()!.toString())).includes('Not recorded'));
   await page.locator('#selection-menu [data-action="explain"]').click();
@@ -180,8 +199,8 @@ try {
   }
   results.push('option A alignment, 13px/1.6 accent gap, accent drag note, no overflow at desktop and 390 px');
   await checkGapFixesPage(page, async next => {
-    const response = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/segments'));
-    override = next; await response; await page.waitForTimeout(150);
+    override = next; const expected = ++snapshotRevision;
+    await page.waitForFunction(revision => (window as any).transcriptRenderedRevision === revision, expected);
   }, results, out);
   results.push(`${await finishTranscriptKeyCheck(page)}; every gap snapshot also has unique keys`);
   assert.deepEqual(errors, []);
