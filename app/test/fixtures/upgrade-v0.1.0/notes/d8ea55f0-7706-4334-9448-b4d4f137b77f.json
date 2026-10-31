@@ -1,0 +1,60 @@
+{
+  "meetingId": "d8ea55f0-7706-4334-9448-b4d4f137b77f",
+  "title": "Fictional kite rehearsal — revised notes",
+  "createdAt": 1793409283928,
+  "model": "fictional-atlas/main",
+  "input": {
+    "inputHash": "cea90e8958a3cc47505303d335736f1c56e6d32ae5a219a1cf3930aacea3a777",
+    "coverage": {
+      "untilMs": 1000,
+      "chunks": 1,
+      "pendingChunks": 0,
+      "gaps": [],
+      "uncorrected": 1
+    },
+    "glossaryVersion": 2,
+    "segments": 1,
+    "takenAt": 1793409283927
+  },
+  "notes": {
+    "suggestedTitle": "Fictional kite rehearsal",
+    "summary": [
+      {
+        "section": "summary",
+        "text": "Mira will fold the fictional kite after the rehearsal.",
+        "cites": [
+          "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0"
+        ],
+        "startMs": 0,
+        "quotes": [
+          {
+            "text": "Mira will fold the fictional kite after the rehearsal.",
+            "quoteIn": "corrected",
+            "cites": [
+              "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0"
+            ]
+          }
+        ],
+        "quote": "Mira will fold the fictional kite after the rehearsal.",
+        "quoteIn": "corrected"
+      }
+    ],
+    "decisions": [],
+    "actions": [],
+    "openQuestions": [],
+    "otherMatters": [],
+    "needsReview": [],
+    "otherTalk": []
+  },
+  "sources": {
+    "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0": {
+      "startMs": 0,
+      "endMs": 1000,
+      "text": "Mira will fold the fictional kite after the rehearsal.",
+      "originalText": "Mira will fold the fictional kite after the rehearsal.",
+      "revision": 0
+    }
+  },
+  "dropped": [],
+  "version": 2
+}

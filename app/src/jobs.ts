@@ -28,7 +28,8 @@ export class JobManager {
     this.clock = timing.clock ?? Date.now; this.setTimer = timing.setTimeout ?? setTimeout; this.clearTimer = timing.clearTimeout ?? clearTimeout;
   }
   private wake(at: number) {
-    this.retryTimer = this.setTimer(() => { this.retryTimer = undefined; this.kick(); }, Math.max(0, at - this.clock()));
+    // A persisted future retry (or a clock moved backwards) must not overflow Node's timer into a 1 ms loop.
+    this.retryTimer = this.setTimer(() => { this.retryTimer = undefined; this.kick(); }, Math.min(2_147_483_647, Math.max(0, at - this.clock())));
     this.retryTimer.unref();
   }
   kick() {

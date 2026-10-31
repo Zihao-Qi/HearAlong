@@ -1,0 +1,1265 @@
+{
+  "commit": "570b8032418cbbfc01a20cc0f64257135cd6c5ef",
+  "database": {
+    "userVersion": 3,
+    "applicationId": 0,
+    "schema": [
+      {
+        "type": "table",
+        "name": "audio_removals",
+        "sql": "CREATE TABLE audio_removals (meetingId TEXT NOT NULL REFERENCES meetings(id), generation INTEGER NOT NULL,\n        PRIMARY KEY (meetingId, generation))"
+      },
+      {
+        "type": "table",
+        "name": "audio_retention",
+        "sql": "CREATE TABLE audio_retention (id INTEGER PRIMARY KEY CHECK(id=1), decision TEXT)"
+      },
+      {
+        "type": "table",
+        "name": "capture_gaps",
+        "sql": "CREATE TABLE capture_gaps (meetingId TEXT NOT NULL REFERENCES meetings(id), source TEXT NOT NULL,\n        atMs REAL NOT NULL, fromWallMs REAL NOT NULL, toWallMs REAL NOT NULL, reason TEXT,\n        PRIMARY KEY (meetingId, source, atMs))"
+      },
+      {
+        "type": "table",
+        "name": "chunks",
+        "sql": "CREATE TABLE chunks (id TEXT PRIMARY KEY, meetingId TEXT NOT NULL REFERENCES meetings(id),\n        source TEXT NOT NULL, sequence INTEGER NOT NULL, path TEXT NOT NULL, decodeStart REAL NOT NULL,\n        startMs REAL NOT NULL, seconds REAL NOT NULL, sampleRate INTEGER, status TEXT NOT NULL,\n        text TEXT NOT NULL DEFAULT '', error TEXT, metrics TEXT, hash TEXT NOT NULL, completedAt INTEGER, attempts INTEGER NOT NULL DEFAULT 0, retryAt INTEGER,\n        UNIQUE(meetingId, source, sequence))"
+      },
+      {
+        "type": "table",
+        "name": "counters",
+        "sql": "CREATE TABLE counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL)"
+      },
+      {
+        "type": "table",
+        "name": "frames",
+        "sql": "CREATE TABLE frames (id TEXT PRIMARY KEY, meetingId TEXT NOT NULL REFERENCES meetings(id), source TEXT NOT NULL,\n        sequence INTEGER NOT NULL, path TEXT NOT NULL, startMs REAL NOT NULL, samples INTEGER NOT NULL, hash TEXT NOT NULL,\n        windowChunkId TEXT REFERENCES chunks(id), savedAt INTEGER, captureWallMs REAL, captureEndWallMs REAL, UNIQUE(meetingId, source, sequence))"
+      },
+      {
+        "type": "table",
+        "name": "glossaries",
+        "sql": "CREATE TABLE glossaries (scope TEXT PRIMARY KEY, version INTEGER NOT NULL UNIQUE, origin TEXT NOT NULL,\n        builtAt INTEGER NOT NULL, model TEXT, terms TEXT NOT NULL)"
+      },
+      {
+        "type": "table",
+        "name": "material_roots",
+        "sql": "CREATE TABLE material_roots (id TEXT PRIMARY KEY, scope TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL,\n        label TEXT NOT NULL, createdAt INTEGER NOT NULL)"
+      },
+      {
+        "type": "table",
+        "name": "meetings",
+        "sql": "CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, createdAt INTEGER NOT NULL,\n        mode TEXT NOT NULL DEFAULT 'periodic', intervalSeconds INTEGER NOT NULL DEFAULT 60, replay TEXT, correction TEXT, audioDoneAt INTEGER, audioRemovedAt INTEGER, audioRemovedAfter TEXT, audioLegacy INTEGER NOT NULL DEFAULT 1, audioKept INTEGER NOT NULL DEFAULT 0, recordingEndedAt INTEGER, audioGeneration INTEGER NOT NULL DEFAULT 0, audioEmpty INTEGER NOT NULL DEFAULT 0, projectId TEXT REFERENCES projects(id))"
+      },
+      {
+        "type": "table",
+        "name": "memory_batches",
+        "sql": "CREATE TABLE memory_batches (id TEXT PRIMARY KEY, project TEXT NOT NULL, requestId TEXT NOT NULL UNIQUE, digest TEXT NOT NULL,\n        actor TEXT NOT NULL, reads TEXT NOT NULL, writes TEXT NOT NULL, result TEXT NOT NULL, undoOf TEXT, undoneBy TEXT, at INTEGER NOT NULL)"
+      },
+      {
+        "type": "table",
+        "name": "memory_brief",
+        "sql": "CREATE TABLE memory_brief (project TEXT NOT NULL, version INTEGER NOT NULL, text TEXT NOT NULL, actor TEXT NOT NULL,\n        source TEXT, basedOn INTEGER, at INTEGER NOT NULL, PRIMARY KEY (project, version))"
+      },
+      {
+        "type": "table",
+        "name": "memory_captures",
+        "sql": "CREATE TABLE memory_captures (id TEXT PRIMARY KEY, project TEXT NOT NULL, file TEXT NOT NULL, content TEXT NOT NULL, hash TEXT NOT NULL,\n        baseHash TEXT, status TEXT NOT NULL, problems TEXT, at INTEGER NOT NULL)"
+      },
+      {
+        "type": "table",
+        "name": "memory_effects",
+        "sql": "CREATE TABLE memory_effects (project TEXT NOT NULL, meetingId TEXT NOT NULL, sourceKey TEXT NOT NULL, ref TEXT NOT NULL, outcome TEXT NOT NULL,\n        at INTEGER NOT NULL, PRIMARY KEY (project, meetingId, sourceKey, ref))"
+      },
+      {
+        "type": "table",
+        "name": "memory_events",
+        "sql": "CREATE TABLE memory_events (id TEXT PRIMARY KEY, batch TEXT NOT NULL REFERENCES memory_batches(id), seq INTEGER NOT NULL,\n        project TEXT NOT NULL, item TEXT NOT NULL, op TEXT NOT NULL, before TEXT, after TEXT, source TEXT, confirmed INTEGER NOT NULL DEFAULT 0,\n        ref TEXT, at INTEGER NOT NULL, UNIQUE (batch, seq))"
+      },
+      {
+        "type": "table",
+        "name": "memory_files",
+        "sql": "CREATE TABLE memory_files (project TEXT NOT NULL, file TEXT NOT NULL, hash TEXT NOT NULL, content TEXT NOT NULL, asOf INTEGER NOT NULL,\n        at INTEGER NOT NULL, current INTEGER NOT NULL, PRIMARY KEY (project, file, hash))"
+      },
+      {
+        "type": "table",
+        "name": "memory_inbox",
+        "sql": "CREATE TABLE memory_inbox (project TEXT NOT NULL, name TEXT NOT NULL, hash TEXT NOT NULL, text TEXT NOT NULL, state TEXT NOT NULL,\n        result TEXT, at INTEGER NOT NULL, PRIMARY KEY (project, name, hash))"
+      },
+      {
+        "type": "table",
+        "name": "memory_items",
+        "sql": "CREATE TABLE memory_items (project TEXT NOT NULL, id TEXT NOT NULL, type TEXT NOT NULL, status TEXT NOT NULL, text TEXT NOT NULL,\n        owner TEXT, fields TEXT NOT NULL, confirmed INTEGER NOT NULL, mergedInto TEXT, version INTEGER NOT NULL, createdAt INTEGER NOT NULL,\n        updatedAt INTEGER NOT NULL, PRIMARY KEY (project, id))"
+      },
+      {
+        "type": "table",
+        "name": "memory_proposals",
+        "sql": "CREATE TABLE memory_proposals (id TEXT PRIMARY KEY, project TEXT NOT NULL, run TEXT NOT NULL, meetingId TEXT, sourceKey TEXT NOT NULL,\n        payload TEXT NOT NULL, status TEXT NOT NULL, createdAt INTEGER NOT NULL, resolvedAt INTEGER, batch TEXT)"
+      },
+      {
+        "type": "table",
+        "name": "memory_repo",
+        "sql": "CREATE TABLE memory_repo (project TEXT PRIMARY KEY, lastHead TEXT, at INTEGER)"
+      },
+      {
+        "type": "table",
+        "name": "memory_runs",
+        "sql": "CREATE TABLE memory_runs (id TEXT PRIMARY KEY, project TEXT NOT NULL, meetingId TEXT NOT NULL, notesVersion INTEGER, inputHash TEXT,\n        state TEXT NOT NULL, startedAt INTEGER NOT NULL, finishedAt INTEGER, error TEXT, summary TEXT)"
+      },
+      {
+        "type": "table",
+        "name": "plan_acceptances",
+        "sql": "CREATE TABLE plan_acceptances (id TEXT PRIMARY KEY, meetingId TEXT NOT NULL, version INTEGER NOT NULL, step TEXT NOT NULL,\n        generation INTEGER NOT NULL, payloadHash TEXT NOT NULL, payload TEXT NOT NULL, project TEXT NOT NULL, todo TEXT NOT NULL, batch TEXT NOT NULL,\n        opId TEXT NOT NULL, aliasOf TEXT, result TEXT NOT NULL, createdAt INTEGER NOT NULL, UNIQUE (meetingId, version, step, generation))"
+      },
+      {
+        "type": "table",
+        "name": "plan_auto_attempts",
+        "sql": "CREATE TABLE plan_auto_attempts (meetingId TEXT NOT NULL, notesVersion INTEGER NOT NULL, run TEXT, at INTEGER NOT NULL,\n      PRIMARY KEY (meetingId, notesVersion))"
+      },
+      {
+        "type": "table",
+        "name": "plan_operations",
+        "sql": "CREATE TABLE plan_operations (opId TEXT PRIMARY KEY, meetingId TEXT NOT NULL, version INTEGER NOT NULL, step TEXT NOT NULL,\n        result TEXT NOT NULL, at INTEGER NOT NULL)"
+      },
+      {
+        "type": "table",
+        "name": "projects",
+        "sql": "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, repoPath TEXT UNIQUE, createdAt INTEGER NOT NULL, planAfterNotes INTEGER NOT NULL DEFAULT 0)"
+      },
+      {
+        "type": "table",
+        "name": "recording_sources",
+        "sql": "CREATE TABLE recording_sources (meetingId TEXT NOT NULL REFERENCES meetings(id), source TEXT NOT NULL,\n        pageId TEXT, state TEXT NOT NULL, PRIMARY KEY (meetingId, source))"
+      },
+      {
+        "type": "table",
+        "name": "segments",
+        "sql": "CREATE TABLE segments (id TEXT PRIMARY KEY, meetingId TEXT NOT NULL REFERENCES meetings(id),\n        chunkId TEXT NOT NULL REFERENCES chunks(id), source TEXT NOT NULL, ord INTEGER NOT NULL,\n        startMs REAL NOT NULL, endMs REAL NOT NULL, text TEXT NOT NULL, originalText TEXT NOT NULL,\n        revision INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'final', timing TEXT NOT NULL,\n        edits TEXT NOT NULL DEFAULT '[]', correctionChecked INTEGER NOT NULL DEFAULT 0, UNIQUE(chunkId, ord))"
+      },
+      {
+        "type": "table",
+        "name": "source_settings",
+        "sql": "CREATE TABLE source_settings (meetingId TEXT NOT NULL REFERENCES meetings(id), source TEXT NOT NULL, settings TEXT NOT NULL,\n        PRIMARY KEY (meetingId, source))"
+      },
+      {
+        "type": "index",
+        "name": "chunk_queue",
+        "sql": "CREATE INDEX chunk_queue ON chunks(status, startMs)"
+      },
+      {
+        "type": "index",
+        "name": "frames_held",
+        "sql": "CREATE INDEX frames_held ON frames(meetingId, source, windowChunkId)"
+      },
+      {
+        "type": "index",
+        "name": "material_scope",
+        "sql": "CREATE INDEX material_scope ON material_roots(scope)"
+      },
+      {
+        "type": "index",
+        "name": "memory_effects_ref",
+        "sql": "CREATE INDEX memory_effects_ref ON memory_effects(project, ref)"
+      },
+      {
+        "type": "index",
+        "name": "memory_events_item",
+        "sql": "CREATE INDEX memory_events_item ON memory_events(project, item)"
+      },
+      {
+        "type": "index",
+        "name": "memory_proposals_project",
+        "sql": "CREATE INDEX memory_proposals_project ON memory_proposals(project, status)"
+      },
+      {
+        "type": "index",
+        "name": "plan_acceptances_payload",
+        "sql": "CREATE INDEX plan_acceptances_payload ON plan_acceptances(meetingId, payloadHash)"
+      },
+      {
+        "type": "index",
+        "name": "segment_order",
+        "sql": "CREATE INDEX segment_order ON segments(meetingId, startMs)"
+      }
+    ],
+    "tables": {
+      "audio_removals": {
+        "rows": 0,
+        "sha256": "2d8163d5515ca7d6a6f42598c237d7b98ffab1dbc23b38b760e71abc0230609b"
+      },
+      "audio_retention": {
+        "rows": 1,
+        "sha256": "ae807a130c8ae283e7326bc9593adb02573775ebd196caa25a71314808486d1c"
+      },
+      "capture_gaps": {
+        "rows": 0,
+        "sha256": "0661e16c5c77ddaa48139ae85e94a02c8455e2fcf3bb7c5ca90810372d9e8423"
+      },
+      "chunks": {
+        "rows": 5,
+        "sha256": "9029ca257f6899cabf79bae51ff804449dbd28933478021174df267a9cc412d9"
+      },
+      "counters": {
+        "rows": 4,
+        "sha256": "f2cdcfa9e531a3fe82b5ac61537231171e7a94c17a6e9b67eac0795d7948e259"
+      },
+      "frames": {
+        "rows": 1,
+        "sha256": "886d1e5081447120333d8ef7debcaf2f8f7eae0944155a164c1c349ed2d209e2"
+      },
+      "glossaries": {
+        "rows": 2,
+        "sha256": "f7e84d59bba175bb6aae18d595d9cfe94210cc46ea5df20812e1b88de63afaf2"
+      },
+      "material_roots": {
+        "rows": 2,
+        "sha256": "8e6cf9c73d93855f411af96a44b728823421ef63f50aa99bcd87fc94ee503216"
+      },
+      "meetings": {
+        "rows": 2,
+        "sha256": "0c7b2332b054196f522602e9b6f74c4023516cc1f7238235660b2faacbce8329"
+      },
+      "memory_batches": {
+        "rows": 3,
+        "sha256": "f1eeed95cc85d91936ca73fc8422a2e2cf8b21ef5c91799158b6937c2bde698c"
+      },
+      "memory_brief": {
+        "rows": 2,
+        "sha256": "2cca328de8d5bab6ac505f143ea2f1155966f489f18ad5bf408d3b19c9db0ecb"
+      },
+      "memory_captures": {
+        "rows": 0,
+        "sha256": "7d1396cabfb609f925127e97c5be50f78795576d728b5eb13d19791bf9e6b50e"
+      },
+      "memory_effects": {
+        "rows": 0,
+        "sha256": "3bd21647df1289219bbfcd607c19fc43c36e79de73afee77638c2c5d50a9d7bc"
+      },
+      "memory_events": {
+        "rows": 5,
+        "sha256": "137a8400010b2a17e8b85390ea794dd4daa66d65a68894649d6278cfb00ec77b"
+      },
+      "memory_files": {
+        "rows": 0,
+        "sha256": "13ead72f64b4392c4911a0620a1af9a3bf3555af822e789c29ca81a1050271e4"
+      },
+      "memory_inbox": {
+        "rows": 0,
+        "sha256": "c359876e6d2fb6f57eea641568c53607d71b7f303a5e3f8c7aeaba9b205bebe4"
+      },
+      "memory_items": {
+        "rows": 4,
+        "sha256": "3665c23b987b883fd954c4a119ae9a06fbd964d0e6d21b17dc1ab9916b033e00"
+      },
+      "memory_proposals": {
+        "rows": 0,
+        "sha256": "ff32fe08455702293f8b77a1b3465ddf63e5c56340aadbf733b94a1a01e42e77"
+      },
+      "memory_repo": {
+        "rows": 0,
+        "sha256": "4decb144c2b2a12bc5f62225f6652a9d5c0eaa4a6ca1a2e857f95ab27ec98124"
+      },
+      "memory_runs": {
+        "rows": 0,
+        "sha256": "91442167fa1c834ab8c7aecd39fc6c177ce4a4cf2ad01942a35db2d721454c62"
+      },
+      "plan_acceptances": {
+        "rows": 1,
+        "sha256": "8896c92cac49ed9afd5ea98237d44407d7fc6410366a0431476e94ea5c448d95"
+      },
+      "plan_auto_attempts": {
+        "rows": 0,
+        "sha256": "c005cb3fe50e8fa2ad1ce552b68cc1dcd7f88be7e46131825c50a5f64c88c8e2"
+      },
+      "plan_operations": {
+        "rows": 1,
+        "sha256": "5316f59b65cf849e31188484745495ad7f9a7676d17bdb62d1c48d61237d0f5a"
+      },
+      "projects": {
+        "rows": 1,
+        "sha256": "8629a4355140f8ed2a1c697c630ea6cec5666bc1c633a8761a5c0319fe092bb4"
+      },
+      "recording_sources": {
+        "rows": 0,
+        "sha256": "e16bc0f51f9ceb42dde5252990d090ee36fddee376bf6ca85d8cb485acb4e24c"
+      },
+      "segments": {
+        "rows": 2,
+        "sha256": "d6f38da48cc956889b7aa53a3b1de99fb2af8a12fd4de19054ee06172d378777"
+      },
+      "source_settings": {
+        "rows": 1,
+        "sha256": "92cbe0a9b3f5b7cb9dec4a066a3ea80f219bae0e60cd68bff65fab1c57ebe37c"
+      }
+    }
+  },
+  "settings": {
+    "boardModel": "main",
+    "miniOpensItself": true,
+    "audioRetention": "always",
+    "speechModelPath": null,
+    "setupSeen": true,
+    "mainModel": "fictional-atlas/main",
+    "quickModel": "fictional-lark/quick",
+    "apiKeys": [],
+    "apiKeysUnconfirmed": [],
+    "aiMode": "cloud",
+    "cloudNotice": false,
+    "localMainModel": "ollama/fictional-lantern:8b",
+    "localQuickModel": "ollama/fictional-lantern:8b",
+    "cloudMainModel": "fictional-atlas/main",
+    "cloudQuickModel": "fictional-lark/quick",
+    "cloudConsent": {
+      "providers": [
+        "fictional-atlas",
+        "fictional-lark"
+      ],
+      "time": 1793409283888
+    }
+  },
+  "project": {
+    "id": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+    "name": "Fictional lantern club",
+    "repoPath": "/private/tmp/hearalong-upgrade-v0.1.0-assets/repo",
+    "createdAt": 1793409283896,
+    "planAfterNotes": true
+  },
+  "meetings": [
+    {
+      "id": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+      "title": "Fictional lantern inventory",
+      "createdAt": 1793409283897,
+      "mode": "manual",
+      "intervalSeconds": 90,
+      "replay": null,
+      "correction": null,
+      "audioDoneAt": null,
+      "audioRemovedAt": null,
+      "audioRemovedAfter": null,
+      "audioLegacy": 0,
+      "audioKept": 0,
+      "recordingEndedAt": 1793409283923,
+      "audioGeneration": 0,
+      "audioEmpty": 0,
+      "projectId": "8fc14498-6134-4b7b-a2de-3e98ab7842b3"
+    },
+    {
+      "id": "d8ea55f0-7706-4334-9448-b4d4f137b77f",
+      "title": "Fictional kite rehearsal",
+      "createdAt": 1793409283897,
+      "mode": "questions",
+      "intervalSeconds": 120,
+      "replay": null,
+      "correction": null,
+      "audioDoneAt": null,
+      "audioRemovedAt": null,
+      "audioRemovedAfter": null,
+      "audioLegacy": 0,
+      "audioKept": 0,
+      "recordingEndedAt": 1793409283923,
+      "audioGeneration": 0,
+      "audioEmpty": 0,
+      "projectId": null
+    }
+  ],
+  "chunks": {
+    "88953d4a-2980-4d88-ab9a-b35d742187ad": [
+      {
+        "id": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98",
+        "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+        "source": "mic:7e7d8d4f-7487-4392-82b8-e88a876365b6",
+        "sequence": 0,
+        "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/38c6a4a7-79d6-4c09-9aef-e87db1a02c98.f32",
+        "decodeStart": 0,
+        "startMs": 0,
+        "seconds": 1,
+        "sampleRate": 16000,
+        "status": "completed",
+        "text": "Must the club store aster been paper stars in the blue cupboard?",
+        "error": null,
+        "metrics": "{\"text\":\"Must the club store aster been paper stars in the blue cupboard?\",\"backend\":\"fictional\",\"computeMs\":1,\"decodeMs\":1,\"audioSeconds\":1,\"processRssBytes\":0,\"words\":[],\"timestampKind\":\"none\",\"retries\":0}",
+        "hash": "4f7988030a00d082fe445e00a2ac5dab502300ff1b80e8592dd569867b60ef74",
+        "completedAt": 1793409283904,
+        "attempts": 1,
+        "retryAt": null
+      },
+      {
+        "id": "5ae1efb2-e431-48ab-9dad-ed01bd3f1d8a",
+        "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+        "source": "mic:7e7d8d4f-7487-4392-82b8-e88a876365b6",
+        "sequence": 1,
+        "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/5ae1efb2-e431-48ab-9dad-ed01bd3f1d8a.f32",
+        "decodeStart": 0,
+        "startMs": 1000,
+        "seconds": 1,
+        "sampleRate": 16000,
+        "status": "failed",
+        "text": "",
+        "error": "Fictional decoder failure.",
+        "metrics": null,
+        "hash": "4f7988030a00d082fe445e00a2ac5dab502300ff1b80e8592dd569867b60ef74",
+        "completedAt": null,
+        "attempts": 3,
+        "retryAt": null
+      },
+      {
+        "id": "ceaf5992-345e-480d-8031-d933e6a634cf",
+        "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+        "source": "mic:7e7d8d4f-7487-4392-82b8-e88a876365b6",
+        "sequence": 2,
+        "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/ceaf5992-345e-480d-8031-d933e6a634cf.f32",
+        "decodeStart": 0,
+        "startMs": 2000,
+        "seconds": 1,
+        "sampleRate": 16000,
+        "status": "cancelled",
+        "text": "",
+        "error": "Fictional cancellation.",
+        "metrics": null,
+        "hash": "4f7988030a00d082fe445e00a2ac5dab502300ff1b80e8592dd569867b60ef74",
+        "completedAt": null,
+        "attempts": 0,
+        "retryAt": null
+      },
+      {
+        "id": "ba959d1d-f830-4606-9660-99879294514d",
+        "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+        "source": "mic:7e7d8d4f-7487-4392-82b8-e88a876365b6",
+        "sequence": 3,
+        "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/ba959d1d-f830-4606-9660-99879294514d.f32",
+        "decodeStart": 0,
+        "startMs": 3000,
+        "seconds": 1,
+        "sampleRate": 16000,
+        "status": "queued",
+        "text": "",
+        "error": "Fictional retry scheduled.",
+        "metrics": null,
+        "hash": "4f7988030a00d082fe445e00a2ac5dab502300ff1b80e8592dd569867b60ef74",
+        "completedAt": null,
+        "attempts": 1,
+        "retryAt": 4000000000000
+      }
+    ],
+    "d8ea55f0-7706-4334-9448-b4d4f137b77f": [
+      {
+        "id": "aa147b9f-b83d-4e53-bf2b-76c543fd4a11",
+        "meetingId": "d8ea55f0-7706-4334-9448-b4d4f137b77f",
+        "source": "mic:56b07c58-d10f-49f1-8182-a1b3f7ad9514",
+        "sequence": 0,
+        "path": "audio/d8ea55f0-7706-4334-9448-b4d4f137b77f/aa147b9f-b83d-4e53-bf2b-76c543fd4a11.f32",
+        "decodeStart": 0,
+        "startMs": 0,
+        "seconds": 1,
+        "sampleRate": 16000,
+        "status": "completed",
+        "text": "Mira will fold the fictional kite after the rehearsal.",
+        "error": null,
+        "metrics": "{\"text\":\"Mira will fold the fictional kite after the rehearsal.\",\"backend\":\"fictional\",\"computeMs\":1,\"decodeMs\":1,\"audioSeconds\":1,\"processRssBytes\":0,\"words\":[],\"timestampKind\":\"none\",\"retries\":0}",
+        "hash": "4f7988030a00d082fe445e00a2ac5dab502300ff1b80e8592dd569867b60ef74",
+        "completedAt": 1793409283923,
+        "attempts": 1,
+        "retryAt": null
+      }
+    ]
+  },
+  "segments": {
+    "88953d4a-2980-4d88-ab9a-b35d742187ad": [
+      {
+        "id": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0",
+        "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+        "chunkId": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98",
+        "source": "mic:7e7d8d4f-7487-4392-82b8-e88a876365b6",
+        "ord": 0,
+        "startMs": 0,
+        "endMs": 1000,
+        "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+        "originalText": "Must the club store aster been paper stars in the blue cupboard?",
+        "revision": 1,
+        "state": "final",
+        "timing": "chunk",
+        "edits": "[{\"start\":20,\"end\":30,\"from\":\"aster been\",\"to\":\"Asterbeam\"}]",
+        "correctionChecked": 1
+      }
+    ],
+    "d8ea55f0-7706-4334-9448-b4d4f137b77f": [
+      {
+        "id": "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0",
+        "meetingId": "d8ea55f0-7706-4334-9448-b4d4f137b77f",
+        "chunkId": "aa147b9f-b83d-4e53-bf2b-76c543fd4a11",
+        "source": "mic:56b07c58-d10f-49f1-8182-a1b3f7ad9514",
+        "ord": 0,
+        "startMs": 0,
+        "endMs": 1000,
+        "text": "Mira will fold the fictional kite after the rehearsal.",
+        "originalText": "Mira will fold the fictional kite after the rehearsal.",
+        "revision": 0,
+        "state": "final",
+        "timing": "chunk",
+        "edits": "[]",
+        "correctionChecked": 0
+      }
+    ]
+  },
+  "materials": {
+    "88953d4a-2980-4d88-ab9a-b35d742187ad": [
+      {
+        "id": "18d32456-292c-45bd-aa76-31a8a45d60d0",
+        "scope": "project:8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+        "path": "/private/tmp/hearalong-upgrade-v0.1.0-assets/lantern-handbook.md",
+        "kind": "file",
+        "label": "lantern-handbook.md"
+      }
+    ],
+    "d8ea55f0-7706-4334-9448-b4d4f137b77f": [
+      {
+        "id": "180a8bc0-a6d1-4a1e-a473-7cdfef78e8b2",
+        "scope": "meeting:d8ea55f0-7706-4334-9448-b4d4f137b77f",
+        "path": "/private/tmp/hearalong-upgrade-v0.1.0-assets/repo",
+        "kind": "folder",
+        "label": "repo"
+      }
+    ]
+  },
+  "glossaries": {
+    "88953d4a-2980-4d88-ab9a-b35d742187ad": {
+      "version": 1,
+      "origin": "user",
+      "builtAt": 1793409283897,
+      "terms": [
+        {
+          "term": "Asterbeam",
+          "spokenVariants": [
+            "aster been"
+          ]
+        }
+      ]
+    },
+    "d8ea55f0-7706-4334-9448-b4d4f137b77f": {
+      "version": 2,
+      "origin": "generated",
+      "builtAt": 1793409283898,
+      "terms": [
+        {
+          "term": "Kitewheel",
+          "spokenVariants": [
+            "kite wheel"
+          ]
+        }
+      ],
+      "model": "fictional-atlas/main"
+    }
+  },
+  "sourceSettings": {
+    "88953d4a-2980-4d88-ab9a-b35d742187ad": {},
+    "d8ea55f0-7706-4334-9448-b4d4f137b77f": {
+      "mic:56b07c58-d10f-49f1-8182-a1b3f7ad9514": {
+        "kind": "mic",
+        "label": "Fictional microphone",
+        "echoCancellation": false,
+        "roomMode": true
+      }
+    }
+  },
+  "frame": {
+    "id": "52cebdc2-c8e4-4bca-a12b-9bac0180ce1c",
+    "meetingId": "d8ea55f0-7706-4334-9448-b4d4f137b77f",
+    "source": "mic:56b07c58-d10f-49f1-8182-a1b3f7ad9514",
+    "sequence": 0,
+    "path": "audio/d8ea55f0-7706-4334-9448-b4d4f137b77f/52cebdc2-c8e4-4bca-a12b-9bac0180ce1c.frame.f32",
+    "startMs": 0,
+    "samples": 16000,
+    "hash": "4f7988030a00d082fe445e00a2ac5dab502300ff1b80e8592dd569867b60ef74",
+    "windowChunkId": null,
+    "savedAt": 1793409283920,
+    "captureWallMs": 1700000000000,
+    "captureEndWallMs": 1700000001000
+  },
+  "notes": [
+    {
+      "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+      "title": "Fictional lantern inventory — revised notes",
+      "createdAt": 1793409283927,
+      "model": "fictional-atlas/main",
+      "input": {
+        "inputHash": "4b2879a6f892373f4cabde3606d3b73d596700be0cc055f733608f4eb4b2a911",
+        "coverage": {
+          "untilMs": 1000,
+          "chunks": 4,
+          "pendingChunks": 1,
+          "gaps": [
+            {
+              "startMs": 1000,
+              "endMs": 2000,
+              "reason": "failed"
+            }
+          ],
+          "uncorrected": 0
+        },
+        "glossaryVersion": 1,
+        "segments": 1,
+        "takenAt": 1793409283924
+      },
+      "notes": {
+        "suggestedTitle": "Fictional lantern inventory",
+        "summary": [
+          {
+            "section": "summary",
+            "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+            "cites": [
+              "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0"
+            ],
+            "startMs": 0,
+            "quotes": [
+              {
+                "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+                "quoteIn": "corrected",
+                "cites": [
+                  "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0"
+                ]
+              }
+            ],
+            "quote": "Must the club store Asterbeam paper stars in the blue cupboard?",
+            "quoteIn": "corrected"
+          }
+        ],
+        "decisions": [],
+        "actions": [],
+        "openQuestions": [],
+        "otherMatters": [],
+        "needsReview": [],
+        "otherTalk": []
+      },
+      "sources": {
+        "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0": {
+          "startMs": 0,
+          "endMs": 1000,
+          "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+          "originalText": "Must the club store aster been paper stars in the blue cupboard?",
+          "revision": 1
+        }
+      },
+      "dropped": [],
+      "version": 2
+    },
+    {
+      "meetingId": "d8ea55f0-7706-4334-9448-b4d4f137b77f",
+      "title": "Fictional kite rehearsal — revised notes",
+      "createdAt": 1793409283928,
+      "model": "fictional-atlas/main",
+      "input": {
+        "inputHash": "cea90e8958a3cc47505303d335736f1c56e6d32ae5a219a1cf3930aacea3a777",
+        "coverage": {
+          "untilMs": 1000,
+          "chunks": 1,
+          "pendingChunks": 0,
+          "gaps": [],
+          "uncorrected": 1
+        },
+        "glossaryVersion": 2,
+        "segments": 1,
+        "takenAt": 1793409283927
+      },
+      "notes": {
+        "suggestedTitle": "Fictional kite rehearsal",
+        "summary": [
+          {
+            "section": "summary",
+            "text": "Mira will fold the fictional kite after the rehearsal.",
+            "cites": [
+              "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0"
+            ],
+            "startMs": 0,
+            "quotes": [
+              {
+                "text": "Mira will fold the fictional kite after the rehearsal.",
+                "quoteIn": "corrected",
+                "cites": [
+                  "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0"
+                ]
+              }
+            ],
+            "quote": "Mira will fold the fictional kite after the rehearsal.",
+            "quoteIn": "corrected"
+          }
+        ],
+        "decisions": [],
+        "actions": [],
+        "openQuestions": [],
+        "otherMatters": [],
+        "needsReview": [],
+        "otherTalk": []
+      },
+      "sources": {
+        "aa147b9f-b83d-4e53-bf2b-76c543fd4a11:0": {
+          "startMs": 0,
+          "endMs": 1000,
+          "text": "Mira will fold the fictional kite after the rehearsal.",
+          "originalText": "Mira will fold the fictional kite after the rehearsal.",
+          "revision": 0
+        }
+      },
+      "dropped": [],
+      "version": 2
+    }
+  ],
+  "board": {
+    "version": 3,
+    "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+    "cards": [
+      {
+        "id": "044179c8-05c3-46b0-8034-15ebb34c513c",
+        "type": "question",
+        "text": "Must Asterbeam stars stay in the blue cupboard?",
+        "confidence": "high",
+        "materials": true,
+        "nonProject": false,
+        "firstMs": 0,
+        "createdAt": 1793409283931,
+        "occurrences": [
+          {
+            "lines": [
+              {
+                "id": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0",
+                "revision": 1,
+                "startMs": 0,
+                "endMs": 1000,
+                "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+                "originalText": "Must the club store aster been paper stars in the blue cupboard?"
+              }
+            ],
+            "quote": "Must the club store Asterbeam paper stars in the blue cupboard?",
+            "matched": "corrected",
+            "scanId": "eaeaf84c-d1cd-4cd2-952e-c67860c5c7ef",
+            "publishedAt": 1793409283931,
+            "glossaryVersion": 1,
+            "nonProject": false
+          }
+        ],
+        "dismissed": false,
+        "attempts": [],
+        "auto": {
+          "state": "reserved",
+          "key": "337b2eb3b1817b9f"
+        }
+      },
+      {
+        "id": "890a06d2-ecd6-4b00-81c5-11cc744ce103",
+        "type": "decision",
+        "text": "Discuss the fictional cupboard location",
+        "confidence": "medium",
+        "materials": false,
+        "nonProject": false,
+        "firstMs": 0,
+        "createdAt": 1793409283931,
+        "occurrences": [
+          {
+            "lines": [
+              {
+                "id": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0",
+                "revision": 1,
+                "startMs": 0,
+                "endMs": 1000,
+                "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+                "originalText": "Must the club store aster been paper stars in the blue cupboard?"
+              }
+            ],
+            "quote": "Must the club store Asterbeam paper stars in the blue cupboard?",
+            "matched": "corrected",
+            "scanId": "eaeaf84c-d1cd-4cd2-952e-c67860c5c7ef",
+            "publishedAt": 1793409283931,
+            "glossaryVersion": 1,
+            "nonProject": false
+          }
+        ],
+        "dismissed": false,
+        "attempts": []
+      }
+    ],
+    "covered": {
+      "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0": 1
+    },
+    "autoUsed": 1,
+    "scans": [
+      {
+        "id": "eaeaf84c-d1cd-4cd2-952e-c67860c5c7ef",
+        "at": 1793409283929,
+        "ms": 1,
+        "window": [
+          0,
+          1000
+        ],
+        "lines": 1,
+        "raw": 2,
+        "kept": 2,
+        "merged": 0,
+        "dropped": [],
+        "usages": [],
+        "attempts": 1,
+        "model": null
+      }
+    ],
+    "lastScanAt": 1793409283931,
+    "preset": "lecture"
+  },
+  "actions": [
+    {
+      "id": "fb92c984-f5a6-4eec-a03a-ea3535f61503",
+      "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+      "action": "answer",
+      "prompt": "Must Asterbeam stars stay in the blue cupboard?",
+      "parentId": null,
+      "retryOf": null,
+      "state": "failed",
+      "origin": "auto",
+      "cardId": "044179c8-05c3-46b0-8034-15ebb34c513c",
+      "createdAt": 1793409283933,
+      "startedAt": 1793409283933,
+      "finishedAt": 1793409283935,
+      "error": "Fictional answer service unavailable.",
+      "context": {
+        "title": "Fictional lantern inventory",
+        "capturedAt": 1793409283933,
+        "selection": {
+          "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+          "segmentIds": [
+            "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0"
+          ],
+          "startMs": 0,
+          "endMs": 1000
+        },
+        "lines": [
+          {
+            "id": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0",
+            "revision": 1,
+            "startMs": 0,
+            "endMs": 1000,
+            "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+            "originalText": "Must the club store aster been paper stars in the blue cupboard?",
+            "selected": true
+          }
+        ],
+        "contextUntilMs": 1000,
+        "gapsNear": [
+          {
+            "startMs": 1000,
+            "endMs": 2000,
+            "reason": "failed"
+          }
+        ],
+        "pendingNear": 1,
+        "glossaryVersion": 1,
+        "terms": [
+          "Asterbeam"
+        ],
+        "roots": [
+          {
+            "id": "18d32456-292c-45bd-aa76-31a8a45d60d0",
+            "scope": "project:8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+            "path": "/private/tmp/hearalong-upgrade-v0.1.0-assets/lantern-handbook.md",
+            "kind": "file",
+            "label": "lantern-handbook.md"
+          }
+        ]
+      },
+      "draft": "",
+      "status": [],
+      "result": null,
+      "queuePosition": null
+    }
+  ],
+  "plans": {
+    "schema": 1,
+    "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+    "version": 1,
+    "base": null,
+    "publishedAt": 1793409283950,
+    "run": "6870c1e9-9e90-4037-aabe-4b1963abca2b",
+    "kind": "plan",
+    "plan": null,
+    "status": "plans",
+    "deferred": [],
+    "notCovered": [],
+    "dropped": [],
+    "review": [],
+    "warnings": [
+      "1 audio chunk(s) were still being transcribed when the notes were written.",
+      "Missing speech: 00:01–00:02."
+    ],
+    "plans": [
+      {
+        "id": "p1",
+        "origin": {
+          "run": "6870c1e9-9e90-4037-aabe-4b1963abca2b",
+          "version": 1
+        },
+        "originPins": {
+          "notesVersion": 2,
+          "notesWarnings": [
+            "1 audio chunk(s) were still being transcribed when the notes were written.",
+            "Missing speech: 00:01–00:02."
+          ],
+          "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+          "memoryStamp": "3b7151df27e5995f386ddff4dc947f74",
+          "manifest": "b910eb534ec561a2f271b4bd61de7147781c275d73ae536b0b48a60ebdacd13c",
+          "materials": {
+            "roots": [
+              {
+                "ref": "R1",
+                "id": "18d32456-292c-45bd-aa76-31a8a45d60d0",
+                "path": "/private/tmp/hearalong-upgrade-v0.1.0-assets/lantern-handbook.md",
+                "kind": "file"
+              }
+            ],
+            "files": {
+              "R1/lantern-handbook.md": "68:1793409283635.5417"
+            },
+            "complete": true,
+            "digest": "b910eb534ec561a2f271b4bd61de7147781c275d73ae536b0b48a60ebdacd13c"
+          }
+        },
+        "label": "Paper star storage",
+        "answerLine": null,
+        "stepLine": "Label the blue cupboard",
+        "rowFlags": [],
+        "question": "Where should the paper stars go?",
+        "from": [
+          "N1",
+          "S1"
+        ],
+        "fromItems": [
+          {
+            "ref": "N1",
+            "section": "summary",
+            "text": "Must the club store Asterbeam paper stars in the blue cupboard?"
+          },
+          {
+            "ref": "S1",
+            "section": "transcript",
+            "text": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0"
+          }
+        ],
+        "owner": null,
+        "ownerClaimed": null,
+        "stateNow": [
+          "6870c1e9-9e90-4037-aabe-4b1963abca2b:k1"
+        ],
+        "checks": [],
+        "answer": null,
+        "steps": [
+          {
+            "id": "p1.s1",
+            "kind": "next",
+            "if": null,
+            "text": "Label the blue cupboard for paper stars",
+            "basis": [
+              "6870c1e9-9e90-4037-aabe-4b1963abca2b:k1"
+            ],
+            "check": "checked"
+          }
+        ],
+        "waitingOn": [],
+        "decideAfter": [],
+        "changeIf": "The cupboard is full",
+        "further": null,
+        "review": []
+      }
+    ],
+    "evidence": {
+      "6870c1e9-9e90-4037-aabe-4b1963abca2b:k1": {
+        "id": "6870c1e9-9e90-4037-aabe-4b1963abca2b:k1",
+        "run": "6870c1e9-9e90-4037-aabe-4b1963abca2b",
+        "local": "k1",
+        "kind": "state",
+        "plan": "p1",
+        "text": "The meeting asks about the blue cupboard",
+        "source": {
+          "type": "transcript",
+          "ref": "S1",
+          "segmentId": "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0",
+          "startMs": 0,
+          "quote": "Must the club store Asterbeam paper stars in the blue cupboard?"
+        },
+        "pythonRun": null,
+        "evidence": "line:38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0",
+        "result": {
+          "ok": true,
+          "excerpt": "Must the club store Asterbeam paper stars in the blue cupboard?"
+        }
+      }
+    }
+  },
+  "runs": [
+    {
+      "id": "6870c1e9-9e90-4037-aabe-4b1963abca2b",
+      "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+      "kind": "plan",
+      "key": "plan",
+      "state": "done",
+      "createdAt": 1793409283946,
+      "startedAt": 1793409283947,
+      "finishedAt": 1793409283951,
+      "error": null,
+      "stopped": null,
+      "limitMs": 300000,
+      "runLimitMs": 900000,
+      "worker": null,
+      "data": {
+        "origin": "manual",
+        "opId": "fictional-plan-op",
+        "base": null,
+        "plan": null,
+        "notesVersion": 2
+      },
+      "result": {
+        "outcome": "published",
+        "version": 1
+      },
+      "workers": [],
+      "waiting": null
+    }
+  ],
+  "memory": [
+    {
+      "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+      "id": "D-1",
+      "type": "decision",
+      "status": "in force",
+      "text": "Use the blue cupboard",
+      "owner": null,
+      "fields": {},
+      "confirmed": true,
+      "mergedInto": null,
+      "version": 1,
+      "createdAt": 1793409283923,
+      "updatedAt": 1793409283923
+    },
+    {
+      "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+      "id": "Q-1",
+      "type": "question",
+      "status": "open",
+      "text": "Which shelf holds the spare lantern?",
+      "owner": null,
+      "fields": {},
+      "confirmed": true,
+      "mergedInto": null,
+      "version": 1,
+      "createdAt": 1793409283923,
+      "updatedAt": 1793409283923
+    },
+    {
+      "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+      "id": "T-1",
+      "type": "todo",
+      "status": "done",
+      "text": "Count the paper stars",
+      "owner": "Mira",
+      "fields": {
+        "due": "2030-02-03"
+      },
+      "confirmed": true,
+      "mergedInto": null,
+      "version": 2,
+      "createdAt": 1793409283923,
+      "updatedAt": 1793409283924
+    },
+    {
+      "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+      "id": "T-2",
+      "type": "todo",
+      "status": "open",
+      "text": "Label the blue cupboard for paper stars",
+      "owner": null,
+      "fields": {},
+      "confirmed": true,
+      "mergedInto": null,
+      "version": 1,
+      "createdAt": 1793409283958,
+      "updatedAt": 1793409283958
+    }
+  ],
+  "timelines": {
+    "D-1": [
+      {
+        "id": "ba5a0317-4ded-4758-a5f0-27897fda8c69",
+        "batch": "30eac488-2025-4abd-8bbd-4c49fb9412fe",
+        "seq": 1,
+        "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+        "item": "D-1",
+        "op": "create",
+        "before": null,
+        "after": {
+          "id": "D-1",
+          "type": "decision",
+          "status": "in force",
+          "text": "Use the blue cupboard",
+          "owner": null,
+          "fields": {},
+          "confirmed": true,
+          "mergedInto": null,
+          "version": 1,
+          "createdAt": 1793409283923,
+          "updatedAt": 1793409283923
+        },
+        "source": {
+          "kind": "app"
+        },
+        "confirmed": false,
+        "ref": null,
+        "actor": "user",
+        "at": 1793409283923,
+        "undone": false
+      }
+    ],
+    "Q-1": [
+      {
+        "id": "b34454f3-a4dc-4d5c-bf91-607550a4018a",
+        "batch": "30eac488-2025-4abd-8bbd-4c49fb9412fe",
+        "seq": 2,
+        "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+        "item": "Q-1",
+        "op": "create",
+        "before": null,
+        "after": {
+          "id": "Q-1",
+          "type": "question",
+          "status": "open",
+          "text": "Which shelf holds the spare lantern?",
+          "owner": null,
+          "fields": {},
+          "confirmed": true,
+          "mergedInto": null,
+          "version": 1,
+          "createdAt": 1793409283923,
+          "updatedAt": 1793409283923
+        },
+        "source": {
+          "kind": "chat",
+          "text": "Fictional planning question."
+        },
+        "confirmed": false,
+        "ref": null,
+        "actor": "user",
+        "at": 1793409283923,
+        "undone": false
+      }
+    ],
+    "T-1": [
+      {
+        "id": "9b2b171b-2599-47f8-85e1-3bc552cfea39",
+        "batch": "30eac488-2025-4abd-8bbd-4c49fb9412fe",
+        "seq": 0,
+        "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+        "item": "T-1",
+        "op": "create",
+        "before": null,
+        "after": {
+          "id": "T-1",
+          "type": "todo",
+          "status": "open",
+          "text": "Count the paper stars",
+          "owner": "Mira",
+          "fields": {
+            "due": "2030-02-03"
+          },
+          "confirmed": true,
+          "mergedInto": null,
+          "version": 1,
+          "createdAt": 1793409283923,
+          "updatedAt": 1793409283923
+        },
+        "source": {
+          "kind": "meeting",
+          "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad"
+        },
+        "confirmed": false,
+        "ref": null,
+        "actor": "user",
+        "at": 1793409283923,
+        "undone": false
+      },
+      {
+        "id": "c50fdf37-f8e4-4213-9ee1-4ebca34e55f1",
+        "batch": "e429ce25-2741-4013-a27f-f27ca55e4d75",
+        "seq": 0,
+        "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+        "item": "T-1",
+        "op": "status",
+        "before": {
+          "status": "open"
+        },
+        "after": {
+          "status": "done"
+        },
+        "source": {
+          "kind": "app"
+        },
+        "confirmed": false,
+        "ref": null,
+        "actor": "user",
+        "at": 1793409283924,
+        "undone": false
+      }
+    ],
+    "T-2": [
+      {
+        "id": "207858fb-c9f9-4b8e-ba98-d688a9fa87ab",
+        "batch": "16affe17-112a-406a-b433-6315ffa629b5",
+        "seq": 0,
+        "project": "8fc14498-6134-4b7b-a2de-3e98ab7842b3",
+        "item": "T-2",
+        "op": "create",
+        "before": null,
+        "after": {
+          "id": "T-2",
+          "type": "todo",
+          "status": "open",
+          "text": "Label the blue cupboard for paper stars",
+          "owner": null,
+          "fields": {},
+          "confirmed": true,
+          "mergedInto": null,
+          "version": 1,
+          "createdAt": 1793409283958,
+          "updatedAt": 1793409283958
+        },
+        "source": {
+          "kind": "plan",
+          "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+          "run": "6870c1e9-9e90-4037-aabe-4b1963abca2b",
+          "version": 1,
+          "step": "p1.s1",
+          "payloadHash": "fe18801d607faa07c66fa50e29c35f913e8b1e643165e3e066a6b90ed5ccf579"
+        },
+        "confirmed": false,
+        "ref": null,
+        "actor": "user",
+        "at": 1793409283958,
+        "undone": false
+      }
+    ]
+  },
+  "brief": {
+    "version": 2,
+    "text": "Fictional club: use the blue cupboard after counting stars.",
+    "actor": "user",
+    "source": {
+      "kind": "app"
+    },
+    "basedOn": 1,
+    "at": 1793409283924
+  },
+  "briefVersions": [
+    {
+      "version": 2,
+      "actor": "user",
+      "text": "Fictional club: use the blue cupboard after counting stars.",
+      "at": 1793409283924
+    },
+    {
+      "version": 1,
+      "actor": "user",
+      "text": "Fictional club inventory before rehearsal.",
+      "at": 1793409283924
+    }
+  ]
+}
