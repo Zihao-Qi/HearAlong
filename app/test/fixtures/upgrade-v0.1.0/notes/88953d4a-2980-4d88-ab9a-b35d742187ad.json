@@ -1,0 +1,66 @@
+{
+  "meetingId": "88953d4a-2980-4d88-ab9a-b35d742187ad",
+  "title": "Fictional lantern inventory — revised notes",
+  "createdAt": 1793409283927,
+  "model": "fictional-atlas/main",
+  "input": {
+    "inputHash": "4b2879a6f892373f4cabde3606d3b73d596700be0cc055f733608f4eb4b2a911",
+    "coverage": {
+      "untilMs": 1000,
+      "chunks": 4,
+      "pendingChunks": 1,
+      "gaps": [
+        {
+          "startMs": 1000,
+          "endMs": 2000,
+          "reason": "failed"
+        }
+      ],
+      "uncorrected": 0
+    },
+    "glossaryVersion": 1,
+    "segments": 1,
+    "takenAt": 1793409283924
+  },
+  "notes": {
+    "suggestedTitle": "Fictional lantern inventory",
+    "summary": [
+      {
+        "section": "summary",
+        "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+        "cites": [
+          "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0"
+        ],
+        "startMs": 0,
+        "quotes": [
+          {
+            "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+            "quoteIn": "corrected",
+            "cites": [
+              "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0"
+            ]
+          }
+        ],
+        "quote": "Must the club store Asterbeam paper stars in the blue cupboard?",
+        "quoteIn": "corrected"
+      }
+    ],
+    "decisions": [],
+    "actions": [],
+    "openQuestions": [],
+    "otherMatters": [],
+    "needsReview": [],
+    "otherTalk": []
+  },
+  "sources": {
+    "38c6a4a7-79d6-4c09-9aef-e87db1a02c98:0": {
+      "startMs": 0,
+      "endMs": 1000,
+      "text": "Must the club store Asterbeam paper stars in the blue cupboard?",
+      "originalText": "Must the club store aster been paper stars in the blue cupboard?",
+      "revision": 1
+    }
+  },
+  "dropped": [],
+  "version": 2
+}

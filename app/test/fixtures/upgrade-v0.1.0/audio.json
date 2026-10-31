@@ -1,0 +1,26 @@
+{
+  "format": "float32 zeros",
+  "sampleRate": 16000,
+  "files": [
+    {
+      "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/38c6a4a7-79d6-4c09-9aef-e87db1a02c98.f32",
+      "bytes": 64000
+    },
+    {
+      "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/5ae1efb2-e431-48ab-9dad-ed01bd3f1d8a.f32",
+      "bytes": 64000
+    },
+    {
+      "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/ba959d1d-f830-4606-9660-99879294514d.f32",
+      "bytes": 64000
+    },
+    {
+      "path": "audio/88953d4a-2980-4d88-ab9a-b35d742187ad/ceaf5992-345e-480d-8031-d933e6a634cf.f32",
+      "bytes": 64000
+    },
+    {
+      "path": "audio/d8ea55f0-7706-4334-9448-b4d4f137b77f/aa147b9f-b83d-4e53-bf2b-76c543fd4a11.f32",
+      "bytes": 64000
+    }
+  ]
+}

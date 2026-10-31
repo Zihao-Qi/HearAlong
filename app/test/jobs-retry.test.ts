@@ -133,6 +133,32 @@ test('restart preserves a future retry and startup kick wakes it when due', asyn
   } finally { await f.close(); }
 });
 
+test('a persisted retry beyond the timer limit wakes in bounded steps without running early', async () => {
+  const f = await fixture(); let calls = 0;
+  const maxDelay = 2_147_483_647;
+  const due = f.time.now + 2 * maxDelay + 123;
+  try {
+    f.store.startChunk(f.id);
+    f.store.failChunk(f.id, 'Fictional deferred retry.', due);
+    await f.reopen();
+    const jobs = f.manager({ async transcribe() { calls++; return result; }, close() {} });
+    jobs.kick(); await jobs.wait();
+    for (let i = 0; i < 2; i++) {
+      assert.equal(f.time.timers.size, 1);
+      assert.equal([...f.time.timers.values()][0].at, f.time.now + maxDelay);
+      assert.equal([...f.time.timers.values()][0].unref, true);
+      f.time.advance(maxDelay); await jobs.wait();
+      assert.equal(calls, 0);
+      assert.equal(f.store.chunk(f.id)?.retryAt, due, 'clamping a wake must not change the saved retry');
+    }
+    f.time.advance(122); jobs.kick(); await jobs.wait(); assert.equal(calls, 0);
+    f.time.advance(1); await jobs.wait();
+    assert.equal(calls, 1);
+    assert.equal(f.store.chunk(f.id)?.status, 'completed');
+    assert.equal(f.time.timers.size, 0);
+  } finally { await f.close(); }
+});
+
 test('an interrupted third attempt cannot become a fourth attempt after restart', async () => {
   const f = await fixture(); let calls = 0;
   let interrupt: (() => void) | undefined;
