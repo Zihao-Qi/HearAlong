@@ -28,7 +28,7 @@ async function fixture(t: any) {
   return { root, home, data, cwd, material, key, env, node };
 }
 
-test('H1: sandboxed stage 1 cannot plant project extensions or context files', async t => {
+test('H1: calculation sandbox cannot plant project extensions or context files', async t => {
   const f = await fixture(t);
   const { stdout } = await f.node(`const fs=require('node:fs'), out={}; for(const path of ['.pi/extensions/canary.ts','.agents/skills/a.md','AGENTS.md','CLAUDE.md']) {try{fs.mkdirSync(require('node:path').dirname(path),{recursive:true});fs.writeFileSync(path,'fictional planted resource');out[path]='allowed';}catch(e){out[path]='denied';}} console.log(JSON.stringify(out));`);
   assert.deepEqual(JSON.parse(stdout), { '.pi/extensions/canary.ts': 'denied', '.agents/skills/a.md': 'denied', 'AGENTS.md': 'denied', 'CLAUDE.md': 'denied' });
@@ -68,10 +68,10 @@ test('H2: an attempted symlink swap between authorization and open cannot expose
   const f = await fixture(t), folder = join(f.cwd, 'd'), file = join(folder, 'fictional-key');
   await mkdir(folder);
   assert.equal(pathDecision('read', { path: file }, f.cwd, readRoots([f.cwd])), undefined);
-  const { stdout } = await f.node(`const fs=require('node:fs'); fs.rmdirSync('d'); try { fs.symlinkSync(${JSON.stringify(join(f.home, '.ssh'))},'d'); console.log('planted'); } catch(e) { console.log(e.code); }`);
+  const { stdout } = await f.node(`const fs=require('node:fs'),out={};try{fs.rmdirSync('d');out.remove='allowed';}catch(e){out.remove=e.code;}try{fs.symlinkSync(${JSON.stringify(join(f.home, '.ssh'))},'d');out.swap='planted';}catch(e){out.swap=e.code;}console.log(JSON.stringify(out));`);
   const text = await readFile(file, 'utf8').catch(() => 'not readable');
   assert.notEqual(text, 'FICTIONAL_SSH_CANARY');
-  assert.equal(stdout.trim(), 'EPERM');
+  assert.deepEqual(JSON.parse(stdout), { remove: 'EPERM', swap: 'EPERM' });
 });
 
 test('H2: concurrent checked reads remain safe during repeated sandboxed swap attempts; calculate is sequential', async t => {
@@ -124,7 +124,7 @@ test('M3/S4: broad roots do not expose data, Pi credentials, hidden/credential c
   assert.equal(pathDecision('read', { path: join(f.cwd, 'output.txt') }, f.cwd, roots), undefined);
 });
 
-test('M3: an attached sibling scratch directory is not the task snapshot exception', async t => {
+test('M3: calculation sandbox cannot read an attached sibling scratch directory', async t => {
   const f = await fixture(t), other = join(f.data, 'scratch', 'other-job');
   await mkdir(other); await writeFile(join(other, 'output.txt'), 'FICTIONAL_OTHER_TASK');
   f.env[READ_SCOPE_ENV] = JSON.stringify(readRoots([other, f.cwd]));

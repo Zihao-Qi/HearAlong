@@ -79,13 +79,13 @@ test('N3: ordinary space/parenthesis names still build and run a profile', async
   assert.equal((await exec(command, args, { cwd: f.cwd, env })).stdout.trim(), '42');
 });
 
-test('N4: Seatbelt snapshot allow does not reopen hidden or credential-named contents', async t => {
+test('N4: calculation Seatbelt denies ordinary, hidden and credential-named snapshot contents', async t => {
   const f = await fixture(t);
   for (const [name, text] of [['brief.md', 'fictional approved brief'], ['api-token.md', 'FICTIONAL_TOKEN'], ['.env', 'FICTIONAL_ENV']]) await writeFile(join(f.snapshot, name), text);
   const code = `const fs=require('node:fs'), out={}; for(const name of ['brief.md','api-token.md','.env']) {try{out[name]=fs.readFileSync(${JSON.stringify(f.snapshot)}+'/'+name,'utf8');}catch(e){out[name]=e.code;}} console.log(JSON.stringify(out));`;
   const [command, args] = sandboxed(process.execPath, ['-e', code], f.cwd, f.env);
   const result = await exec(command, args, { cwd: f.cwd, env: f.env });
-  assert.deepEqual(JSON.parse(result.stdout), { 'brief.md': 'fictional approved brief', 'api-token.md': 'EPERM', '.env': 'EPERM' });
+  assert.deepEqual(JSON.parse(result.stdout), { 'brief.md': 'EPERM', 'api-token.md': 'EPERM', '.env': 'EPERM' });
 });
 
 test('trusted calculation runtime reads survive an overlapping material exclusion without exposing sibling packages', async t => {

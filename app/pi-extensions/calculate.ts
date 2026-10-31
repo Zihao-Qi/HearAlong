@@ -104,7 +104,7 @@ export default function calculate(pi: ExtensionAPI) {
       const nodeArgs = ['--permission', '--no-addons', '--disable-sigusr1', `--max-old-space-size=${HEAP_MB}`, `--allow-fs-read=${RUNNER}`,
         ...libraries.map(root => `--allow-fs-read=${root}`), RUNNER, entry];
       // Policy construction uses trusted parent paths, but none of that environment reaches the child.
-      const [command, args] = sandboxed(process.execPath, nodeArgs, cwd, process.env, [RUNNER, ...libraries], 'calculation');
+      const [command, args] = sandboxed(process.execPath, nodeArgs, cwd, process.env, [RUNNER, ...libraries]);
       const stdout = capped(), stderr = capped();
       type Outcome = { code: number | null; signal: string | null; timedOut: boolean; error?: string };
       let gated: Gated | null = null, unrecorded: Outcome | null = null;
