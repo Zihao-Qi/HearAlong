@@ -9,10 +9,6 @@ import { model, gguf } from './helpers/gguf.ts';
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
-async function until(condition: () => boolean | Promise<boolean>) {
-  const deadline = Date.now() + 5000;
-  while (!await condition()) { if (Date.now() > deadline) throw new Error('Condition did not settle'); await new Promise(r => setTimeout(r, 5)); }
-}
 async function fixture(t: TestContext) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'setup-choice-queue-')));
   const a = await model(join(directory, 'models/a.gguf'), { name: 'Example A' });

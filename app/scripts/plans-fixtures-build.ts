@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Cooldowns } from '../src/quota.ts';
-import { Explorations, type ExplorationJob } from '../src/explorations.ts';
+import { Explorations } from '../src/explorations.ts';
 import { Memory } from '../src/memory.ts';
 import { MeetingStore } from '../src/store.ts';
 import type { ToolResult } from '../src/pi-task.ts';

@@ -21,7 +21,6 @@ async function fixture(t: any, mode: 'range' | 'ignore' | 'drop' | 'wrong' | '40
     requests++; ranges.push(req.headers.range);
     if (mode === '404' || mode === '500') { res.writeHead(Number(mode)).end('Unavailable'); return; }
     let offset = mode === 'ignore' ? 0 : Number(/^bytes=(\d+)-$/.exec(req.headers.range ?? '')?.[1] ?? 0);
-    const start = offset;
     res.writeHead(req.headers.range && mode !== 'ignore' ? 206 : 200, {
       'Content-Length': content.length - offset,
       ...(req.headers.range && mode !== 'ignore' ? { 'Content-Range': `bytes ${offset}-${content.length - 1}/${content.length}` } : {}),

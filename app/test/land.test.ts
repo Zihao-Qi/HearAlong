@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { homedir, userInfo } from 'node:os';
+import { userInfo } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
 import { prefix, processes, fixture, checkCode, GENERIC_ACCOUNTS } from './helpers/land.ts';

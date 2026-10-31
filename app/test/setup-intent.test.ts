@@ -86,7 +86,7 @@ test('download intent survives pause and resume(false) when no newer choice inte
 test('intent 3: rejected save preserves intent but a later load failure reports and rolls back', async t => {
   const { setup, a, b, c, id, saveHook } = await fixture(t);
   const first = deferred(), failSecond = deferred(); let attempts = 0;
-  setup.attachRuntime({ recording: () => false, applied() {}, kick() {}, cancelSwitch() { first.resolve(); }, switchTo: async (_path, apply) => {
+  setup.attachRuntime({ recording: () => false, applied() {}, kick() {}, cancelSwitch() { first.resolve(); }, switchTo: async (_path, _apply) => {
     if (++attempts === 1) { await first.promise; return false; }
     await failSecond.promise; throw new Error('Example B failed on retry');
   } });
