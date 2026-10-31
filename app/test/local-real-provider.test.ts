@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type RequestListener } from 'node:http';
+import { createAsyncServer, type AsyncRequestListener } from './helpers/http.ts';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { localProvider } from '../pi-extensions/local-models.ts';
 import { loadedContexts } from '../pi-extensions/local-context.ts';
@@ -9,8 +9,8 @@ import { checkNotesRun } from '../src/notes.ts';
 import type { PiTaskResult } from '../src/pi-task.ts';
 
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function serve(t: any, handler: RequestListener) {
-  const server = createServer(handler);
+async function serve(t: any, handler: AsyncRequestListener) {
+  const server = createAsyncServer(t, handler);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = server.address(); assert.ok(address && typeof address !== 'string');

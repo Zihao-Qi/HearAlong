@@ -72,7 +72,10 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  page.on('dialog', dialog => { void dialog.accept(); });
+  page.on('dialog', dialog => {
+    // The page cannot proceed until the event handler accepts its dialog; Playwright does not await listeners.
+    dialog.accept().catch(error => errors.push(`Dialog acceptance failed: ${String(error)}`));
+  });
   // The meeting menu (top bar): a new meeting is named in place; a meeting is picked from the list.
   const newMeeting = async (title: string) => {
     await page.locator('#meeting-button').click();

@@ -14,7 +14,10 @@ await mkdir(dirname(session), { recursive: true });
 if (stage === -1) await writeFile(session, JSON.stringify({ original: true, configPath }));
 else if (!JSON.parse(await readFile(session, 'utf8')).original) throw new Error('not a copied session');
 // Publish readiness only after SIGTERM is handled, not merely after a process exists.
-process.on('SIGTERM', () => { void writeFile(join(dirname(configPath), `${name}.aborted`), 'aborted').then(() => process.exit(0)); });
+process.on('SIGTERM', () => {
+  // The signal callback cannot wait; publish the cancellation marker before this fixture exits.
+  writeFile(join(dirname(configPath), `${name}.aborted`), 'aborted').then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1); });
+});
 await writeFile(join(dirname(configPath), `${name}.json`), JSON.stringify({ args, pid: process.pid, env: { CALCULATE_MS: process.env.CALCULATE_MS, CALCULATE_MAX_RUNS: process.env.CALCULATE_MAX_RUNS, CALCULATE_USED: process.env.CALCULATE_USED }, recorded: existsSync(join(process.env.MEETING_PROCESS_DIR!, `pi-${process.pid}.json`)) }));
 const event = (e: unknown) => process.stdout.write(JSON.stringify(e) + '\n');
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));

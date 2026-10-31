@@ -22,9 +22,13 @@ if (process.argv[2] === '--server') {
     SELECT ?,meetingId,?,?,path,0,?,seconds,sampleRate,'completed',hash FROM chunks WHERE id=?`);
   for (const source of ['mic:fixture', 'tab:fixture']) for (let i = source === 'mic:fixture' ? 1 : 0; i < 360; i++) insert.run(randomUUID(), source, i, i * 20000, c.id);
   const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
-  process.on('message', async (message: string) => {
+  const handleMessage = async (message: string) => {
     if (message === 'report') process.send?.({ type: 'report', frames: app.store.db.prepare('SELECT COUNT(*) AS n FROM frames').get(), eventLoopMs: { mean: loop.mean / 1e6, max: loop.max / 1e6, p99: loop.percentile(99) / 1e6 } });
     if (message === 'close') { loop.disable(); await app.close(); await rm(directory, { recursive: true, force: true }); process.disconnect?.(); }
+  };
+  process.on('message', (message: string) => {
+    // IPC cannot wait for close; the child exits unsuccessfully if cleanup fails.
+    handleMessage(message).catch(error => { console.error(error); process.exit(1); });
   });
   process.send?.({ type: 'ready', url: app.url, meetingId: m.id });
 } else {

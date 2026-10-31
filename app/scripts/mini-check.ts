@@ -115,7 +115,12 @@ async function run() {
     return reply.miniOpensItself === on && await page.locator('#mini-by-itself').isChecked() === on;
   };
   step('check helper visibility and mini opening settings');
-  await page.evaluate(() => { (window as unknown as { helper: unknown }).helper = setInterval(() => void fetch('/api/live/window'), 500); });
+  await page.evaluate(() => {
+    (window as unknown as { helper: unknown }).helper = setInterval(() => {
+      // The helper heartbeat is periodic presence, not a step that should block the page.
+      fetch('/api/live/window').catch(error => console.error('Helper heartbeat failed', error));
+    }, 500);
+  });
   await page.waitForTimeout(2500); // the app's page hears of the helper with its next transcript poll
   check('setting off by default: leaving the app does not open the mini window', await leave() === 'auto' && !await shown() && await page.locator('#mini-view').isVisible());
   check('Settings: turning on "Open the mini window by itself" is saved', await miniSetting(true));
@@ -275,8 +280,10 @@ async function run() {
   try {
     await page.evaluate(() => {
       (window as any).miniRouteOwner = null;
-      void fetch(`/api/meetings/${localStorage.getItem('meeting-id')}/segments?mini-route-hold=1`)
-        .then(r => { (window as any).miniRouteOwner = r.headers.get('x-mini-route-owner') ?? 'server'; });
+      // Keep the request in flight while navigation is tested; the route-owner assertion below observes completion.
+      fetch(`/api/meetings/${localStorage.getItem('meeting-id')}/segments?mini-route-hold=1`)
+        .then(r => { (window as any).miniRouteOwner = r.headers.get('x-mini-route-owner') ?? 'server'; })
+        .catch(error => { console.error('Mini route hold failed', error); (window as any).miniRouteOwner = 'failed'; });
     });
     await heldReplyArrived;
     // Detach only this upload fixture. Keep the segments route registered until its replies have finished.

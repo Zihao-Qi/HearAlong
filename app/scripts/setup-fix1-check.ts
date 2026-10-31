@@ -46,7 +46,11 @@ export async function runSetupFix1Checks(check: Check) {
     const start = async (port = 0): Promise<Awaited<ReturnType<typeof startServer>>> => {
       const previous = process.env.MEETING_CLOUD; process.env.MEETING_CLOUD = '0';
       try { return await startServer({ directory, port, quick: null, heavy: null, actions: null, board: null, drafts: null,
-        ...(options.idle ? { idleMs: 1000, onIdle: () => { idle = true; void app.close(); } } : {}),
+        ...(options.idle ? { idleMs: 1000, onIdle: () => {
+          idle = true;
+          // The idle callback cannot wait; fixture disposal also joins the shared app.close() promise.
+          app.close().catch(error => { console.error(error); errors.push(`Idle close failed: ${String(error)}`); });
+        } } : {}),
         setup: { scan: { home: join(directory, 'home'), envModelPath: null, hfHome: null },
           ffmpeg: async () => { await new Promise(r => setTimeout(r, delay)); return { found, ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' }; },
           worker: { workerScript: new URL('../test/fixtures/switch-worker.ts', import.meta.url) },

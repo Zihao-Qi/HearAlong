@@ -204,7 +204,11 @@ export class EvidenceRecorder {
     if (event?.type === 'tool_execution_start') this.starts.set(String(event.toolCallId), event.args);
     else if (event?.type === 'tool_execution_end') {
       const id = String(event.toolCallId);
-      void this.record(toolResultOf(event, this.starts.get(id)));
+      // Pi's event stream cannot wait for disk; read()/flush() joins the ordered evidence chain before validation.
+      this.record(toolResultOf(event, this.starts.get(id))).catch(error => {
+        this.status.error ??= `Could not save the evidence: ${(error as Error).message}`;
+        console.warn(this.status.error);
+      });
       this.starts.delete(id);
     }
   }

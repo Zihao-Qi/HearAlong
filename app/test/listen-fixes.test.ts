@@ -1,7 +1,8 @@
 import '../scripts/check-isolation.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, request, type ClientRequest } from 'node:http';
+import { request, type ClientRequest } from 'node:http';
+import { createAsyncServer } from './helpers/http.ts';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,7 +37,7 @@ c.on('error',()=>{record('end');process.exit(1)});c.on('exit',code=>{record('end
   const fixture = join(directory, 'fictional.wav'); await writeFile(fixture, fictionalWav(120));
   const chunks = Array.from({ length: 6 }, (_, i) => ({ id: `import-${i}`, source: 'file:fiction', path: fixture, startMs: i * 20000, seconds: 20, sampleRate: null, decodeStart: i * 20 }));
   const store = { meeting: () => meeting, chunks: () => chunks, heldFrames: () => [], audioEndMs: () => 120000, resolvePath: (p: string) => p } as unknown as MeetingStore;
-  const server = createServer((req, res) => { void serveMeetingAudio(req, res, store, 'fictional', false, false); });
+  const server = createAsyncServer(t, (req, res) => serveMeetingAudio(req, res, store, 'fictional', false, false));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/audio`;
   const events = async () => (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(s => JSON.parse(s) as { event: string; pid: number });
@@ -75,16 +76,17 @@ c.on('error',()=>{record('end');process.exit(1)});c.on('exit',code=>{record('end
   }
 });
 
-test('disconnect during preflight settles promptly without reading the remaining windows', async () => {
+test('disconnect during preflight settles promptly without reading the remaining windows', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'listen-cancel-fix-'));
   const raw = join(directory, 'fictional.f32'); await writeFile(raw, Buffer.from(new Float32Array(16000).fill(.125).buffer));
   const windows = Array.from({ length: 100 }, (_, i) => ({ id: String(i), source: `mic:${String(i).padStart(3, '0')}`, path: `fictional-${i}`, startMs: 0, seconds: 1, sampleRate: 16000, decodeStart: 0 }));
   let resolutions = 0, closedAt = 0, settled = false, client: ClientRequest;
   const store = { meeting: () => meeting, chunks: () => windows, heldFrames: () => [], audioEndMs: () => 1000,
     resolvePath: () => { resolutions++; if (resolutions === 1) setImmediate(() => client.destroy()); return raw; } } as unknown as MeetingStore;
-  const server = createServer((req, res) => {
+  const server = createAsyncServer(t, async (req, res) => {
     res.once('close', () => { closedAt = resolutions; });
-    void serveMeetingAudio(req, res, store, 'fictional', false, false).finally(() => { settled = true; });
+    try { await serveMeetingAudio(req, res, store, 'fictional', false, false); }
+    finally { settled = true; }
   });
   try {
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));

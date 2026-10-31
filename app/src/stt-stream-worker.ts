@@ -14,6 +14,8 @@ let stream: Stream | undefined;
 let current: string | undefined;
 // Messages are handled strictly one at a time: a stream must not be read or reset while a feed is in flight.
 let queue: Promise<void> = Promise.resolve();
+// A draining feed may finish after its parent disconnects; it no longer has an IPC recipient.
+const send = (message: unknown) => { if (process.connected) process.send?.(message); };
 
 async function close() {
   if (stream) { try { stream.reset(); } catch { /* already failed */ } }
@@ -43,12 +45,12 @@ async function handle(message: Message): Promise<boolean> {
     // Sent after every feed: receivedMs lets the parent measure how far behind the worker is.
     // The snapshot has live token times on this stream's audio clock (words[] is empty for Parakeet).
     const tokens = stream.snapshot.tokens.map(({ text, t0Ms, t1Ms }) => ({ text, t0Ms, t1Ms }));
-    process.send?.({ kind: 'draft', window: current, text: `${stream.text.committed} ${stream.text.tentative}`.trim(), tokens, receivedMs: update.inputReceivedMs, committedMs: update.audioCommittedMs });
+    send({ kind: 'draft', window: current, text: `${stream.text.committed} ${stream.text.tentative}`.trim(), tokens, receivedMs: update.inputReceivedMs, committedMs: update.audioCommittedMs });
     return true;
   } else {
     const update = await stream.finalize();
     const tokens = stream.snapshot.tokens.map(({ text, t0Ms, t1Ms }) => ({ text, t0Ms, t1Ms }));
-    process.send?.({ kind: 'draft', window: current, text: stream.text.committed.trim(), tokens, receivedMs: update.inputReceivedMs, committedMs: update.audioCommittedMs, final: true });
+    send({ kind: 'draft', window: current, text: stream.text.committed.trim(), tokens, receivedMs: update.inputReceivedMs, committedMs: update.audioCommittedMs, final: true });
     await close();
     return false;
   }
@@ -57,11 +59,21 @@ process.on('message', (message: Message) => {
   queue = queue.then(() => handle(message)).catch(async error => {
     const window = current;
     await close();
-    process.send?.({ kind: 'error', window, error: error instanceof Error ? error.message : String(error) });
+    send({ kind: 'error', window, error: error instanceof Error ? error.message : String(error) });
     return false;
-  }).then(answered => { if (message.kind === 'feed' && !answered) process.send?.({ kind: 'ack', window: message.window }); });
+  }).then(answered => { if (message.kind === 'feed' && !answered) send({ kind: 'ack', window: message.window }); });
 });
-process.on('disconnect', () => { void close().then(() => { session?.dispose(); model?.dispose(); process.exit(0); }); });
+process.on('disconnect', () => {
+  const fallback = setTimeout(() => {
+    console.error('Speech stream disconnect drain exceeded 10 s.');
+    process.exit(1);
+  }, 10_000);
+  // The parent cannot wait after disconnect; drain queued feeds before disposing their native session.
+  queue.then(close).then(() => { session?.dispose(); model?.dispose(); clearTimeout(fallback); process.exit(0); }).catch(error => {
+    console.error(`Speech stream shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  });
+});
 model = await TranscribeModel.load(process.argv[2]);
 session = model.createSession();
-process.send?.({ kind: 'ready', backend: model.backend });
+send({ kind: 'ready', backend: model.backend });

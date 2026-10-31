@@ -73,10 +73,13 @@ Run from this directory:
 ```sh
 npm test
 npm run check                 # tsc --noEmit
+npm run lint                  # browser JS, type-aware TS promise/import rules, and shell checks
 MEETING_TEST_CHROME=/path/to/disposable/chromium node --experimental-strip-types scripts/app-check.ts
 # Full isolated suite (Node, npm, FFmpeg/ffprobe and test Chromium must be installed):
 MEETING_TEST_CHROME=/path/to/disposable/chromium npm run checks -- /path/to/new-output-dir
 ```
+
+`npm run lint` also checks `src/`, `scripts/` and `test/` for promises nobody awaits or handles, and enforces import boundaries: browser code imports no server, script, test or `node:` modules; server code imports no scripts, tests or model SDKs; only the two speech workers load the native speech library; only the files named in `eslint.config.js` start processes. These are static checks of import statements, not a sandbox.
 
 The full runner runs at most two suites at once, each under `nice -n 19` with a 20-minute timeout (`MEETING_CHECK_TIMEOUT_S=<seconds>` changes it; CI allows 30 minutes). Each suite has its own temporary directory; timeout cleanup finishes group escalation and removes only that suite's detached test browsers before reusing its slot. Logs, screenshots and `summary.txt` stay in the output directory, including the leftover test-browser count. HOME, HF_HOME and temporary state are isolated there; npm is offline, Pi is a metadata-only stand-in, model calls fail, and Node fetch/browser requests are loopback-only (Node redirects are checked before each hop). The runner generates fictional WAV audio, so a fresh checkout needs no untracked recording or speech weights. Most of those browser checks import `./scripts/check-env.ts` themselves, so the same guards apply when the script is run directly. `scripts/plans-check.ts`, `scripts/progress-check.ts`, `scripts/progress-fix1-check.ts` and `scripts/progress-fix2-check.ts` do not. The full runner preloads the guard for those four. Run one alone as `MEETING_TEST_CHROME=/path/to/disposable/chromium node --experimental-strip-types --import ./scripts/check-env.ts scripts/plans-check.ts …` (the same import for the progress scripts). Without it, `plans-check.ts` can use the ordinary Playwright cache and start its server without this isolation boundary.
 
