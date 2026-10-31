@@ -80,7 +80,8 @@ test('only the three named server modules can import or require the process-grou
 });
 
 test('promise rules check async test steps, void returns and bare void, not runner-owned registrations', async () => {
-  const lint = new ESLint({ cwd });
+  // CI=true makes typescript-eslint assume one run over files on disk; these snippets replace one file's text repeatedly.
+  const lint = new ESLint({ cwd, overrideConfig: [{ files: ['**/*.ts'], languageOptions: { parserOptions: { disallowAutomaticSingleRunInference: true } } }] });
   const file = 'test/lint-config.test.ts';
   assert.deepEqual(await rules(file, "import { test } from 'node:test'; test('owned by runner', async () => { await Promise.resolve(); });", lint), []);
   assert.deepEqual(await rules(file, "import { test as register } from 'node:test'; register('alias', () => {});", lint), []);
