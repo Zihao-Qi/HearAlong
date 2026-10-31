@@ -60,16 +60,35 @@ export async function runSetupFix2Checks(check: Check) {
               await shot(page, `03-${width}-${kind}`); await check(page, id, { kind });
             }
           } else if (id === 4) {
-            const outcomes = [];
-            for (const role of ['speech', 'ai']) {
-              const opener = page.locator(`[data-setup-row="${role}"] button`).first(); await opener.click();
-              await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).waitFor();
-              await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).focus();
-              await page.mouse.click(3, 3); await page.getByRole('dialog').waitFor({ state: 'detached' });
-              outcomes.push({ role, open: await page.getByRole('dialog').count(), focused: await opener.evaluate(e => e === document.activeElement) });
-              await shot(page, `04-${width}-${role}-backdrop`); await page.keyboard.press('Escape');
+            for (const refreshAfterClose of [false, true]) {
+              const outcomes = [];
+              for (const role of ['speech', 'ai']) {
+                const opener = page.locator(`[data-setup-row="${role}"] button`).first(); await opener.click();
+                if (refreshAfterClose) await page.locator(role === 'ai' ? '#su-ai-main' : 'dialog .su-model-list').waitFor();
+                await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).focus();
+                await page.getByRole('dialog').evaluate((dialog, refreshAfterClose) => {
+                  const fixture = window as any;
+                  // Registered after the page's close handler: no timeout or focus retry.
+                  fixture.fix2Closed = new Promise<void>((resolve, reject) => dialog.addEventListener('close', () => {
+                    // Force a status response/re-render after focus restoration, not just while the modal is open.
+                    if (refreshAfterClose) void fixture.fixUi.refresh().then((snapshot: unknown) => {
+                      if (snapshot) resolve(); else reject(new Error('The forced status refresh did not render.'));
+                    }, reject);
+                    else resolve();
+                  }, { once: true }));
+                }, refreshAfterClose);
+                await page.mouse.click(3, 3);
+                outcomes.push(await page.evaluate(async role => {
+                  await (window as any).fix2Closed;
+                  // Resolve and compare in one browser task. Locator.evaluate can receive an element
+                  // that a poll detached between Playwright resolving it and running the callback.
+                  const opener = document.querySelector(`[data-setup-row="${role}"] button`);
+                  return { role, open: document.querySelectorAll('dialog').length, focused: opener !== null && opener === document.activeElement };
+                }, role));
+                await shot(page, `04-${width}-${role}-backdrop${refreshAfterClose ? '-refresh' : ''}`); await page.keyboard.press('Escape');
+              }
+              await check(page, id, { outcomes, refreshAfterClose });
             }
-            await check(page, id, { outcomes });
           } else if (id === 5) {
             for (const state of ['damaged', 'noSpace']) {
               await page.evaluate(state => { const ui = (window as any).fixUi; Object.assign(ui.status.rows[0], { state, download: { state, neededBytes: 800000000 } }); ui.render(); }, state);
