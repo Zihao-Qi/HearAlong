@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createAsyncServer } from './helpers/http.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
@@ -57,7 +57,7 @@ for (const mode of ['cloud', 'local'] as const) test(`real Pi ${mode}: grep/find
     { name: 'find', arguments: { pattern: '*.txt', path: material } },
   ];
   let turns = 0;
-  const server = createServer(async (req, res) => {
+  const server = createAsyncServer(t, async (req, res) => {
     if (req.url === '/api/tags') return res.end('{"models":[{"name":"scripted"}]}');
     if (req.url === '/api/ps') return res.end('{"models":[{"name":"scripted","context_length":32768}]}');
     if (req.url === '/v1/models' || req.url === '/api/v1/models') return res.end('{"data":[]}');

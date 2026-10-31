@@ -144,7 +144,8 @@ try {
       let helperReadyAt = Infinity, ignored = 0, launches = 0;
       let replacement: Awaited<ReturnType<typeof startServer>> | undefined;
       let starting: Promise<void> | undefined;
-      void f.exited.then(() => { helperReadyAt = Date.now() + 4500; }); // several seconds of helper cleanup after exit
+      // Observe exit concurrently with restart navigation; waiting here would prevent the restart click below.
+      f.exited.then(() => { helperReadyAt = Date.now() + 4500; }).catch(error => { console.error(error); process.exitCode = 1; }); // several seconds of helper cleanup after exit
       cdp.on('Page.frameRequestedNavigation', event => {
         if (event.url !== 'meetingassistant://start') return;
         launches++;

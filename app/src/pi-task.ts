@@ -260,11 +260,11 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
         clearTimeout(timer);
         clearTimeout(killTimer);
         options.signal?.removeEventListener('abort', abort);
-        void cleanUp(processDir).then(async cleanupError => {
+        cleanUp(processDir).then(async cleanupError => {
           if (!closed) await new Promise<void>(resolve => { onClosed = resolve; setTimeout(resolve, PI_TASK_LIMITS.drainMs).unref(); });
           if (!closed) { child.stdout?.destroy(); child.stderr?.destroy(); }
           settle(code, exitSignal, cleanupError);
-        });
+        }).catch(reject);
       });
     };
     options.signal?.addEventListener('abort', abort, { once: true });
@@ -275,7 +275,7 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
       return;
     }
     // Pi is recorded (and the caller has saved its worker) before it starts; until then it waits in a shell of its own group.
-    void (async () => {
+    (async () => {
       let gated;
       try { gated = await spawnGated(command, args, { dir: processDir, kind: 'pi', cwd: options.cwd, env, stdio: ['ignore', 'pipe', 'pipe'] }); }
       catch (error) {
@@ -296,7 +296,16 @@ function runPiTaskOnce(prompt: string, options: PiTaskOptions): Promise<PiTaskRe
       try { piLaunch([], { mode: options.aiMode, model: options.model, cwd: options.cwd, env: { ...process.env, ...options.env } }); }
       catch (error) { startError = error as Error; if (live()) signalGroup(group, 'SIGKILL'); return; }
       gated.release();
-    })();
+    })().catch(error => {
+      if (child) {
+        startError = error as Error;
+        if (group !== undefined && live()) signalGroup(group, 'SIGKILL');
+        return; // The exit path settles only after process-group cleanup.
+      }
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', abort);
+      reject(error);
+    });
   });
 }
 

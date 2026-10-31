@@ -11,7 +11,7 @@
     "start": "node --experimental-strip-types src/server.ts",
     "rehearse": "node --experimental-strip-types scripts/rehearse.ts",
     "check": "tsc --noEmit",
-    "lint": "eslint public/ && sh scripts/lint-shell.sh",
+    "lint": "eslint public/ src/ scripts/ test/ && sh scripts/lint-shell.sh",
     "checks": "sh scripts/run-checks.sh",
     "land": "node --experimental-strip-types scripts/land.ts",
     "delete-meetings": "node --experimental-strip-types scripts/delete-meetings.ts",
@@ -40,7 +40,8 @@
     "eslint": "9.39.1",
     "globals": "16.5.0",
     "playwright-core": "1.64.0",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.1"
   },
   "overrides": {
     "undici": "8.12.3"

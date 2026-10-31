@@ -41,7 +41,7 @@ export class AudioRetention {
         continue;
       }
       if (m.audioDoneAt === null) {
-        if (m.audioLegacy) { if (!markOnly) void this.run(); continue; }
+        if (m.audioLegacy) { if (!markOnly) this.runInBackground(); continue; }
         if (!this.store.chunks(m.id).length) continue;
         this.store.db.prepare('UPDATE meetings SET audioDoneAt=? WHERE id=?').run(this.now(), m.id);
         m.audioDoneAt = this.now();
@@ -52,7 +52,7 @@ export class AudioRetention {
     if (markOnly) return;
     clearTimeout(this.timer);
     if (Number.isFinite(next)) {
-      this.timer = setTimeout(() => { void this.run(); }, Math.min(2_147_483_647, Math.max(1, next - this.now())));
+      this.timer = setTimeout(() => { this.runInBackground(); }, Math.min(2_147_483_647, Math.max(1, next - this.now())));
       this.timer.unref();
     }
   }
@@ -66,7 +66,11 @@ export class AudioRetention {
       this.store.db.exec('COMMIT');
     } catch (error) { this.store.db.exec('ROLLBACK'); throw error; }
     this.notice = null;
-    void this.run();
+    this.runInBackground();
+  }
+  runInBackground() {
+    // Retention must not delay capture, settings replies or startup; close() stops further store access.
+    this.run().catch(error => this.options.log?.(`Audio retention: ${(error as Error).message}`));
   }
   run(): Promise<void> {
     if (this.stopped) return Promise.resolve();

@@ -26,7 +26,10 @@ let cleanup: Promise<void> | undefined;
 const close = () => cleanup ??= (async () => {
   try { await browser?.close(); } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 })();
-const terminate = () => { void close().finally(() => process.exit(124)); };
+const terminate = () => {
+  // Signal handlers cannot wait; finish isolated cleanup before reporting timeout.
+  close().then(() => process.exit(124)).catch(error => { console.error(`Capture check cleanup failed: ${String(error)}`); process.exit(124); });
+};
 process.once('SIGTERM', terminate); process.once('SIGINT', terminate);
 const results: object[] = [], index = ['# Capture resilience screenshots', '', 'Each pair shows the same live state at 1280 and 390 px.'];
 const specs = [

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createAsyncServer } from './helpers/http.ts';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { localProvider } from '../pi-extensions/local-models.ts';
 import { localLengthMessage } from '../src/local-ai.ts';
@@ -11,7 +11,7 @@ import type { PiTaskResult } from '../src/pi-task.ts';
 async function fixture(t: any, kind: 'ollama' | 'lmstudio' = 'ollama', notes = false) {
   let size = 32768, finish = 'stop';
   const bodies: any[] = [];
-  const server = createServer(async (req, res) => {
+  const server = createAsyncServer(t, async (req, res) => {
     if (req.url === '/api/tags') return res.end('{"models":[{"name":"fictional:4b"}]}');
     if (req.url === '/api/ps') return res.end(JSON.stringify({ models: [{ name: 'fictional:4b', context_length: size }] }));
     if (req.url === '/v1/models') return res.end('{"data":[{"id":"fictional:4b"}]}');

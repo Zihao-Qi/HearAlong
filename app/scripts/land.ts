@@ -153,7 +153,7 @@ async function runCommand(name: 'check' | 'test' | 'checks', args: string[], mai
       signal.addEventListener('abort', interrupt, { once: true });
       if (signal.aborted) interrupt();
       child.once('error', error => { cleanup(); reject(error); });
-      child.once('close', async (code, exitSignal) => {
+      const closed = async (code: number | null, exitSignal: NodeJS.Signals | null) => {
         clearTimeout(timer);
         try { await (ending ??= endGroup()); }
         catch (error) { cleanup(); reject(error); return; }
@@ -162,7 +162,8 @@ async function runCommand(name: 'check' | 'test' | 'checks', args: string[], mai
         if (stopped) reject(new Error(stopped));
         else if (code !== 0) reject(new Error(`exit ${code ?? exitSignal}`));
         else done();
-      });
+      };
+      child.once('close', (code, exitSignal) => { closed(code, exitSignal).catch(error => { cleanup(); reject(error); }); });
     });
   } catch (error) { failure = oneLine((error as Error).message); }
   // Read the runner's retained summary even on a nonzero exit, not just on success.

@@ -97,7 +97,8 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     page = context.pages()[0] ?? await context.newPage();
     await prepare?.(page); // Before navigation, so a benchmark can see every upload. A returned promise is waited for. Callers that omit it are unchanged.
     page.on('close', () => finish('window closed'));
-    page.on('dialog', dialog => void dialog.accept()); // Closing a recording window must not get stuck on beforeunload.
+    // Playwright does not await dialog listeners; accept beforeunload so closing a recording cannot get stuck.
+    page.on('dialog', dialog => { dialog.accept().catch(error => { errors.push(`Dialog acceptance failed: ${String(error)}`); console.error(error); }); });
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', request => {
       if (request.method() !== 'POST') return;
@@ -116,16 +117,20 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
       if (them) await page.route('**/__rehearsal-them.wav', route => route.fulfill({ body: them.bytes, contentType: 'audio/wav' }));
       // Only this page is modified. The real app's worklet, upload queues, recognition and Stop stay untouched.
       await page.evaluate(async ({ online }) => {
-        let startThem = () => {};
+        let startThem = async () => {};
         if (online) {
           const audio = new AudioContext();
           const buffer = await audio.decodeAudioData(await (await fetch('/__rehearsal-them.wav')).arrayBuffer());
           const player = audio.createBufferSource(); player.buffer = buffer;
           const dest = audio.createMediaStreamDestination(); player.connect(dest);
-          startThem = () => { void audio.resume(); player.start(); };
+          startThem = async () => { await audio.resume(); player.start(); };
           const track = dest.stream.getAudioTracks()[0];
           const originalStop = track.stop.bind(track);
-          track.stop = () => { originalStop(); try { player.stop(); } catch { /* not started */ } void audio.close(); };
+          track.stop = () => {
+            originalStop(); try { player.stop(); } catch { /* not started */ }
+            // MediaStreamTrack.stop is synchronous; close the rehearsal-only context after stopping its tracks.
+            audio.close().catch(error => console.error('Rehearsal audio close failed', error));
+          };
           navigator.mediaDevices.getDisplayMedia = async () => {
             const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
             canvas.getContext('2d')!.fillRect(0, 0, 1, 1);
@@ -137,9 +142,14 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
         const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
         navigator.mediaDevices.getUserMedia = async constraints => {
           const stream = await original(constraints);
-          startThem(); startThem = () => {};
-          void (window as unknown as { __rehearsalStarted(at: number): Promise<void> }).__rehearsalStarted(Date.now());
-          return stream;
+          try {
+            await startThem(); startThem = async () => {};
+            await (window as unknown as { __rehearsalStarted(at: number): Promise<void> }).__rehearsalStarted(Date.now());
+            return stream;
+          } catch (error) {
+            for (const track of stream.getTracks()) track.stop();
+            throw error;
+          }
         };
       }, { online: Boolean(them) });
       await page.locator('#meeting-button').click();

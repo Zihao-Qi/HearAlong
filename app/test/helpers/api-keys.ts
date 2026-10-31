@@ -1,6 +1,7 @@
 // Stand-ins for saved API keys: a fake `security` (no Keychain) and fake provider model lists on 127.0.0.1.
 import { mkdtemp, realpath, readFile, rm, copyFile, chmod } from 'node:fs/promises';
-import { createServer, type IncomingMessage } from 'node:http';
+import type { IncomingMessage } from 'node:http';
+import { createAsyncServer } from './http.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +19,7 @@ export async function fakeSecurity(t: { after(fn: () => unknown): void }) {
 export async function fakeProviders(t: { after(fn: () => unknown): void }, good: Record<string, string>) {
   const requests: { url: string; headers: IncomingMessage['headers'] }[] = [];
   const state = { status: 0, delayMs: 0 };
-  const server = createServer(async (req, res) => {
+  const server = createAsyncServer(t, async (req, res) => {
     requests.push({ url: req.url ?? '', headers: req.headers });
     if (state.delayMs) await new Promise(resolve => setTimeout(resolve, state.delayMs));
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');

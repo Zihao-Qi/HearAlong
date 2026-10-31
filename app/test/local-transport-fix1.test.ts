@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer, type RequestListener } from 'node:http';
+import { createAsyncServer, type AsyncRequestListener } from './helpers/http.ts';
 import { connect } from 'node:net';
 import { EnvHttpProxyAgent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { piLaunch } from '../src/pi-command.ts';
 import { localProvider } from '../pi-extensions/local-models.ts';
 
-async function serve(t: any, handler: RequestListener) {
-  const server = createServer(handler);
+async function serve(t: any, handler: AsyncRequestListener) {
+  const server = createAsyncServer(t, handler);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = server.address(); assert.ok(address && typeof address !== 'string');
@@ -16,11 +16,11 @@ async function serve(t: any, handler: RequestListener) {
 }
 const sse = (res: import('node:http').ServerResponse) => { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"id":"fake","choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":null}]}\n\ndata: {"id":"fake","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'); };
 const context = normalizeContext({ messages: [{ role: 'user', content: 'FICTIONAL_MEETING_CANARY', timestamp: 1 }] });
-async function catalog(t: any, chat: RequestListener) {
+async function catalog(t: any, chat: AsyncRequestListener) {
   return serve(t, (req, res) => {
     if (req.url === '/api/tags') res.end(JSON.stringify({ models: [{ name: 'fictional:8b' }] }));
     else if (req.url === '/api/ps') res.end(JSON.stringify({ models: [{ name: 'fictional:8b', context_length: 8192 }] }));
-    else if (req.url === '/v1/chat/completions') chat(req, res);
+    else if (req.url === '/v1/chat/completions') return chat(req, res);
     else { res.statusCode = 404; res.end('{}'); }
   });
 }

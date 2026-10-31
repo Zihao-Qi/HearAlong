@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createAsyncServer } from './helpers/http.ts';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -28,7 +28,7 @@ async function fixture(t: any) {
 async function coldOllama(t: any, directory: string, context = 16384) {
   let loaded = false, failNext = false, brokenNext = false;
   const bodies: any[] = [];
-  const http = createServer(async (req, res) => {
+  const http = createAsyncServer(t, async (req, res) => {
     if (req.url === '/api/tags') return res.end('{"models":[{"name":"fictional:4b"}]}');
     if (req.url === '/api/ps') return res.end(JSON.stringify({ models: loaded ? [{ name: 'fictional:4b', context_length: context }] : [] }));
     if (req.url === '/v1/models') return res.end('{"data":[]}');

@@ -304,7 +304,10 @@ export class SpeechSetup {
     if (this.download.state.state === 'done' && use) {
       try { await this.applyIntent(true); }
       catch (error) { console.warn(`The speech model was downloaded, but setup could not be updated: ${(error as Error).message}`); }
-    } else void this.download.start();
+    } else {
+      // Setup acknowledges the download immediately; ModelDownload owns progress and cancellation.
+      this.download.start().catch(error => console.warn(`Speech download failed: ${(error as Error).message}`));
+    }
     return this.status();
   }
   async cancelDownload() {

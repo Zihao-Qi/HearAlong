@@ -246,7 +246,10 @@ export async function startServer(options: {
     });
     // Seals sources that went quiet, including frames saved before a restart.
     let onAudioSweep = () => {};
-    sweep = setInterval(() => { void capture.sweep(); onAudioSweep(); }, 2000);
+    sweep = setInterval(() => {
+      // The periodic sweep must not hold the timer callback; capture.close() drains its source chains.
+      capture.sweep().then(() => onAudioSweep()).catch(error => console.warn(`Audio sweep failed: ${(error as Error).message}`));
+    }, 2000);
     sweep.unref();
     // Projects own materials and glossaries; a meeting sees its project's plus its own extra materials (M6, §8).
     const projects = new Projects(store, directory);
@@ -293,7 +296,10 @@ export async function startServer(options: {
     apiKeys = keys;
     let keysStarted = false;
     const loadCloudKeys = () => { if (!keysStarted) { keysStarted = true; keysLoaded = keys.load(); } return keysLoaded; };
-    if (cloud && (settings.aiMode === 'cloud' || (!settings.aiMode && settings.setupSeen))) void loadCloudKeys();
+    if (cloud && (settings.aiMode === 'cloud' || (!settings.aiMode && settings.setupSeen))) {
+      // Key loading must not delay recording startup; AI admission waits on keysLoaded.
+      loadCloudKeys().catch(error => console.warn(`Could not load cloud keys: ${(error as Error).message}`));
+    }
     ai.start(); // Discovery, package detection and auth must never delay startup.
     // Exclude the bundled fallback when deciding whether a bare `pi` works in the user's terminal.
     const signInEnv = options.ai?.env ?? process.env;
@@ -477,7 +483,7 @@ export async function startServer(options: {
     retention = audioRetention;
     if (jobs) jobs.onSettled = () => audioRetention.observe();
     onAudioSweep = () => audioRetention.observe();
-    retentionLoop = setInterval(() => { void audioRetention.run(); }, 60 * 60_000);
+    retentionLoop = setInterval(() => { audioRetention.runInBackground(); }, 60 * 60_000);
     retentionLoop.unref();
     const correctionLoop = corrector ? setInterval(() => {
       if ((options.quick === undefined && ai.mode() === 'off') || (ai.mode() === 'local' && recordingAnywhere())) return;
@@ -597,7 +603,10 @@ export async function startServer(options: {
       })().catch(error => { console.warn(`Could not seal a disconnected app source: ${(error as Error).message}`); }).finally(() => { endingLostApp = null; });
       return endingLostApp;
     };
-    const appCaptureSweep = setInterval(() => { void endLostApp(); }, 1000);
+    const appCaptureSweep = setInterval(() => {
+      // Helper-loss sealing runs on capture's chain without blocking the periodic callback.
+      endLostApp().catch(error => console.warn(`Could not seal a disconnected app source: ${(error as Error).message}`));
+    }, 1000);
     appCaptureSweep.unref();
     const segmentsTag = new SegmentsTag();
     /** The recording now, with only the sources of its own recording (a reloaded page's old sources are not). */
@@ -673,7 +682,7 @@ export async function startServer(options: {
     };
     const appStore = store;
     const appJobs = jobs;
-    const server = createServer(async (req, res) => {
+    const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
       let admitted = false;
       let releasePcm: (() => void) | undefined;
       res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -810,7 +819,7 @@ export async function startServer(options: {
             // Saved one at a time, and applied only once saved: a failed save keeps the previous choice. Each change applies to
             // the settings as the save before it left them, so two changes made together both stay.
             await saveSettings(change);
-            void audioRetention.run();
+            audioRetention.runInBackground();
           } else if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
           send(res, 200, { ...settings, boardModels: (['quick', 'main'] as const).map(id => ({ id, model: ai.current(id) })), aiMode: ai.mode(), aiForcedOff: !cloud, autoAnswersEnabled: ai.mode() !== 'off' && boards.enabled, boardEnabled: ai.mode() === 'cloud' && (boardGates || options.board != null) }); return;
         }
@@ -889,7 +898,13 @@ export async function startServer(options: {
           if (!canRestart) { send(res, 409, { error: 'Restart from Terminal' }); return; }
           if (working()) { send(res, 409, { error: 'Busy' }); return; }
           restarting = true; // Before 202 and before the response is flushed: another page cannot start new work.
-          res.once('finish', () => { void app.shutdown().then(() => (options.exit ?? process.exit)(0)); });
+          res.once('finish', () => {
+            // Shutdown starts only after the restart response is flushed; HTTP does not await finish listeners.
+            app.shutdown().then(() => (options.exit ?? process.exit)(0)).catch(error => {
+              console.error(`Shutdown failed: ${(error as Error).message}`);
+              (options.exit ?? process.exit)(1);
+            });
+          });
           send(res, 202, { restarting: true }); return;
         }
         if (req.method === 'GET' && url.pathname === '/api/helper/status') {
@@ -1413,6 +1428,13 @@ export async function startServer(options: {
           ...(plansError ? { status, code: typeof detail.code === 'string' ? detail.code : status === 404 ? 'not found' : status === 409 ? 'conflict' : 'bad request' } : {}) });
         else if (!res.destroyed) res.end();
       } finally { releasePcm?.(); if (admitted) admissions--; }
+    };
+    const server = createServer((req, res) => {
+      // Node HTTP does not await listeners; handleRequest owns the response and releases admissions in finally.
+      handleRequest(req, res).catch(error => {
+        console.error(`Request failed: ${(error as Error).message}`);
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+      });
     });
     server.requestTimeout = 120_000;
     server.headersTimeout = 10_000;
@@ -1505,7 +1527,7 @@ export async function startServer(options: {
       releasePiAdmission?.();
       await release();
     }
-    void audioRetention.run();
+    audioRetention.runInBackground();
     return app;
   } catch (error) {
     setup?.stopSwitches();
@@ -1529,7 +1551,7 @@ export async function startServer(options: {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   // Started by the installed app's helper: stop once its window has been gone for MEETING_IDLE_EXIT_S seconds and nothing runs.
   const idleSeconds = Number(process.env.MEETING_IDLE_EXIT_S ?? 0);
-  const app = await startServer(idleSeconds > 0 ? { idleMs: idleSeconds * 1000, onIdle: () => { console.log('No window open and nothing running: stopping.'); void app.shutdown().then(() => process.exit(0)); } } : {}).catch(error => {
+  const app = await startServer(idleSeconds > 0 ? { idleMs: idleSeconds * 1000, onIdle: () => { console.log('No window open and nothing running: stopping.'); stop(); } } : {}).catch(error => {
     if ((error as Error).message !== LEGACY_DATA_NOTICE) throw error;
     console.error(LEGACY_DATA_NOTICE);
     process.exit(1);
@@ -1538,6 +1560,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (process.env.MEETING_OPEN_BROWSER === '1') {
     spawn('open', ['-a', 'Google Chrome', app.url], { stdio: 'ignore' }).on('error', error => console.warn(`Open ${app.url} manually: ${error.message}`));
   }
+  function stop() {
+    // Signal/idle callbacks cannot wait; shutdown drains recording work before the CLI exits.
+    app.shutdown().then(() => process.exit(0)).catch(error => {
+      console.error(`Shutdown failed: ${(error as Error).message}`);
+      process.exit(1);
+    });
+  }
   // A quit lets a recording page stop first (up to 20 s); a second signal closes at once.
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { void app.shutdown().then(() => process.exit(0)); });
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, stop);
 }

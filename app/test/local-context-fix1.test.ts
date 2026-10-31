@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createAsyncServer } from './helpers/http.ts';
 import { normalizeContext } from '@earendil-works/pi-ai';
 import { localProvider } from '../pi-extensions/local-models.ts';
 import { assertLocalContext } from '../src/local-ai.ts';
@@ -9,7 +9,7 @@ import { NOTES_PARTS, notesInstructions, partInstructions } from '../src/notes.t
 async function fixture(t: any, kind: 'ollama' | 'lmstudio', initial: number | null, missing = false, legacy = false) {
   let loaded = initial;
   const requests: string[] = [], bodies: any[] = [];
-  const server = createServer(async (req, res) => {
+  const server = createAsyncServer(t, async (req, res) => {
     requests.push(req.url!); res.setHeader('Content-Type', 'application/json');
     if (req.url === '/api/tags') res.end(JSON.stringify({ models: [{ name: 'fictional:8b' }] }));
     else if (req.url === '/api/show') res.end(JSON.stringify({ model_info: { 'qwen3.context_length': 131072 } }));

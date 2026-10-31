@@ -120,8 +120,18 @@ try {
     page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
     let downloads = 0, popups = 0;
     let markdown = '';
-    page.on('download', async d => { downloads++; const p = await d.path().catch(() => null); if (p) markdown = await readFile(p, 'utf8'); });
-    context.on('page', p => { if (p !== page) { popups++; void p.close(); } });
+    const eventWork: Promise<void>[] = [];
+    page.on('download', d => {
+      downloads++;
+      const readDownload = async () => { const path = await d.path(); if (!path) throw new Error('Download has no file'); markdown = await readFile(path, 'utf8'); };
+      eventWork.push(readDownload().catch(error => { console.error(error); errors.push(`Download failed: ${String(error)}`); }));
+    });
+    context.on('page', p => {
+      if (p !== page) {
+        popups++;
+        eventWork.push(p.close().catch(error => { console.error(error); errors.push(`Popup close failed: ${String(error)}`); }));
+      }
+    });
     try {
       await page.goto(`${app.url}/?plans-fixture=${state}`);
       await page.locator('#plans:not([hidden]) .plans-content > *').first().waitFor({ timeout: 10_000 });
@@ -142,12 +152,13 @@ try {
       if (['plans', 'refused', 'mixed'].includes(state)) await openFirst(page, `${state}-${config.name}-details`);
       if (['plans', 'mixed', 'explored'].includes(state)) await openAll(page, t, `${state}-${config.name}-all-open`);
       await clickEverything(page, t, () => ({ downloads, popups }));
+      await Promise.all(eventWork); // Counts alone do not mean the download has been read or the popup has closed.
       if (state === 'plans') check(`${t}: Download gives the plans as Markdown`, markdown.startsWith('# Plans — Detector check-in') && markdown.includes('Can Section 4 say the detector keeps 90% recall') && markdown.includes('## Not planned'), markdown.slice(0, 120));
       check(`${t}: no console errors`, errors.length === 0, errors.join(' | '));
     } catch (error) {
       check(`${t}: ran to the end`, false, (error as Error).message.split('\n')[0]);
       await page.screenshot({ path: join(outDir, `${state}-${config.name}-error.png`) }).catch(() => {});
-    } finally { await context.close(); }
+    } finally { await context.close(); await Promise.all(eventWork); }
   }
   await lifecycleChecks(browser);
   await settingsCheck(browser, meeting.id);

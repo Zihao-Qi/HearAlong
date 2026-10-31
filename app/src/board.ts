@@ -329,7 +329,11 @@ export class Boards {
     }).finally(() => {
       this.scanning.delete(meetingId);
       const next = this.pendingScan.get(meetingId);
-      if (next && !this.closing && !this.paused()) { this.pendingScan.delete(meetingId); void this.requestScan(meetingId, next); }
+      if (next && !this.closing && !this.paused()) {
+        this.pendingScan.delete(meetingId);
+        // The coalesced scan owns its own lifecycle; the completed scan must release its caller.
+        this.requestScan(meetingId, next).catch(error => console.warn(`Board scan failed: ${(error as Error).message}`));
+      }
     });
     this.scanning.set(meetingId, run);
     return run;
@@ -341,7 +345,8 @@ export class Boards {
     if (this.paused()) throw Object.assign(new Error(`Scanning is paused after a rate-limit error until ${new Date(this.pausedUntil).toLocaleTimeString()}.`), { status: 409 });
     const board = await this.load(meetingId);
     if (Object.keys(board.skipped ?? {}).length) await this.mutate(meetingId, latest => { latest.skipped = {}; latest.gaps = []; });
-    void this.requestScan(meetingId, 'end');
+    // The API acknowledges admission, not model completion; Board status tracks the scan.
+    this.requestScan(meetingId, 'end').catch(error => console.warn(`Board scan failed: ${(error as Error).message}`));
   }
 
   private async scan(meetingId: string) {

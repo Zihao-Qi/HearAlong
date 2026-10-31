@@ -278,9 +278,9 @@ test('a scan that throws while preparing never rejects; a rate-limit pause holds
       ask: async () => { calls++; await gate; return answer([], { stopReason: 'error', errorMessage: 'HTTP 429 rate limit' }); } });
     calls = 0;
     const first = paused.requestScan(f.meeting.id);
-    void paused.requestScan(f.meeting.id, 'end'); // coalesced behind it
+    const coalesced = paused.requestScan(f.meeting.id, 'end'); // coalesced behind it
     release();
-    await first;
+    await Promise.all([first, coalesced]);
     await new Promise(r => setTimeout(r, 30));
     assert.equal(calls, 1, 'no new request during the pause');
     assert.ok(paused.paused());

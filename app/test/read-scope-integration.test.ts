@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createAsyncServer } from './helpers/http.ts';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +28,7 @@ test('real Pi blocks an outside read and symlink escapes before content reaches 
     { name: 'fetch_content', arguments: { url: outside } },
     { name: 'fetch_content', arguments: { url: 'https://example.invalid/fictional' } },
   ];
-  const server = createServer(async (req, res) => {
+  const server = createAsyncServer(t, async (req, res) => {
     let text = ''; for await (const part of req) text += part;
     const body = JSON.parse(text); requests.push(body);
     const turn = requests.length - 1;
