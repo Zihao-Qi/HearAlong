@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
 import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import { testBrowser } from './test-browser.ts';
+import { checkSetupPage } from './setup-page-cases.ts';
 
 const out = resolve(process.argv[2] ?? 'artifacts/ui-pass');
 await mkdir(out, { recursive: true });
@@ -130,11 +131,12 @@ try {
   await page.waitForFunction(() => document.getElementById('project-files')?.textContent === 'The repo folder is missing: memory files are paused. Save the folder’s new location above.');
   pass('memory: singular skipped wording and repo-missing wording unchanged');
 
+  let speechReady = true;
   const setupPage = await context.newPage(); setupPage.on('pageerror', e => errors.push(e.message));
   await setupPage.route('**/api/setup', async route => {
     const response = await route.fetch(), data = await response.json();
     await route.fulfill({ response, json: { ...data, seen: false, rows: data.rows.map((r: { id: string }) => r.id === 'speech'
-      ? { ...r, state: 'ready', label: 'Parakeet 0.6B', source: 'downloaded', path: '/fictional/model.gguf', downloadTargetPath: '/fictional/model.gguf' }
+      ? { ...r, state: speechReady ? 'ready' : 'none', label: 'Parakeet 0.6B', source: 'downloaded', path: '/fictional/model.gguf', downloadTargetPath: '/fictional/model.gguf' }
       : r.id === 'ffmpeg' ? { ...r, state: 'missing' } : { ...r, state: 'ready', mode: 'local', main: { id: 'ollama/example-garden:4b' }, quick: { id: 'ollama/example-garden:4b' } }) } });
   });
   await request({ audioRetention: 'day' }); await setupPage.goto(`${app.url}/setup`);
@@ -148,6 +150,9 @@ try {
     await setupPage.waitForFunction(kept => document.querySelector('[data-setup-row="speech"] .su-detail')?.textContent?.endsWith(kept), kept);
   }
   pass('setup: week, month and Always come from saved settings');
+  speechReady = false; await setupPage.reload(); await setupPage.locator('#open-app:disabled').waitFor();
+  speechReady = true; await setupPage.reload(); await setupPage.locator('#open-app:not(:disabled)').waitFor();
+  pass('setup: Open HearAlong requires ready speech, not optional FFmpeg');
   await page.locator('#close-settings').click(); await open('setup');
   assert.deepEqual(await page.locator('#setup-settings [data-setup-row]').evaluateAll(es => es.map(e => e.getAttribute('data-setup-row'))), ['speech', 'ai', 'microphone', 'ffmpeg']);
   await page.locator('#close-settings').click();
@@ -155,7 +160,13 @@ try {
   await cdp.send('Network.setUserAgentOverride', { userAgent: 'Mozilla/5.0 Firefox/140.0' }); await setupPage.reload();
   await setupPage.locator('[data-setup-row="chrome"]').waitFor();
   assert.deepEqual(await setupPage.locator('[data-setup-row]').evaluateAll(es => es.map(e => e.getAttribute('data-setup-row'))), ['speech', 'ai', 'microphone', 'chrome', 'ffmpeg']);
-  pass('setup: Settings uses the same order; Chrome is before FFmpeg when shown');
+  const handoff = setupPage.getByRole('link', { name: 'Open in Chrome', exact: true });
+  await handoff.evaluate((a: HTMLAnchorElement) => a.addEventListener('click', event => { event.preventDefault(); a.dataset.checkedHref = a.href; }, { once: true }));
+  await handoff.click(); assert.equal(await handoff.getAttribute('data-checked-href'), `google-chrome://${new URL(app.url).host}/setup`);
+  await open('speech'); assert.equal(await page.locator('#model').count(), 0);
+  await open('cloud'); assert.equal(await page.locator('#setup-web').isVisible(), false); assert.equal(await page.locator('#setup-web').textContent(), '');
+  await page.locator('#close-settings').click();
+  pass('setup: Settings uses the same order; Chrome handoff is exact; obsolete speech/web controls absent');
   // Read and open the supplied design in this same test Chrome, without external requests.
   if (process.env.UI_PASS_MOCKUP) {
     const source = await readFile(process.env.UI_PASS_MOCKUP, 'utf8');
@@ -164,6 +175,7 @@ try {
     for (const id of ['t-auto', 't-setup', 't-paused', 't-memory']) await page.locator(`#${id}`).click();
     pass('supplied mockup opened in test Chrome; tabs 1–4 inspected');
   }
+  await checkSetupPage(browser, app.url, out); pass('current setup contracts, including surviving FIX1/FIX2 cases');
   assert.deepEqual(errors, []); pass('no browser page errors');
   console.log(`${checks} checks passed`);
 } finally {

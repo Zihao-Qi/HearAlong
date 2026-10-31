@@ -5,7 +5,7 @@ import { gapPreviewKeyCases } from '../test/fixtures/gap-preview-keys.ts';
 
 /** Gemini's spanning draft, plus pending handoff/selection and stable gap-bounded DOM identities. */
 export async function checkGapFixesPage(page: Page, show: (snapshot: any) => Promise<void>, results: string[], out: string) {
-  await page.waitForTimeout(3100); // finish the original drag note's unchanged grace period
+  await page.locator('.draft-selection-note').waitFor({ state: 'detached' });
   const words = 'Please stack the blue crates beside the kiln before opening'.split(' ').map((text, i) => ({ text, startMs: 526000 + i * 240, endMs: 526240 + i * 240 }));
   const draft = { source: 'mic:fixture', speaker: 'Me', window: 'spanning', windowStartMs: 526000, coveredUntilMs: 528400,
     text: words.map(w => w.text).join(' '), words, behind: false };
@@ -40,12 +40,12 @@ export async function checkGapFixesPage(page: Page, show: (snapshot: any) => Pro
   assert.equal(await page.locator('#transcript .para').evaluateAll(nodes => nodes.every((n, i) => n === (window as any).gapRunNodes[i])), true);
   assert.deepEqual(await readRows(), expected);
   // Hold the after-gap preview during its final handoff, as M9a does with composed pending runs.
-  await page.evaluate(() => {
+  await page.evaluate(() => new Promise<void>(resolve => {
+    document.addEventListener('selectionchange', () => resolve(), { once: true });
     const row = document.querySelectorAll('#transcript .para')[2], range = document.createRange();
     range.selectNodeContents(row.querySelector('p')!); getSelection()!.removeAllRanges(); getSelection()!.addRange(range);
     (window as any).heldGapRun = { row, html: row.outerHTML };
-  });
-  await page.waitForTimeout(100);
+  }));
   const segments = [
     { id: 'spanning-final:0', startMs: 526000, endMs: 526950, text: 'Please stack the blue', speaker: 'Me', revision: 0, edits: [] },
     { id: 'spanning-final:1', startMs: 526960, endMs: 528400, text: 'crates beside the kiln before opening', speaker: 'Me', revision: 0, edits: [] },
@@ -55,7 +55,10 @@ export async function checkGapFixesPage(page: Page, show: (snapshot: any) => Pro
     const held = (window as any).heldGapRun; return held.row.isConnected && held.row.outerHTML === held.html;
   }), true, 'selected preview is immutable through the final handoff');
   assert.deepEqual((await readRows()).map(s => s.trim()), expected, 'each word stays on its side of the gap exactly once while held');
-  await page.evaluate(() => getSelection()!.removeAllRanges()); await page.waitForTimeout(150);
+  await page.evaluate(() => new Promise<void>(resolve => {
+    document.addEventListener('selectionchange', () => resolve(), { once: true }); getSelection()!.removeAllRanges();
+  }));
+  await page.waitForFunction(() => !document.querySelector('#transcript .preview-text'));
   assert.deepEqual((await readRows()).map(s => s.trim()), expected);
   assert.equal(await page.locator('#transcript .preview-text').count(), 0);
   assert.equal(await page.locator('#transcript span[data-id]').count(), 2);

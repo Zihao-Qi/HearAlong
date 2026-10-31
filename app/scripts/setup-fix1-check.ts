@@ -1,4 +1,4 @@
-// Regression drivers for FIX1. Assertions (including visual ones) live in setup-check.ts.
+// Focused setup fixtures; surviving contracts are shared with ui-pass in setup-assertions.ts.
 import assert from 'node:assert/strict';
 import { chromium, type Page } from 'playwright-core';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
@@ -70,7 +70,7 @@ export async function runSetupFix1Checks(check: Check) {
     await f.page.route('**/setup.js', route => route.fulfill({ contentType: 'text/javascript', body: '' }));
     await f.page.route('**/api/setup', route => route.fulfill({ json: state }));
     await f.page.route('**/api/setup/speech-models', route => route.fulfill({ json: { models: catalogue, truncated: false } }));
-    await f.page.route('**/api/setup/ai/models?refresh=1', route => route.fulfill({ json: aiModels }));
+    await f.page.route('**/api/setup/ai/models?refresh=1*', route => route.fulfill({ json: aiModels }));
     await f.page.goto(`${f.app.url}/setup`);
     await f.page.evaluate(async ({ state, details }) => {
       const modulePath = '/setup-ui.js'; const { SetupUI } = await import(modulePath);
@@ -84,6 +84,20 @@ export async function runSetupFix1Checks(check: Check) {
   }
   async function recheck(f: Awaited<ReturnType<typeof fixture>>) {
     const response = await f.context.request.post(`${f.app.url}/api/setup/recheck`, { headers: { Origin: f.app.url } }); assert.ok(response.ok());
+  }
+  async function closeRegisteredPage(page: Page) {
+    const pageId = await page.evaluate(async () => { const path = '/page-session.js'; return (await import(path)).pageId; });
+    // CDP tab-close can destroy the target without running pagehide. Deliver that lifecycle event while the target is
+    // alive, then acknowledge its real beacon before closing. A missing/wrong goodbye still fails the idle assertions.
+    await Promise.all([
+      page.context().waitForEvent('response', { predicate: response => {
+        const url = new URL(response.url());
+        return url.pathname === '/api/bye' && url.searchParams.get('page') === pageId
+          && response.request().method() === 'POST' && response.status() === 204;
+      } }),
+      page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide'))),
+    ]);
+    await page.close();
   }
   const selected = process.env.SETUP_FIX1_CASES?.split(',').map(Number) ?? Array.from({ length: 15 }, (_, i) => i + 1);
   async function run(id: number, fn: () => Promise<void>) {
@@ -102,16 +116,16 @@ export async function runSetupFix1Checks(check: Check) {
         await f.page.setViewportSize({ width: 390, height: 900 }); await shot(f.page, '01-390-alive-after-grace');
         await check(f.page, 1, { idle: f.idle, heartbeats });
         await f.page.locator('#open-app').click(); await f.page.locator('#meeting-button').waitFor();
-        await f.page.close(); await until(() => f.idle, 10_000);
+        await closeRegisteredPage(f.page); await until(() => f.idle, 10_000);
       } finally { await f.dispose(); }
       const closing = await fixture({ seen: false, idle: true });
-      try { await closing.page.goto(`${closing.app.url}/setup`); await closing.page.locator('[data-setup-row="speech"]').waitFor(); await closing.page.close(); await until(() => closing.idle, 10_000); }
+      try { await closing.page.goto(`${closing.app.url}/setup`); await closing.page.locator('[data-setup-row="speech"]').waitFor(); await closeRegisteredPage(closing.page); await until(() => closing.idle, 10_000); }
       finally { await closing.dispose(); }
     });
     await run(2, async () => {
       for (const width of [1280, 390]) {
-        const f = await fixture(); f.setFound(false); await f.page.goto(`${f.app.url}/setup`); await recheck(f); await f.page.goto(f.app.url); // No meetings: allow dashboard through a fictional meeting.
-        // A seen returning user with a meeting can read the dashboard while FFmpeg is absent.
+        const f = await fixture({ ready: false }); f.setFound(false); await f.page.goto(`${f.app.url}/setup`); await recheck(f); await f.page.goto(f.app.url);
+        // Speech is required; FFmpeg is optional. A returning user's meeting remains readable.
         f.app.store.createMeeting('Example readable meeting'); await f.page.goto(f.app.url); await f.page.setViewportSize({ width, height: 900 });
         let release!: () => void; const gate = new Promise<void>(r => release = r);
         try {
@@ -127,21 +141,22 @@ export async function runSetupFix1Checks(check: Check) {
     });
     await run(3, async () => {
       const facts: Record<string, boolean> = {};
-      for (const path of ['action', 'focus', 'visible', 'model-action', 'model-focus']) {
+      // FFmpeg is optional now; retain the required-speech recovery cases.
+      for (const path of ['model-action', 'model-focus']) {
         const f = await fixture({ ready: !path.startsWith('model-') }); f.setFound(path === 'model-focus'); f.app.store.createMeeting('Example returning meeting');
         try {
           await f.page.goto(`${f.app.url}/setup`); await recheck(f); await f.page.goto(f.app.url); await f.page.locator('#status-dot.error').waitFor();
           if (path.startsWith('model-')) await f.repairModel();
           if (path.endsWith('action')) {
             f.setDelay(1500); await f.page.locator('#open-system').click(); await f.page.locator('#setup-settings [data-setup-row="ffmpeg"] button', { hasText: 'Check again' }).waitFor();
-            await f.page.locator('#setup-settings [data-setup-row="ffmpeg"] button', { hasText: 'Check again' }).click(); await f.page.locator('#close-settings').click(); f.setFound(true); await f.page.waitForTimeout(path === 'model-action' ? 4500 : 2200);
+            await f.page.locator('#setup-settings [data-setup-row="ffmpeg"] button', { hasText: 'Check again' }).click(); await f.page.locator('#close-settings').click(); f.setFound(true);
           } else {
             // Simulate a Terminal install at the OS boundary, without updating the server's cached setup row.
             f.setFound(true);
             if (path.endsWith('focus')) await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
             else await f.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-            await f.page.waitForTimeout(path === 'model-focus' ? 3500 : 800);
           }
+          await f.page.waitForFunction(() => !document.getElementById('status-dot')?.classList.contains('error'));
           facts[path] = !(await f.page.locator('#status-dot').evaluate(e => !e.hasAttribute('hidden') && e.classList.contains('error')));
           for (const width of [1280, 390]) { await f.page.setViewportSize({ width, height: 900 }); await shot(f.page, `03-${width}-${path}-recovered`); }
         } finally { await f.dispose(); }
@@ -156,24 +171,33 @@ export async function runSetupFix1Checks(check: Check) {
         await f.page.clock.pauseAt(new Date('2026-01-01T00:01:00Z'));
         await f.page.unroute('**/api/setup');
         await f.page.route('**/api/setup', async route => { reads++; times.push(await f.page.evaluate(() => Date.now())); await route.fulfill(reads <= 6 ? { status: 503, json: { error: 'Example transient failure' } } : { json: snapshot() }); });
-        await f.page.evaluate(() => { void (window as any).fixUi.refresh(); }); await f.page.waitForTimeout(150);
+        await f.page.evaluate(() => {
+          const ui = (window as any).fixUi, refresh = ui.refresh.bind(ui);
+          ui.refresh = (...args: any[]) => { (window as any).setupRefresh = refresh(...args); return (window as any).setupRefresh; };
+        });
+        await f.page.evaluate(() => (window as any).fixUi.refresh());
         const firstError = await f.page.locator('#fix1-error').isVisible();
         let secondError = false;
         for (const ms of [1000, 2000, 4000, 8000, 10000, 10000]) {
-          await f.page.clock.runFor(ms); await f.page.waitForTimeout(150);
+          await f.page.clock.runFor(ms);
+          await f.page.evaluate(() => (window as any).setupRefresh);
           if (reads === 2) {
             secondError = await f.page.locator('#fix1-error').isVisible();
             for (const width of [1280, 390]) { await f.page.setViewportSize({ width, height: 900 }); await shot(f.page, `04-${width}-error-after-two`); }
           }
         }
         await f.page.unroute('**/api/setup');
-        let release!: () => void, sequenceReads = 0; const gate = new Promise<void>(r => release = r);
+        let release!: () => void, entered!: () => void, sequenceReads = 0;
+        const gate = new Promise<void>(r => release = r), firstRead = new Promise<void>(r => entered = r);
         await f.page.route('**/api/setup', async route => {
-          if (++sequenceReads === 1) { await gate; await route.fulfill({ json: state }); }
+          if (++sequenceReads === 1) { entered(); await gate; await route.fulfill({ json: state }); }
           else await route.fulfill({ json: snapshot() });
         });
-        await f.page.evaluate(() => { void (window as any).fixUi.refresh(); }); await until(() => sequenceReads === 1);
-        await f.page.evaluate(() => (window as any).fixUi.refresh()); release(); await f.page.waitForTimeout(150);
+        try {
+          await f.page.evaluate(() => { (window as any).staleSetupRefresh = (window as any).fixUi.refresh(); }); await firstRead;
+          await f.page.evaluate(() => (window as any).fixUi.refresh()); release();
+          await f.page.evaluate(() => (window as any).staleSetupRefresh);
+        } finally { release(); }
         const staleState = await f.page.evaluate(() => (window as any).fixUi.status.rows[0].state);
         for (const width of [1280, 390]) { await f.page.setViewportSize({ width, height: 900 }); await shot(f.page, `04-${width}-retry-recovery`); }
         await check(f.page, 4, { reads, times, firstError, secondError, staleState });
@@ -192,7 +216,8 @@ export async function runSetupFix1Checks(check: Check) {
         await cdp.send('Browser.setPermission', { permission: { name: 'microphone' }, setting: 'prompt', origin: f.app.url, browserContextId: targetInfo.browserContextId });
         await f.page.getByRole('button', { name: 'Allow', exact: true }).waitFor(); await f.page.getByRole('button', { name: 'Allow', exact: true }).click();
         await f.page.locator('#close-settings').click(); await f.page.locator('#open-system').click(); await f.page.locator('.settings-nav [data-section="setup"]').click();
-        await f.page.evaluate(() => (window as any).resolveMic()); await f.page.waitForTimeout(200);
+        await f.page.evaluate(() => (window as any).resolveMic());
+        await f.page.waitForFunction(() => (window as any).delayedMicStream.getTracks().every((t: MediaStreamTrack) => t.readyState === 'ended'));
         for (const width of [1280, 390]) { await f.page.setViewportSize({ width, height: 900 }); await shot(f.page, `05-${width}-late-microphone`); await check(f.page, 5); }
       } finally { await f.dispose(); }
     });
@@ -245,7 +270,7 @@ export async function runSetupFix1Checks(check: Check) {
           try {
             await f.page.setViewportSize({ width, height: 900 }); await f.page.goto(f.app.url); await f.page.locator('#open-system').click(); await f.page.locator('.settings-nav [data-section="setup"]').click();
             await f.page.locator('#setup-settings [data-setup-row="speech"]').getByRole('button', { name: 'Change' }).click(); await f.page.getByRole('button', { name: 'Use Example broken', exact: true }).click();
-            await f.page.waitForTimeout(1800); await shot(f.page, `11-${width}-failed-switch`); await check(f.page, 11);
+            await f.page.locator('#setup-settings .su-switch-error').waitFor(); await shot(f.page, `11-${width}-failed-switch`); await check(f.page, 11);
           } finally { await f.dispose(); }
           continue;
         }
@@ -260,7 +285,7 @@ export async function runSetupFix1Checks(check: Check) {
             if (id === 13) { await f.page.getByRole('button', { name: /Show all/ }).click(); await f.page.getByRole('searchbox').fill('Moonshine base'); }
           }
           if ([14, 15].includes(id)) {
-            await f.page.unroute('**/api/setup/ai/models?refresh=1'); await f.page.route('**/api/setup/ai/models?refresh=1', route => route.fulfill({ json: id === 14 ? { state: 'ok', count: 1, providers: ['example'], models: [{ id: 'example/main' }] } : aiModels }));
+            await f.page.unroute('**/api/setup/ai/models?refresh=1*'); await f.page.route('**/api/setup/ai/models?refresh=1*', route => route.fulfill({ json: id === 14 ? { state: 'ok', count: 1, providers: ['example'], models: [{ id: 'example/main' }] } : aiModels }));
             await f.page.locator('[data-setup-row="ai"]').getByRole('button', { name: 'Change' }).click(); await f.page.locator('#su-ai-main').waitFor();
           }
           await shot(f.page, `${String(id).padStart(2, '0')}-${width}-visual`); await check(f.page, id);

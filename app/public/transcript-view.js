@@ -106,6 +106,19 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
   const scrollTo = top => { box.scrollTop = top; setTop = box.scrollTop; };
   const visible = () => Boolean(box.offsetParent) && box.clientHeight > 0;
   const atBottom = () => visible() && box.scrollHeight - box.clientHeight - box.scrollTop < 48;
+  // Geometry changes before the browser dispatches scroll. A playback tick or poll in between must not overwrite that
+  // reader movement and then mistake the delayed event for our own scroll. Internal scrollTo calls already track setTop.
+  const observeScroll = () => {
+    if (!visible() || Math.abs(box.scrollTop - setTop) < 1) return false;
+    setTop = box.scrollTop;
+    userScrolledAt = Date.now();
+    if (!blocked()) {
+      heightFloor = 0; reserveHeight(0); setTop = box.scrollTop;
+      view.following = atBottom();
+    }
+    changed();
+    return true;
+  };
   function anchor() {
     const rect = box.getBoundingClientRect();
     const y = pointer && pointer.y > rect.top && pointer.y < rect.bottom ? pointer.y : rect.top + 12;
@@ -232,6 +245,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
       ...planned.slice(first, last + 1).filter(r => !heldKeys.has(r.key)), ...planned.slice(last + 1)];
   }
   function render(next, preserve = false, released = false) {
+    observeScroll();
     snapshot = next;
     if (down) return;
     const ranges = selectionRanges();
@@ -295,14 +309,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     if (heardMs !== null) view.hear(heardMs);
     if (oldHeight !== box.scrollHeight || rows.length) changed();
   }
-  box.addEventListener('scroll', () => {
-    if (!visible() || Math.abs(box.scrollTop - setTop) < 1) return;
-    setTop = box.scrollTop;
-    userScrolledAt = Date.now();
-    if (blocked()) { changed(); return; }
-    heightFloor = 0; reserveHeight(0); setTop = box.scrollTop;
-    view.following = atBottom(); changed();
-  });
+  box.addEventListener('scroll', observeScroll);
   box.addEventListener('pointerdown', event => {
     down = true; pointer = { x: event.clientX, y: event.clientY };
     const draft = event.target.closest('.live-draft');
@@ -343,6 +350,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
   view.render = render;
   // Share M9a's drag/selection guard, visibility check and tracked programmatic scrolls.
   view.hear = ms => {
+    observeScroll();
     heardMs = ms;
     const heard = ms === null ? null : [...view.paragraphs.values()].findLast(n => n.dataset.kind === 'final'
       && Number(n.dataset.start) <= ms && ms < Number(n.dataset.end));
