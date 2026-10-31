@@ -130,7 +130,7 @@ test('"raised again" attachments: unconfirmed when AI-recorded, confirmable, and
   try {
     f.apply([{ op: 'create', type: 'todo', text: 'Check the nursery heater', source: meeting(0) }]);
     f.apply([{ op: 'confirm', item: 'T-1' }], 'user');
-    const raised = f.apply([{ op: 'addSource', item: 'T-1', source: { kind: 'meeting', meetingId: 'm2', quote: 'The nursery water still feels cool; inspect the heater today.' } }]);
+    f.apply([{ op: 'addSource', item: 'T-1', source: { kind: 'meeting', meetingId: 'm2', quote: 'The nursery water still feels cool; inspect the heater today.' } }]);
     const [, , attach] = f.memory.timeline(P, 'T-1');
     assert.deepEqual([attach.op, attach.confirmed, f.memory.item(P, 'T-1')!.confirmed], ['addSource', false, true], 'the item stays confirmed');
     f.apply([{ op: 'confirm', item: 'T-1', event: attach.id }], 'user');

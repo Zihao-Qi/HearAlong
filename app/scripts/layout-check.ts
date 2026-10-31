@@ -6,7 +6,6 @@ import { chromium, type Page } from 'playwright-core';
 import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import assert from 'node:assert/strict';
 // The narrowest board pane (public/app.js BOARD_MIN): tabs and the order toggle share one line down to it.
 const BOARD_MIN = 380;
 import { startServer } from '../src/server.ts';

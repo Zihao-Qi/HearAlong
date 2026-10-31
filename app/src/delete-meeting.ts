@@ -2,7 +2,7 @@
 // The cleanup manifest commits with the deletion, so a crash after COMMIT can be retried by id.
 import type { DatabaseSync } from 'node:sqlite';
 import { lstatSync, readdirSync, realpathSync, readFileSync, rmSync, writeFileSync, renameSync, openSync, closeSync, fsyncSync } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
 import { dataRelativeRecordingPath, repairedRecordingPath } from './recording-paths.ts';
 
 export type DeletionStore = { db: DatabaseSync; directory: string; deletionBusy?: (id: string) => string[] };

@@ -2,7 +2,7 @@
 // Pi is told where it is, and the answer's citations are checked against it. One model call; the PDF is only read.
 // Usage: node --experimental-strip-types scripts/pdf-answer-check.ts <file.pdf> "<question>" [model]
 import { mkdir, realpath, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { MeetingStore } from '../src/store.ts';
 import { ActionJobs, piActionRunner } from '../src/actions.ts';
 import { PdfText } from '../src/pdf-text.ts';

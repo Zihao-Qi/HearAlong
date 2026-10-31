@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { script, nice, email, gitEnv, prefix, writePackage, processes, alive, stopFixtureProcesses, fixture, hangingCode, assertCheckStopped, checkCode } from './helpers/land.ts';
+import { script, nice, gitEnv, prefix, writePackage, processes, alive, stopFixtureProcesses, fixture, hangingCode, assertCheckStopped, checkCode } from './helpers/land.ts';
 
 for (const command of ['check', 'test', 'checks'] as const) {
   test(`timeout ends ${command} and all group members, restores main and retains feature`, t => {

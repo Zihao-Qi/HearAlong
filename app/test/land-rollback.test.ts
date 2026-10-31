@@ -2,10 +2,10 @@ import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
-import { script, email, prefix, summaryCode, processes, fixture, checkCode, mutationCode } from './helpers/land.ts';
+import { script, prefix, summaryCode, processes, fixture, checkCode, mutationCode } from './helpers/land.ts';
 
 
 test('a failing check restores main exactly and retains worktree commit; later checks do not run', t => {

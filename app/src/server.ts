@@ -54,7 +54,6 @@ type Quick = { ask(prompt: string): Promise<{ text: string }>; close?(): Promise
 type Heavy = (prompt: string, options: { cwd: string; readRoots: string[]; sessionDir: string; signal: AbortSignal }) => Promise<{ text: string; provider?: string; model?: string }>;
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const UUID = /^[a-f0-9-]{36}$/;
 class HttpError extends Error { status: number; constructor(status: number, message: string) { super(message); this.status = status; } }
 async function body(req: IncomingMessage, maxBytes: number) {
   const chunks: Buffer[] = [];
