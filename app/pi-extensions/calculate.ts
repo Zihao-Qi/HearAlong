@@ -11,7 +11,7 @@ import { spawnGated, type Gated } from './process-groups.ts';
 import { calculationEnv, sandboxed } from './tool-sandbox.ts';
 
 const MAX_BYTES = 20_000;
-const HEAP_MB = 256, FOOTPRINT_MB = 512, MEMORY_POLL_MS = 100;
+const HEAP_MB = 256, FOOTPRINT_MB = 512, MEMORY_POLL_MS = 100, MEMORY_CHECK_MS = 250, MEMORY_PROBE_MS = 5000;
 const RUNNER = realpathSync(fileURLToPath(new URL('./calculate-runner.cjs', import.meta.url)));
 
 /** Only the library and its dependency closure, never all of node_modules or the application. */
@@ -79,11 +79,15 @@ export default function calculate(pi: ExtensionAPI) {
   let runs = Math.max(0, Number(process.env.CALCULATE_USED ?? 0) || 0);
   const readOnly = process.env.CALCULATE_USED !== undefined;
   const groups = new Set<number>();
-  const killGroup = (pid: number) => { try { process.kill(-pid, 'SIGKILL'); } catch { /* already gone */ } groups.delete(pid); };
+  const killGroup = (pid: number) => {
+    let killed = false;
+    try { process.kill(-pid, 'SIGKILL'); killed = true; } catch { /* already gone */ }
+    groups.delete(pid); return killed;
+  };
   process.once('exit', () => { for (const pid of groups) killGroup(pid); });
   pi.registerTool({
     name: 'calculate', label: 'Calculate', executionMode: 'sequential',
-    description: `Run a short JavaScript snippet on HearAlong's bundled Node with bundled mathjs as global math. Only console.log/console.error output is returned; final expressions are not printed automatically. Numbers are IEEE doubles unless you use math.bignumber or math.fraction. Fresh process, ${runMs / 1000} s limit, at most ${maxRuns} runs per task. No lexical require. Seatbelt denies task-file access, file writes (except /dev/null), networking and signals to other processes; Node 22 permissions do not control networking. Node permissions additionally deny starting programs, workers, addons, WASI and inspector access. Memory: ${HEAP_MB} MB V8 old space and a ${FOOTPRINT_MB} MB sampled physical-footprint watchdog (including compressed memory, not a hard quota). Read materials with Pi's file tools. Nothing is installed or downloaded.`,
+    description: `Run a short JavaScript snippet on HearAlong's bundled Node with bundled mathjs as global math. Only console.log/console.error output is returned; final expressions are not printed automatically. Numbers are IEEE doubles unless you use math.bignumber or math.fraction. Fresh process, ${runMs / 1000} s limit, at most ${maxRuns} runs per task. No lexical require. Seatbelt denies task-file access, file writes (except /dev/null), networking and signals to other processes; Node 22 permissions do not control networking. Node permissions additionally deny starting programs, workers, addons, WASI and inspector access. Memory: ${HEAP_MB} MB V8 old space and a ${FOOTPRINT_MB} MB sampled physical-footprint watchdog (including compressed memory, not a hard quota). Code waits for the first memory check; the process group pauses when a check is overdue (${MEMORY_CHECK_MS} ms run window) and resumes only after a valid sample under the limit. Failed checks are retried; paused time counts toward the time limit. Read materials with Pi's file tools. Nothing is installed or downloaded.`,
     promptSnippet: 'Calculate using JavaScript and bundled mathjs; console.log the results',
     promptGuidelines: [
       'Use calculate only for small calculations, checks and tables, never experiment suites, benchmarks or large simulations.',
@@ -110,38 +114,59 @@ export default function calculate(pi: ExtensionAPI) {
       }
       const result = unrecorded ?? await new Promise<Outcome>(resolve => {
         const child = gated?.child ?? spawn(command, args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-        let timedOut = false, finished = false, memoryExceeded = false;
-        let memoryError: string | undefined, memoryTimer: NodeJS.Timeout | undefined;
+        let timedOut = false, finished = false, memoryExceeded = false, stopping = false;
+        let paused = false, codeSent = false, killedByGuard = false, lastMemorySample: number | undefined;
+        let memoryError: string | undefined, memorySignalError: string | undefined;
+        let memoryTimer: NodeJS.Timeout | undefined, checkTimer: NodeJS.Timeout | undefined;
         let memoryProbe: ReturnType<typeof execFile> | undefined;
-        const memoryStarted = performance.now();
-        let memorySampled = false;
         if (child.pid) groups.add(child.pid);
-        const stop = () => { if (child.pid) killGroup(child.pid); };
+        // SIGKILL also ends stopped members, including the recording gate and its sentinel.
+        const stop = () => { if (stopping) return; stopping = true; if (child.pid) killedByGuard = killGroup(child.pid); };
+        const pause = () => {
+          if (stopping || !child.pid || paused) return;
+          try { process.kill(-child.pid, 'SIGSTOP'); paused = true; }
+          catch { memorySignalError = 'could not pause calculation for memory check'; stop(); }
+        };
         // Buffer/ArrayBuffer storage is outside V8's heap. RSS misses compressed pages on macOS.
         // Stock macOS top's MEM is physical footprint, as in Activity Monitor. Sample from the trusted parent.
-        // -F/-R avoid framework/map walks; allow slow hosts 5 s per probe, with 100 ms between completed samples.
+        // -F/-R avoid framework/map walks. Probes may take 5 s, but never extend the 250 ms run window.
+        // Measured top latency was 58–839 ms: slow samples pause work rather than killing it or leaving it unchecked.
         const sampleMemory = () => {
-          if (finished || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
-          memoryProbe = execFile('/usr/bin/top', ['-l', '1', '-F', '-R', '-stats', 'pid,mem', '-pid', String(child.pid)], { env: { LC_ALL: 'C' }, timeout: 5000 }, (error, output) => {
+          if (finished || stopping || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+          memoryProbe = execFile('/usr/bin/top', ['-l', '1', '-F', '-R', '-stats', 'pid,mem', '-pid', String(child.pid)], { env: { LC_ALL: 'C' }, timeout: MEMORY_PROBE_MS }, (error, output) => {
             memoryProbe = undefined;
-            if (finished || child.exitCode !== null || child.signalCode !== null) return;
+            if (finished || stopping || child.exitCode !== null || child.signalCode !== null) return;
             const bytes = physicalFootprintBytes(String(output), child.pid!);
-            // top can omit the row while the gate/sandbox-exec is becoming Node. Bound that startup grace;
-            // once sampled, missing/malformed data (or any probe error) fails closed immediately.
-            if (!error && bytes === null && !memorySampled && !/^\s*PID\s+MEM\s*$/m.test(output) && performance.now() - memoryStarted < 5000) {
+            if (error || bytes === null) {
+              pause();
               memoryTimer = setTimeout(sampleMemory, MEMORY_POLL_MS); return;
             }
-            if (error || bytes === null) { memoryError = 'could not monitor calculation memory'; stop(); return; }
-            memorySampled = true;
             if (bytes > FOOTPRINT_MB * 1024 * 1024) { memoryExceeded = true; stop(); return; }
+            lastMemorySample = performance.now();
+            clearTimeout(checkTimer);
+            if (paused) {
+              try { process.kill(-child.pid!, 'SIGCONT'); paused = false; }
+              catch { memorySignalError = 'could not resume calculation after memory check'; stop(); return; }
+            }
+            checkTimer = setTimeout(pause, MEMORY_CHECK_MS);
+            // Neither the recording gate nor sandbox-exec can evaluate a snippet before stdin is sent.
+            if (!codeSent) { codeSent = true; child.stdin!.end(params.code); }
             memoryTimer = setTimeout(sampleMemory, MEMORY_POLL_MS);
           });
         };
-        const timer = setTimeout(() => { timedOut = true; stop(); }, runMs);
+        const timer = setTimeout(() => {
+          timedOut = true;
+          if (!codeSent || lastMemorySample === undefined || performance.now() - lastMemorySample >= MEMORY_PROBE_MS) memoryError = 'timed out: calculation memory could not be checked';
+          stop();
+        }, runMs);
         const finish = (value: Outcome) => {
           if (finished) return;
-          finished = true; clearTimeout(timer); clearTimeout(memoryTimer); memoryProbe?.kill();
+          finished = true; clearTimeout(timer); clearTimeout(memoryTimer); clearTimeout(checkTimer); memoryProbe?.kill();
           signal?.removeEventListener('abort', stop); stop();
+          // macOS can reject STOP/CONT on an unreaped zombie. Kill immediately, but use the reaped outcome:
+          // the permission-restricted unrecorded child cannot leave descendants. If no KILL was delivered and its exit
+          // is confirmed, nothing live remains. Recorded groups may still have a live sentinel: retain their errors.
+          if (memorySignalError && (gated || killedByGuard || (value.code === null && value.signal === null))) memoryError ??= memorySignalError;
           resolve(memoryExceeded ? { ...value, error: `memory limit exceeded (${FOOTPRINT_MB} MB physical footprint)` }
             : memoryError ? { ...value, error: memoryError } : value);
         };
@@ -152,7 +177,7 @@ export default function calculate(pi: ExtensionAPI) {
         child.on('exit', stop); // also ends the recording gate's sentinel
         child.on('close', (code, sig) => finish({ code, signal: sig, timedOut }));
         if (signal?.aborted) stop();
-        else { gated?.release(); child.stdin!.end(params.code); sampleMemory(); }
+        else { pause(); gated?.release(); sampleMemory(); }
       });
       if (gated) await rm(gated.path, { force: true }).catch(() => {});
       const out = stdout.text(), err = stderr.text();

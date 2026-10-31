@@ -11,6 +11,11 @@ for (const path of ['../README.md', '../../docs/architecture.md']) test(`read bo
   assert.ok(text.includes('Seatbelt is the network and cross-process signal boundary'));
   assert.match(text, /256 MB/); assert.match(text, /512 MB/);
   assert.match(text, /not a hard allocation quota/);
+  assert.match(text, /250 ms/);
+  assert.match(text, /[Pp]aused time counts toward the (?:existing )?wall-clock limit/);
+  assert.match(text, /memory could not be checked/);
+  assert.match(text, /only if code was never sent or no valid sample arrived/);
+  assert.match(text, /ordinary timeout/);
   assert.ok(text.includes('A public-looking hostname can still resolve to a private address (DNS rebinding); the hook does not resolve DNS.'));
   assert.ok(text.includes('The sandbox still allows other macOS system services by default apart from the named restrictions on clipboard, Spotlight, preferences, AppleEvents and Security.'));
   for (const location of ['/opt/homebrew/Cellar', '/private/etc', '/dev']) assert.ok(text.includes(`\`${location}\``));
