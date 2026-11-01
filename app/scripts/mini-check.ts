@@ -8,6 +8,9 @@ import './check-env.ts';
 import { testBrowser } from './test-browser.ts';
 import { chromium, type Frame, type Page, type Response, type Route } from 'playwright-core';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
+import { CheckFlightRecorder, failureText } from './check-flight-recorder.ts';
+import { installMiniFlightRecorder, miniBrowserSnapshot } from './mini-flight-recorder.ts';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
@@ -27,6 +30,8 @@ const board = async (message: string) => {
 };
 const results: string[] = [], errors: string[] = [];
 let currentStep = 'startup', finishing = false, deadlineExpired = false, timer: ReturnType<typeof setTimeout>;
+const flight = new CheckFlightRecorder(outDir, () => ({ currentStep, finishing, deadlineExpired }));
+let scrollFailureSnapshot: (() => Promise<void>) | undefined;
 let rejectDeadline!: (error: Error) => void;
 const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
 // Playwright timeouts do not cover evaluate(), response bodies, route removal or browser/server close.
@@ -34,12 +39,15 @@ const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = rej
 function step(name: string, ms = 60_000) {
   if (finishing) throw new Error('mini-check has entered cleanup');
   clearTimeout(timer); currentStep = name;
+  flight.record('step', { name });
   console.log(`STEP ${name} (${ms} ms limit)`);
   timer = setTimeout(() => { deadlineExpired = true; rejectDeadline(new Error(`mini-check step "${name}" timed out after ${ms} ms`)); }, ms);
 }
 const check = (name: string, ok: boolean, detail = '') => {
   const line = `${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`;
-  results.push(line); console.log(line); step(`after ${name}`);
+  results.push(line); console.log(line);
+  if (!ok) flight.fail('assertion failed', { name });
+  step(`after ${name}`);
 };
 async function bounded<T>(name: string, work: () => Promise<T>, ms = 10_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -70,6 +78,19 @@ async function run() {
   const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
   context.setDefaultTimeout(30_000);
   context.setDefaultNavigationTimeout(30_000);
+  await context.addInitScript(installMiniFlightRecorder);
+  context.on('page', observed => {
+    observed.on('console', message => flight.record('console', { type: message.type(), text: message.text().split('\n')[0] }));
+    observed.on('pageerror', error => flight.record('pageerror', failureText(error)));
+  });
+  context.on('response', response => {
+    if (!response.url().endsWith('/pcm')) return;
+    const request = response.request(), headers = request.headers();
+    flight.record('pcm.response', { status: response.status(), sequence: headers['x-sequence'], pending: headers['x-pending'], source: headers['x-audio-source'] });
+  });
+  context.on('requestfailed', request => flight.record('requestfailed', {
+    url: new URL(request.url()).pathname, error: request.failure()?.errorText,
+  }));
   // Keeps the page's answer to Chrome's offer to open the window by itself (automatic Picture-in-Picture), to offer it by hand.
   await context.addInitScript(() => {
     const session = navigator.mediaSession;
@@ -323,6 +344,37 @@ async function run() {
     return { key: rows[index]?.dataset.key, y: rows[index]?.getBoundingClientRect().top ?? NaN, index };
   });
   const rowY = (key: string) => mf.evaluate(k => document.querySelector(`#m-scroll .ln[data-key="${k}"]`)?.getBoundingClientRect().top ?? NaN, key);
+  scrollFailureSnapshot = async () => {
+    // All work/requests below are failure-only and happen before any teardown. Save partial evidence first.
+    const snapshot: Record<string, unknown> = { ms: performance.now(), currentStep };
+    const save = () => writeFileSync(join(outDir, 'scroll-wait-snapshot.json'), JSON.stringify(snapshot, null, 2) + '\n');
+    save();
+    // Start the DOM snapshot first so the diagnostic full fetch cannot replace lastReceived before it is read.
+    const tasks = [
+      mf.evaluate(miniBrowserSnapshot).then(value => { snapshot.mini = value; save(); }),
+      page.evaluate(miniBrowserSnapshot).then(value => { snapshot.page = value; save(); }),
+      mf.evaluate(async () => (await fetch('/api/live')).json()).then(value => { snapshot.fullLive = value; save(); }),
+      pip.screenshot({ path: join(outDir, 'scroll-wait-failure.png') }).then(() => { snapshot.screenshot = 'scroll-wait-failure.png'; }),
+      Promise.resolve().then(() => {
+        snapshot.store = app.store.meetings().map(meeting => ({ id: meeting.id, audioEndMs: app.store.audioEndMs(meeting.id),
+          heldFrames: app.store.heldFrames(meeting.id).length, chunks: app.store.chunks(meeting.id).map(chunk => ({
+            id: chunk.id, source: chunk.source, sequence: chunk.sequence, startMs: chunk.startMs, seconds: chunk.seconds,
+            status: chunk.status, attempts: chunk.attempts, error: chunk.error?.split('\n')[0], retryAt: chunk.retryAt,
+          })) }));
+        snapshot.queue = { queuedCount: app.store.queuedCount(), running: app.jobs.running, stopped: app.jobs.stopped, storageError: app.jobs.storageError };
+        snapshot.capture = app.capture.recordingNow();
+        save();
+      }),
+    ];
+    // Reuse the existing diagnostic bound; do not alter the wait, step deadline, or its original exception.
+    const collection = await Promise.allSettled([bounded('scroll failure snapshot', () => Promise.allSettled(tasks))]);
+    snapshot.collection = collection.map(result => result.status === 'rejected' ? { status: result.status, error: failureText(result.reason) }
+      : { status: result.status, tasks: result.value.map(task => task.status === 'rejected' ? { status: task.status, error: failureText(task.reason) } : { status: task.status }) });
+    snapshot.events = flight.events;
+    snapshot.console = flight.events.filter(event => event.event === 'console');
+    snapshot.pageErrors = flight.events.filter(event => event.event === 'pageerror');
+    save();
+  };
   step('wait for three scrollable transcript paragraphs', 130_000);
   await mf.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.querySelectorAll('.ln').length >= 3 && s.scrollHeight > s.clientHeight + 200; }, null, { timeout: 120_000 });
   let state = await scrollState();
@@ -736,13 +788,20 @@ let cleanupFailed = false;
 try {
   await Promise.race([run(), deadline]);
 } catch (error) {
+  flight.fail('check error', { error: failureText(error) });
+  flight.save();
+  if (currentStep === 'wait for three scrollable transcript paragraphs' && scrollFailureSnapshot) {
+    const [snapshot] = await Promise.allSettled([scrollFailureSnapshot()]);
+    if (snapshot.status === 'rejected') flight.record('snapshot error', failureText(snapshot.reason));
+    flight.save();
+  }
   const line = `FAIL ${currentStep}: ${(error as Error).message}`;
   results.push(line); console.error(line); console.error(error);
 } finally {
   finishing = true;
   clearTimeout(timer!);
   for (const [name, close] of [['close test browser', closeBrowser], ['close fixture server', closeServer]] as const) {
-    try { console.log(`STEP ${name} (10000 ms limit)`); await bounded(name, close); }
+    try { flight.record('teardown', { name }); console.log(`STEP ${name} (10000 ms limit)`); await bounded(name, close); }
     catch (error) { cleanupFailed = true; results.push(`FAIL ${name}: ${(error as Error).message}`); console.error(error); }
   }
   // Timed-out startup/work may still own files even if its close hook was not installed yet.

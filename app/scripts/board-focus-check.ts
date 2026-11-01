@@ -1,7 +1,8 @@
 // Real reveal endpoint and periodic page refreshes, with fictional card/material snapshots and no model calls.
 import './check-env.ts';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright-core';
+import { chromium, type Route } from 'playwright-core';
+import { CheckFlightRecorder } from './check-flight-recorder.ts';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -17,7 +18,37 @@ const meeting = app.store.createMeeting('Fictional seed library');
 const card = { id: 'fictional-card', type: 'action', text: 'Pack twelve marigold envelopes.', confidence: 'high', materials: false, nonProject: false, firstMs: 0, createdAt: 0,
   occurrences: [{ lines: [{ id: 'fictional-line', startMs: 0 }], quote: 'Pack twelve marigold envelopes.' }], dismissed: false, attempts: [] };
 const results: string[] = [];
-const check = (name: string, ok: boolean) => { results.push(`${ok ? 'PASS' : 'FAIL'} ${name}`); };
+let currentStep = 'launch browser', inFlight = 0, routeId = 0, teardown = 'not started', completed = false;
+const flight = new CheckFlightRecorder(out, () => ({ currentStep, inFlight, teardown }));
+const step = (name: string) => { currentStep = name; flight.record('step', { name, inFlight }); };
+const check = (name: string, ok: boolean) => {
+  results.push(`${ok ? 'PASS' : 'FAIL'} ${name}`);
+  flight.record('assertion', { name, ok });
+  if (!ok) flight.fail('assertion failed', { name });
+};
+async function fixture(route: Route, fields: () => Record<string, unknown>) {
+  const id = ++routeId, url = new URL(route.request().url());
+  // No headers/query strings: the only data here are the fictional fixture's endpoint and lifecycle.
+  const endpoint = url.origin + url.pathname;
+  let phase = 'fetch';
+  inFlight++;
+  flight.record('route.fetch.start', { id, url: endpoint, currentStep, inFlight, teardown });
+  try {
+    const response = await route.fetch();
+    flight.record('route.fetch.end', { id, url: endpoint, status: response.status(), inFlight });
+    phase = 'json';
+    const body = await response.json();
+    phase = 'fulfill';
+    await route.fulfill({ response, json: { ...body, ...fields() } });
+    phase = 'done';
+  } finally {
+    // Observe failure without catching/replacing the rejection; Node still owns the original unhandled crash.
+    if (phase !== 'done') flight.record(phase === 'fetch' ? 'route.fetch.error' : 'route.error',
+      { id, url: endpoint, phase, currentStep, inFlight, teardown });
+    inFlight--;
+    flight.record('route.end', { id, inFlight });
+  }
+}
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   browser = await chromium.launch({ executablePath: testBrowser(), headless: true });
@@ -36,19 +67,18 @@ try {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   let revision = 0, showCard = true;
-  await page.route('**/api/meetings/*/board', async route => {
-    const response = await route.fetch();
-    await route.fulfill({ response, json: { ...await response.json(), cards: showCard ? [{ ...card, text: card.text + (revision ? ` Revision ${revision}.` : '') }] : [] } });
-  });
-  await page.route(`**/api/meetings/${meeting.id}`, async route => {
-    const response = await route.fetch();
-    await route.fulfill({ response, json: { ...await response.json(), materials: [{ id: 'fictional-material', label: 'Seed inventory', kind: 'file', scope: `meeting:${meeting.id}` }] } });
-  });
+  await page.route('**/api/meetings/*/board', route => fixture(route, () => ({
+    cards: showCard ? [{ ...card, text: card.text + (revision ? ` Revision ${revision}.` : '') }] : [],
+  })));
+  await page.route(`**/api/meetings/${meeting.id}`, route => fixture(route, () => ({
+    materials: [{ id: 'fictional-material', label: 'Seed inventory', kind: 'file', scope: `meeting:${meeting.id}` }],
+  })));
   const twoRefreshes = async (container = 'board-cards') => {
     const before = await page.evaluate(id => (window as unknown as { refreshCounts: Record<string, number> }).refreshCounts[id] ?? 0, container);
     await page.waitForFunction(({ id, before }) => ((window as unknown as { refreshCounts: Record<string, number> }).refreshCounts[id] ?? 0) >= before + 2,
       { id: container, before }, { timeout: 15_000 });
   };
+  step('navigate and reveal mini card');
   await page.goto(app.url);
   await page.locator('[data-card="fictional-card"]').waitFor({ state: 'attached' });
   const mini = await context.newPage();
@@ -64,6 +94,7 @@ try {
   await twoRefreshes();
   check('mini reveal: card keeps focus across two Board refreshes', await page.evaluate(() => document.activeElement?.getAttribute('data-card') === 'fictional-card'));
 
+  step('card button focus across refreshes');
   await page.bringToFront();
   // Start at the revealed card, then Tab to its first button, as a keyboard user would.
   await page.locator('[data-card="fictional-card"]').evaluate(card => { (card as HTMLElement).tabIndex = -1; (card as HTMLElement).focus(); });
@@ -73,6 +104,7 @@ try {
   await twoRefreshes();
   check('card button keeps focus across two Board refreshes (including replacement)', await page.evaluate(() => document.activeElement?.className === 'cite card-time'));
 
+  step('card field focus, value and caret');
   await page.getByRole('button', { name: 'Ask about this', exact: true }).click();
   const field = page.locator('[data-key="ask-fictional-card"]');
   await field.fill('Twelve fictional envelopes');
@@ -84,9 +116,11 @@ try {
   console.log('field after refreshes:', JSON.stringify(fieldState));
   check('card field keeps focus, value and caret across two Board refreshes', fieldState.focused && fieldState.value === 'Twelve fictional envelopes' && fieldState.start === 3 && fieldState.end === 9);
 
+  step('focus elsewhere');
   await page.locator('#tab-notes').click();
   await twoRefreshes();
   check('clicking elsewhere: Board refresh never pulls focus back', await page.evaluate(() => document.activeElement?.id === 'tab-notes'));
+  step('meeting menu focus');
   await page.locator('#meeting-button').click();
   const meetingItem = page.locator('#meeting-list button').first();
   await meetingItem.focus();
@@ -94,11 +128,13 @@ try {
   check('meeting menu item keeps focus across two status refreshes', await meetingItem.evaluate(item => document.activeElement === item));
   await page.keyboard.press('Escape');
 
+  step('material remove focus');
   await page.locator('#open-meeting').click();
   await page.locator('#materials button').first().focus();
   await twoRefreshes('materials');
   check('material Remove button keeps focus across two detail refreshes', await page.locator('#materials button').first().evaluate(button => document.activeElement === button));
 
+  step('removed card focus');
   // A removed card is not a reason to send focus to a different card or control.
   await page.locator('#close-settings').click();
   await page.locator('#tab-board').click();
@@ -107,6 +143,7 @@ try {
   showCard = false;
   await twoRefreshes();
   check('removed card: no replacement focus is invented', await page.evaluate(() => document.activeElement === document.body));
+  step('timestamp collision helpers');
   // Exercise the exact served helpers with colliding timestamps, as the memory views render them.
   const source = await (await fetch(`${app.url}/app.js`)).text();
   const shared = await (await fetch(`${app.url}/live-shared.js`)).text();
@@ -150,9 +187,21 @@ window.focusFixture = {
   }
   await probe.close();
   check('no page errors', errors.length === 0);
+  completed = true;
 } finally {
+  if (!completed) flight.fail('check interrupted');
+  teardown = 'browser';
+  flight.record('teardown.browser.start', { currentStep, inFlight });
+  flight.save();
   await browser?.close();
+  flight.record('teardown.browser.end', { inFlight });
+  teardown = 'server';
+  flight.record('teardown.server.start', { currentStep, inFlight });
+  flight.save();
   await app.close();
+  teardown = 'complete';
+  flight.record('teardown.server.end', { inFlight });
+  flight.save();
   await rm(directory, { recursive: true, force: true });
   console.log(results.join('\n'));
   await writeFile(join(out, 'results.txt'), results.join('\n') + '\n');
