@@ -1468,6 +1468,8 @@ export async function startServer(options: {
     };
     server.requestTimeout = 120_000;
     server.headersTimeout = 10_000;
+    // Loopback: the page's 3 s refresh can reuse an idle socket at Node's default 6 s expiry.
+    server.keepAliveTimeout = 65_000;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(options.port ?? Number(process.env.PORT ?? 4318), '127.0.0.1', resolve);
