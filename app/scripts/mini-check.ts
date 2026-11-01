@@ -16,6 +16,7 @@ import { join, resolve } from 'node:path';
 import { startServer } from '../src/server.ts';
 import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import { LiveDrafts } from '../src/drafts.ts';
+import { checkMiniRefresh } from './mini-refresh-check.ts';
 
 const [speech, them, out = 'artifacts/mini-view'] = process.argv.slice(2);
 if (!speech || !them) throw new Error('Usage: mini-check.ts <speech.wav> <them.wav> [outDir]');
@@ -59,6 +60,8 @@ async function bounded<T>(name: string, work: () => Promise<T>, ms = 10_000): Pr
 }
 let closeBrowser = async () => {}, closeServer = async () => {}, removeDirectory = async () => {};
 async function run() {
+  step('check mini refresh hang recovery');
+  await checkMiniRefresh();
   step('create isolated fixture');
   await mkdir(outDir, { recursive: true });
   const directory = await mkdtemp(join(tmpdir(), 'meeting-mini-'));

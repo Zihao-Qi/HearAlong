@@ -38,7 +38,10 @@ async function refresh() {
   if (busy) return;
   busy = true;
   try {
-    const get = async have => { const response = await fetch(have ? `/api/live?have=${encodeURIComponent(have)}` : '/api/live'); return response.ok ? response.json() : null; };
+    // liveModel only reads local state and saved cards, not model output. Allow 5 s for a slow local read/body,
+    // shared by the incremental reply and any whole-meeting retry so the entire refresh stays bounded.
+    const signal = AbortSignal.timeout(5000);
+    const get = async have => { const response = await fetch(have ? `/api/live?have=${encodeURIComponent(have)}` : '/api/live', { signal }); return response.ok ? response.json() : null; };
     let model = await get(view.tag);
     // A reply that builds on paragraphs this page does not hold (another recording's): the whole meeting instead.
     const from = model?.recording?.paragraphsFrom ?? 0;
