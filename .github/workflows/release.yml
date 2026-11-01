@@ -65,11 +65,17 @@ jobs:
             FLAGS=(--latest)
           fi
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "${FLAGS[@]}"
-          else
-            gh release edit "$GITHUB_REF_NAME" --verify-tag "${FLAGS[@]}"
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --draft
           fi
           gh release upload "$GITHUB_REF_NAME" --clobber \
             "$RUNNER_TEMP/release/HearAlong.tar.gz" \
             "$RUNNER_TEMP/release/HearAlong.tar.gz.sha256" \
             "$RUNNER_TEMP/release/install.sh"
+          ASSETS=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
+          for ASSET in HearAlong.tar.gz HearAlong.tar.gz.sha256 install.sh; do
+            if ! grep -Fxq "$ASSET" <<< "$ASSETS"; then
+              echo "Missing release asset: $ASSET" >&2
+              exit 1
+            fi
+          done
+          gh release edit "$GITHUB_REF_NAME" --verify-tag --draft=false "${FLAGS[@]}"
