@@ -67,6 +67,15 @@ func backgroundQuitText(_ status: BackgroundStatus) -> (title: String, text: Str
     }
 }
 
+// Local ISO 8601 with an explicit offset; prefix every line, including OS errors with newlines.
+func launcherLogLines(_ message: String, date: Date = Date(), zone: TimeZone = .current) -> String {
+    let formatter = ISO8601DateFormatter()
+    formatter.timeZone = zone
+    let time = formatter.string(from: date)
+    return message.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        .components(separatedBy: "\n").map { "\(time) \($0)\n" }.joined()
+}
+
 final class Helper: NSObject, NSApplicationDelegate {
     private var config: Config!
     private var serverPid: pid_t = 0     // also its process group: every child the server starts is in it
@@ -75,6 +84,8 @@ final class Helper: NSObject, NSApplicationDelegate {
     private var starting = false
     private var quitting = false
     private var openedByURL = false
+    private var loggedStart = false
+    private var loggedQuit = false
     private var signalSource: DispatchSourceSignal?
     private let env = ProcessInfo.processInfo.environment
     private var mini: MiniWindow?
@@ -110,6 +121,14 @@ final class Helper: NSObject, NSApplicationDelegate {
             return
         }
         self.config = config
+        // Check before making logs: that would create the missing data folder and hide the server's notice.
+        let root = URL(fileURLWithPath: config.app).standardizedFileURL
+        let legacy = root.deletingLastPathComponent().appendingPathComponent("prototype/data")
+        if dataURL == root.appendingPathComponent("data"),
+           !FileManager.default.fileExists(atPath: dataURL.path), FileManager.default.fileExists(atPath: legacy.path) {
+            fail("Your meetings are still in prototype/data — move that folder to app/data, then restart")
+            return
+        }
         // SIGTERM (logging out, or a test) stops the server gracefully, then the helper.
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
@@ -123,12 +142,17 @@ final class Helper: NSObject, NSApplicationDelegate {
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         openedByURL = true
+        if loggedStart { log("Helper received meetingassistant://start.") }
         if config != nil { ensureServer(openWindow: false) }
     }
 
     // MARK: Server
 
     private func ensureServer(openWindow open: Bool) {
+        if !loggedStart {
+            loggedStart = true
+            log(openedByURL ? "Helper started through meetingassistant://start." : "Helper started directly.")
+        }
         if starting || quitting || alive() { return }
         starting = true
         DispatchQueue.global().async {
@@ -142,8 +166,9 @@ final class Helper: NSObject, NSApplicationDelegate {
                 // Already running (npm start): nothing to start; the helper is not needed.
                 DispatchQueue.main.async {
                     self.starting = false
-                    if open { self.openWindow() }
-                    NSApp.terminate(nil)
+                    self.log("Server already running; leaving it running.")
+                    if open { self.openWindow(then: { NSApp.terminate(nil) }) }
+                    else { NSApp.terminate(nil) }
                 }
                 return
             }
@@ -156,18 +181,7 @@ final class Helper: NSObject, NSApplicationDelegate {
     }
 
     private func startServer(openWindow open: Bool) {
-        // Check before making logs: that would create the missing data folder and hide the server's notice.
-        let root = URL(fileURLWithPath: config.app).standardizedFileURL
         let data = dataURL
-        let legacy = root.deletingLastPathComponent().appendingPathComponent("prototype/data")
-        if data == root.appendingPathComponent("data"),
-           !FileManager.default.fileExists(atPath: data.path), FileManager.default.fileExists(atPath: legacy.path) {
-            let notice = "Your meetings are still in prototype/data — move that folder to app/data, then restart"
-            if env["MEETING_LAUNCHER_NO_WINDOW"] != "1" { FileHandle.standardError.write("\(notice)\n".data(using: .utf8)!) }
-            fail(notice)
-            return
-        }
-        do { try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true) } catch {}
         var actions: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&actions)
         posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
@@ -194,6 +208,7 @@ final class Helper: NSObject, NSApplicationDelegate {
         posix_spawnattr_destroy(&attributes)
         guard status == 0 else { fail("The server could not start (\(String(cString: strerror(status)))). Node: \(config.node)"); return }
         owned = true
+        log("Server started (pid \(serverPid)).")
         let pid = serverPid
         DispatchQueue.global().async {
             let deadline = Date().addingTimeInterval(60)
@@ -210,6 +225,8 @@ final class Helper: NSObject, NSApplicationDelegate {
             while waitpid(pid, &code, 0) == -1 && errno == EINTR {}
             DispatchQueue.main.async {
                 self.serverExited = true
+                let signal = code & 0x7f
+                self.log(signal == 0 ? "Server exited with status \((code >> 8) & 0xff)." : "Server exited on signal \(signal) (wait status \(code)).")
                 self.backgroundTimer?.invalidate()
                 self.backgroundTimer = nil
                 self.removeBackgroundStatus()
@@ -259,15 +276,32 @@ final class Helper: NSObject, NSApplicationDelegate {
     }
 
     /** The installed app if Chrome has made it, else a Chrome tab (where Chrome offers to install it). Brings an open one forward. */
-    private func openWindow() {
-        if env["MEETING_LAUNCHER_NO_WINDOW"] == "1" { return }
-        if let app = installedApp { NSWorkspace.shared.open(app); return }
+    private func openWindow(then finish: @escaping () -> Void = {}) {
+        if env["MEETING_LAUNCHER_NO_WINDOW"] == "1" { log("Window opening disabled (test mode)."); finish(); return }
+        if let app = installedApp {
+            log("Opening installed app window.")
+            NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                DispatchQueue.main.async {
+                    if let error { self.log("Installed app window could not open: \(error.localizedDescription)") }
+                    else { self.log("Installed app window opened.") }
+                    finish()
+                }
+            }
+            return
+        }
         guard let chrome = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") else {
             fail("Google Chrome is needed: HearAlong runs as a Chrome app. Install Chrome, then open HearAlong Helper again.")
             return
         }
+        log("Opening Chrome tab.")
         NSWorkspace.shared.open([base], withApplicationAt: chrome, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-            if let error { DispatchQueue.main.async { self.warn("Chrome could not open HearAlong.", error.localizedDescription) } }
+            DispatchQueue.main.async {
+                if let error {
+                    self.log("Chrome tab could not open: \(error.localizedDescription)")
+                    self.warn("Chrome could not open HearAlong.", error.localizedDescription)
+                } else { self.log("Chrome tab opened.") }
+                finish()
+            }
         }
     }
 
@@ -373,8 +407,7 @@ final class Helper: NSObject, NSApplicationDelegate {
         guard mini == nil else { return }
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep], reason: "HearAlong is running")
         let testDir = env["MEETING_HELPER_TEST_DIR"].map { URL(fileURLWithPath: $0) }
-        let captureLog = logURL
-        let audio = makeAppAudioInput(serverGroup: serverPid, log: { text in try? "[\(ISO8601DateFormatter().string(from: Date()))] \(text)\n".append(to: captureLog) })
+        let audio = makeAppAudioInput(serverGroup: serverPid, log: { [weak self] text in self?.log(text) })
         mini = MiniWindow(base: base, origin: "http://127.0.0.1:\(port)", testDir: testDir, audioInput: audio,
                           isAssistantApp: { [weak self] app in self?.isHearAlong(app) ?? false },
                           activateApp: { [weak self] in
@@ -413,8 +446,9 @@ final class Helper: NSObject, NSApplicationDelegate {
         backgroundTimer?.invalidate()
         backgroundTimer = nil
         removeBackgroundStatus()
-        if let mini { mini.stop { self.stopServer(then: finish) } }
-        else { stopServer(then: finish) }
+        let done = { self.logQuitting(); finish() }
+        if let mini { mini.stop { self.stopServer(then: done) } }
+        else { stopServer(then: done) }
     }
 
     private func stopServer(then finish: @escaping () -> Void) {
@@ -440,6 +474,30 @@ final class Helper: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
+    func applicationWillTerminate(_ notification: Notification) { logQuitting() }
+
+    private func logQuitting() {
+        guard !loggedQuit else { return }
+        loggedQuit = true
+        log("Helper quitting.")
+    }
+
+    private func log(_ message: String) {
+        guard config != nil else { return }
+        // Never create app/data when the legacy-data notice is needed.
+        let root = URL(fileURLWithPath: config.app).standardizedFileURL
+        if dataURL == root.appendingPathComponent("data"),
+           !FileManager.default.fileExists(atPath: dataURL.path),
+           FileManager.default.fileExists(atPath: root.deletingLastPathComponent().appendingPathComponent("prototype/data").path) { return }
+        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // O_APPEND shares the file safely with the server's stdout/stderr; one write per event.
+        let fd = Darwin.open(logURL.path, O_WRONLY | O_CREAT | O_APPEND, 0o600)
+        guard fd >= 0 else { return }
+        defer { Darwin.close(fd) }
+        let bytes = Array(launcherLogLines(message).utf8)
+        _ = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+    }
+
     // MARK: Failures
 
     private func logTail() -> String {
@@ -448,6 +506,7 @@ final class Helper: NSObject, NSApplicationDelegate {
     }
 
     private func fail(_ message: String, details: String = "") {
+        log("Helper error: \(message)") // Not the log tail, which may contain unrelated server output.
         let text = details.isEmpty || config == nil ? message : "\(message)\n\nLast lines of \(logURL.path):\n\(details)"
         if env["MEETING_LAUNCHER_NO_WINDOW"] != "1" { warn("HearAlong could not run", text) }
         else { FileHandle.standardError.write("\(text)\n".data(using: .utf8)!) }

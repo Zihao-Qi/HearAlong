@@ -11,6 +11,7 @@ import { sessionToken } from './session-token.ts';
 import { CaptureConflict } from './capture-error.ts';
 import { downloadDisposition } from './download.ts';
 import { helperStatus, type HelperWork } from './helper-status.ts';
+import { lifecycleLines, idleStopMessage, type IdleReason } from './lifecycle-log.ts';
 import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
@@ -112,7 +113,7 @@ export async function startServer(options: {
    * The installed app (M7): `onIdle` is called once no page has been open for `idleMs` (a closed window says goodbye at once) and
    * nothing is recording, transcribing or running. Off by default (npm start keeps running).
    */
-  idleMs?: number; onIdle?: () => void;
+  idleMs?: number; onIdle?: (reason: IdleReason) => void;
   /** Disposable roots and process boundary for update-guard checks; production always uses this checkout. */
   codeRoot?: string; publicRoot?: string; exit?: (code: number) => void; fingerprint?: FingerprintOptions;
 } = {}) {
@@ -601,7 +602,7 @@ export async function startServer(options: {
       for (const [id, at] of pages) if (now - at > 180_000) pages.delete(id);
       if (pages.size || working() || closing || restarting || shuttingDown || (!seenPage && now - startedAt < 60_000)) { idleSince = null; return; }
       idleSince ??= now;
-      if (now - idleSince >= options.idleMs!) { clearInterval(idleLoop); options.onIdle?.(); }
+      if (now - idleSince >= options.idleMs!) { clearInterval(idleLoop); options.onIdle?.(seenPage ? 'last-page-closed' : 'no-page'); }
     }, 1000) : undefined;
     idleLoop?.unref();
     startupLoops.add(idleLoop);
@@ -1604,19 +1605,20 @@ export async function startServer(options: {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   // Started by the installed app's helper: stop once its window has been gone for MEETING_IDLE_EXIT_S seconds and nothing runs.
   const idleSeconds = Number(process.env.MEETING_IDLE_EXIT_S ?? 0);
-  const app = await startServer(idleSeconds > 0 ? { idleMs: idleSeconds * 1000, onIdle: () => { console.log('No window open and nothing running: stopping.'); stop(); } } : {}).catch(error => {
+  const app = await startServer(idleSeconds > 0 ? { idleMs: idleSeconds * 1000, onIdle: reason => { console.log(lifecycleLines(idleStopMessage(reason))); stop(); } } : {}).catch(error => {
     if ((error as Error).message !== LEGACY_DATA_NOTICE) throw error;
-    console.error(LEGACY_DATA_NOTICE);
+    console.error(lifecycleLines(LEGACY_DATA_NOTICE));
     process.exit(1);
   });
-  console.log(`HearAlong: ${app.url}\nData: ${app.directory}\nNo recording starts until you click Start microphone. No cloud model is connected.`);
+  console.log(lifecycleLines(`HearAlong: ${app.url}\nData: ${app.directory}\nNo recording starts until you click Start microphone. No cloud model is connected.`));
   if (process.env.MEETING_OPEN_BROWSER === '1') {
     spawn('open', ['-a', 'Google Chrome', app.url], { stdio: 'ignore' }).on('error', error => console.warn(`Open ${app.url} manually: ${error.message}`));
   }
-  function stop() {
+  function stop(signal?: string) {
+    if (signal) console.log(lifecycleLines(`Received ${signal}: stopping.`));
     // Signal/idle callbacks cannot wait; shutdown drains recording work before the CLI exits.
     app.shutdown().then(() => process.exit(0)).catch(error => {
-      console.error(`Shutdown failed: ${(error as Error).message}`);
+      console.error(lifecycleLines(`Shutdown failed: ${(error as Error).message}`));
       process.exit(1);
     });
   }
