@@ -12,6 +12,9 @@ import type { Board } from '../src/board.ts';
 import { CaptureSuspension } from '../public/capture-clock.js';
 import { checkGapFixesPage } from './transcript-notes-fix1-page-cases.ts';
 import { assertUniqueTranscriptKeys, watchTranscriptKeys, finishTranscriptKeyCheck } from './transcript-key-check.ts';
+import { checkMainRefresh } from './main-refresh-check.ts';
+
+await checkMainRefresh();
 
 const out = resolve(process.argv[2] ?? 'artifacts/transcript-notes');
 await mkdir(out, { recursive: true });

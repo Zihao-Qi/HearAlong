@@ -277,7 +277,9 @@ async function refreshSegments() {
   const savesBefore = mini.saves;
   try {
     const have = segmentsPoll.have(requested);
-    const reply = await api(`/api/meetings/${requested}/segments${have ? `?have=${encodeURIComponent(have)}` : ''}`);
+    // Local reads only (no model wait), but a long meeting still scans the full transcript. Allow 10 s,
+    // including the JSON body, so a stalled poll releases the guard and cannot block page startup forever.
+    const reply = await api(`/api/meetings/${requested}/segments${have ? `?have=${encodeURIComponent(have)}` : ''}`, { signal: AbortSignal.timeout(10000) });
     if (requested !== meetingId || generation !== selectionGeneration) { segmentsPoll.reset(); return; }
     const snapshot = segmentsPoll.merge(requested, reply);
     if (!snapshot) return; // a stale answer for another meeting
