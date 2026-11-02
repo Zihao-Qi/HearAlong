@@ -117,7 +117,8 @@ test('server CLI prints one notice and exits before creating a store when only l
   const result = { status: await completed, stdout, stderr };
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(result.stdout, '');
-  assert.equal(result.stderr, `${notice}\n`);
+  assert.match(result.stderr, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} /);
+  assert.equal(result.stderr.slice(result.stderr.indexOf(' ') + 1), `${notice}\n`);
   assert.equal(fs.existsSync(f.directory), false, 'no log directory, lock, database or empty store was created');
   assert.deepEqual(snapshot(f.old), before);
 });

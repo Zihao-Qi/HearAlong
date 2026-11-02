@@ -50,6 +50,11 @@ struct HelperTests {
         check(backgroundQuitText(status(title: String(repeating: "🎵", count: 60))).text.contains(String(repeating: "🎵", count: 39) + "…"), "truncate by characters")
         let decoded = try JSONDecoder().decode(BackgroundStatus.self, from: Data(#"{"pageOpen":false,"working":true,"label":"Writing notes for Weekly sync","kind":"notes","title":"Weekly sync"}"#.utf8))
         check(backgroundLabel(decoded) == backgroundLabel(status()), "endpoint decoding")
-        print("PASS helper wording and visibility: \(checks) checks (no app launch)")
+        let date = Date(timeIntervalSince1970: 1767323045) // 2026-01-02T03:04:05Z
+        for (offset, expected) in [(19800, "2026-01-02T08:34:05+05:30"), (-28800, "2026-01-01T19:04:05-08:00"), (0, "2026-01-02T03:04:05Z")] {
+            let lines = launcherLogLines("Starting\r\nReady\nDone\rEnd", date: date, zone: TimeZone(secondsFromGMT: offset)!)
+            check(lines == ["Starting", "Ready", "Done", "End"].map { "\(expected) \($0)\n" }.joined(), "local ISO timestamp on every line")
+        }
+        print("PASS helper wording, visibility and timestamps: \(checks) checks (no app launch)")
     }
 }
