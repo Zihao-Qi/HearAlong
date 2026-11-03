@@ -44,13 +44,13 @@ function finder() {
   let electron, owned = [], database;
   const passed = label => { results.cases.push(label); console.log('PASS', label); };
   try {
-    for (const mode of ['recording', 'crash', 'idle']) {
+    for (const mode of ['recording', 'crash', 'renderer', 'idle']) {
       const scope = join(root, mode), home = join(scope, 'home'), data = join(scope, 'meetings');
       await mkdir(home, { recursive: true });
       const PORT = String(await port());
       const env = { ...process.env, HOME: home, MEETING_DATA_DIR: data, PORT, HEARALONG_NODE: process.execPath,
         MEETING_CLOUD: '0', HEARALONG_DESKTOP_TEST: '1', MEETING_IDLE_EXIT_S: mode === 'idle' ? '6' : '60',
-        HEARALONG_DESKTOP_TEST_SETUP: mode === 'idle' ? '1' : '0',
+        HEARALONG_DESKTOP_TEST_SETUP: ['idle', 'renderer'].includes(mode) ? '1' : '0',
         HF_HOME: join(scope, 'empty-hf'), XDG_CACHE_HOME: join(scope, 'cache'), XDG_CONFIG_HOME: join(scope, 'config') };
       delete env.ELECTRON_RUN_AS_NODE;
       electron = await _electron.launch({ executablePath, args: [__dirname], env, timeout: 30000 });
@@ -69,7 +69,7 @@ function finder() {
       const starting = await page.locator('h1').textContent();
       assert.equal(starting, 'Starting HearAlong…');
       assert.equal(await page.locator('p').textContent(), 'This takes a few seconds.');
-      await page.waitForURL(`http://127.0.0.1:${PORT}/${mode === 'idle' ? 'setup' : ''}`, { timeout: 30000 });
+      await page.waitForURL(`http://127.0.0.1:${PORT}/${['idle', 'renderer'].includes(mode) ? 'setup' : ''}`, { timeout: 30000 });
       await page.waitForFunction(() => window.hearalong?.desktop);
       // Playwright otherwise emulates focus, making document.hasFocus() unusable as native evidence.
       await nativeFocus(page);
@@ -77,6 +77,24 @@ function finder() {
       await until(async () => { try { owned = [serverPid, ...Object.values(JSON.parse(await readFile(join(data, 'descendants.json'), 'utf8')))]; return owned.length === 3; } catch { return false; } }, 'descendants');
       const inspect = () => electron.evaluate(({ app }) => process.mainModule.require(app.getAppPath() + '/main.cjs').state());
       passed(`${mode}: disk starting page then own server page`);
+      if (mode === 'renderer') {
+        await page.waitForSelector('[data-setup-row="microphone"]');
+        await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.getTitle() !== 'HearAlong mini')?.webContents.forcefullyCrashRenderer());
+        // Playwright permanently marks its Page crashed; inspect the recovered native WebContents instead.
+        await until(async () => electron.evaluate(async ({ BrowserWindow }) => {
+          const window = BrowserWindow.getAllWindows()[0];
+          if (!window || window.webContents.isLoading() || window.webContents.isCrashed()) return false;
+          return window.webContents.executeJavaScript('Boolean(document.querySelector(\'[data-setup-row="microphone"]\'))');
+        }).catch(() => false), 'reloaded main setup page');
+        assert.equal((await inspect()).serverPid, serverPid);
+        assert.match(await readFile(join(data, 'logs/launcher.log'), 'utf8'), /Main window stopped .*reloading/);
+        const closed = electron.waitForEvent('close');
+        await electron.evaluate(({ app }) => app.quit());
+        await closed; electron = null;
+        await until(() => owned.every(pid => !alive(pid)), 'renderer recovery group cleanup');
+        owned = []; passed('main renderer crash reloads without stopping the server; quit cleans group');
+        continue;
+      }
       if (mode === 'idle') {
         await page.waitForSelector('[data-setup-row="microphone"]');
         assert.equal(await page.locator('[data-setup-row="chrome"]').count(), 0);
@@ -167,7 +185,19 @@ function finder() {
       });
       await page.reload();
       await page.waitForFunction(() => document.querySelector('#start') && !document.querySelector('#start').disabled);
-      await page.click('#start'); await page.click('#start-mic');
+      try {
+        assert.equal(await page.locator('#start').isVisible(), true);
+        assert.equal(await page.locator('#start').isEnabled(), true);
+        // Send real mouse input but skip rAF stability: macOS occlusion can pause Electron's animation frames.
+        await page.click('#start', { force: true });
+        await page.locator('#start-mic').waitFor({ state: 'visible' });
+        await page.click('#start-mic', { force: true });
+      }
+      catch (error) {
+        console.error('Recording UI diagnostic', await page.evaluate(() => ({ url: location.href, text: document.body.innerText,
+          selected: localStorage.getItem('meeting-id'), start: document.querySelector('#start')?.outerHTML })));
+        throw error;
+      }
       await until(async () => (await inspect()).live?.session != null, 'recording');
       const started = Date.now();
       database = new DatabaseSync(join(data, 'meetings.sqlite'), { readOnly: true });

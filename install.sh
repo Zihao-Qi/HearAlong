@@ -1,244 +1,162 @@
 #!/bin/sh
-# Install a release for this user only. No administrator privileges or user-data migration.
+# One per-user app. Keep the function wrapper: a truncated curl stream must execute nothing.
 main() {
 set -eu
 umask 077
-
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 [ "$(uname -s)" = Darwin ] || fail 'HearAlong requires macOS.'
-case "$(uname -m)" in
-  arm64) ;;
-  x86_64) echo 'Note: transcription is slower on Intel Macs (CPU-only speech recognition).' ;;
-  *) fail 'HearAlong supports Apple Silicon and Intel Macs only.' ;;
-esac
+[ "$(uname -m)" = arm64 ] || fail 'HearAlong supports Apple Silicon only. Intel Macs are not supported yet. Nothing was changed.'
+major=$(sw_vers -productVersion)
+major=${major%%.*}
+case "$major" in *[!0-9]*|'') fail 'Could not determine the macOS version.' ;; esac
+[ "$major" -ge 26 ] || fail 'HearAlong requires macOS 26 or newer. Nothing was changed.'
 case "${1:-}" in
   '') [ "$#" -eq 0 ] || fail 'Usage: install.sh [--uninstall]' ;;
   --uninstall) [ "$#" -eq 1 ] || fail 'Usage: install.sh [--uninstall]' ;;
   *) fail 'Usage: install.sh [--uninstall]' ;;
 esac
-
-ROOT="$HOME/Library/Application Support/HearAlong"
+# Never redirect a normal install by accident. Test fixtures must opt in explicitly.
+home="$HOME"
+if [ "${HEARALONG_TEST_MODE:-0}" = 1 ]; then home=${HEARALONG_TEST_HOME:-$HOME}; fi
+case "$home" in /*) ;; *) fail 'Home folder must be an absolute path.' ;; esac
+ROOT="$home/Library/Application Support/HearAlong"
+APPLICATIONS="$home/Applications"
+BUNDLE="$APPLICATIONS/HearAlong.app"
 APP="$ROOT/app"
 DATA="$ROOT/data"
-HELPER="$HOME/Applications/HearAlong Helper.app"
-HELPER_CONFIG="$ROOT/helper.json"
-DEFAULT_LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
-LSREGISTER=${HEARALONG_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}
-if [ "${HEARALONG_TEST_MODE:-0}" != 1 ]; then
-  LSREGISTER="$DEFAULT_LSREGISTER"
-fi
-
-# Conservatively refuse any listener on the app's port, including a server still starting.
-# Do not follow redirects or use proxies, and never stop a running process.
+HELPER="$APPLICATIONS/HearAlong Helper.app"
 not_running() {
-  if pgrep -f '/Contents/MacOS/HearAlongHelper' >/dev/null 2>&1 ||
-     curl --noproxy '*' --silent --max-time 2 --output /dev/null http://127.0.0.1:4318/; then
-    fail 'Please quit HearAlong (and wait for its helper/server to exit), then run this command again. Nothing was stopped.'
+  # One TCP attempt, not an HTTP request: even a non-HTTP listener must block replacement.
+  if pgrep -f '/Contents/MacOS/HearAlong(Helper)?([[:space:]]|$)' >/dev/null 2>&1 ||
+     nc -z -G 2 127.0.0.1 4318 >/dev/null 2>&1; then
+    fail 'Please quit HearAlong and wait for it to exit, then run this command again. Nothing was stopped.'
   fi
 }
 not_running
-
-acquire_lock() {
-  mkdir "$ROOT/.install-lock" 2>/dev/null || fail "Another install may be running. If not, remove $ROOT/.install-lock and retry."
-}
+[ ! -L "$ROOT" ] && [ ! -L "$APPLICATIONS" ] || fail 'The install folders must not be symbolic links; nothing was changed.'
 [ ! -d "$ROOT/.install-lock" ] || fail "Another HearAlong install/uninstall may be running. If not, remove $ROOT/.install-lock and retry."
-
-# Only remove version directories owned by this installer, never an arbitrary symlink target.
-previous=''
+# Recognize only the old installer's relative .app-XXXXXX/app link. Never traverse arbitrary links.
 if [ -L "$APP" ]; then
   previous=$(readlink "$APP")
   version=${previous%/app}
   suffix=${version#.app-}
   case "$suffix" in *[!a-zA-Z0-9]*|'') fail "Unrecognized installation at $APP; leave it untouched." ;; esac
-  [ "$previous" = "$version/app" ] && [ "$version" = ".app-$suffix" ] && [ "${#suffix}" -eq 6 ] ||
+  [ "$previous" = "$version/app" ] && [ "$version" = ".app-$suffix" ] && [ "${#suffix}" -eq 6 ] && [ ! -L "$ROOT/$version" ] ||
     fail "Unrecognized installation at $APP; leave it untouched."
 elif [ -e "$APP" ]; then
   fail "An unmanaged folder exists at $APP; leave it untouched."
 fi
-
-if [ "${1:-}" = --uninstall ]; then
-  if [ -d "$ROOT" ]; then
-    acquire_lock
-    trap 'rmdir "$ROOT/.install-lock"' EXIT
-    trap 'exit 1' HUP INT TERM
-    if [ -n "$previous" ]; then
-      version=${previous%/app}
-      rm -rf "$ROOT/${version:?}" 2>/dev/null || true
-    fi
-    for dir in "$ROOT"/.app-*; do
-      [ -d "$dir" ] || continue
-      base=$(basename "$dir")
-      suffix=${base#.app-}
-      case "$suffix" in *[!a-zA-Z0-9]*|'') continue ;; esac
-      if [ "${#suffix}" -eq 6 ]; then
-        rm -rf "$ROOT/${base:?}" 2>/dev/null || true
-      fi
-    done
-    rm -f "$APP"
-    rm -rf "$HELPER"
-    for dir in "$ROOT"/.app-*; do
-      if [ -d "$dir" ]; then
-        fail "Could not remove $dir; uninstall incomplete."
-      fi
-    done
-  fi
-  rm -rf "$HELPER"
-  rm -f "$HELPER_CONFIG"
-  printf 'HearAlong removed. Your data is untouched: %s\nHomebrew, Node, FFmpeg and the Chrome web app were not removed.\n' "$DATA"
-  exit 0
+bundle_id() { plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist"; }
+if [ -e "$BUNDLE" ] || [ -L "$BUNDLE" ]; then
+  [ ! -L "$BUNDLE" ] && [ "$(bundle_id "$BUNDLE")" = io.github.zihao-qi.hearalong ] ||
+    fail 'An unmanaged HearAlong.app exists; leave it untouched.'
 fi
-
-if ! command -v brew >/dev/null 2>&1; then
-  printf '%s\n' 'Homebrew is required (and must be on PATH). Install it yourself with the official command, then rerun:' >&2
-  # shellcheck disable=SC2016
-  printf '%s\n' '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' >&2
-  exit 1
-fi
-if [ -n "${HEARALONG_CHROME_APP:-}" ]; then
-  [ -d "$HEARALONG_CHROME_APP" ] || fail 'HearAlong needs Google Chrome. Get it at https://www.google.com/chrome/, then rerun.'
-elif [ ! -d "$HOME/Applications/Google Chrome.app" ] && [ ! -d '/Applications/Google Chrome.app' ]; then
-  fail 'HearAlong needs Google Chrome. Get it at https://www.google.com/chrome/, then rerun.'
-fi
-command -v swiftc >/dev/null 2>&1 || fail 'The Xcode command line tools are required. Run xcode-select --install, then rerun.'
-
-node_ready() {
-  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 &&
-    node -e 'const [a,b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 19) ? 0 : 1)'
-}
-if ! node_ready; then
-  echo 'Will install Node.js 22 (node@22) with Homebrew; HearAlong needs Node >= 22.19.'
-  brew install node@22
-  PATH="$(brew --prefix node@22)/bin:$PATH"
-  export PATH
-fi
-node_ready || fail 'Node >= 22.19 and npm were not found after installation. Check your PATH.'
-
-# FFmpeg 4.4+ supports the audio operations used by HearAlong; require ffprobe too.
-ffmpeg_ready() {
-  for tool in ffmpeg ffprobe; do
-    command -v "$tool" >/dev/null 2>&1 || return 1
-    info=$("$tool" -version 2>/dev/null) || return 1
-    node -e 'const tool = process.argv[1]; const line = (process.argv[2] || "").split("\n")[0]; const re = new RegExp("^" + tool + " version n?(\\d+)\\.(\\d+)"); const m = re.exec(line); process.exit(m && (+m[1] > 4 || (+m[1] === 4 && +m[2] >= 4)) ? 0 : 1)' "$tool" "$info" || return 1
-  done
-}
-if ! ffmpeg_ready; then
-  echo 'Will install FFmpeg (including ffprobe) with Homebrew; HearAlong needs FFmpeg >= 4.4.'
-  brew install ffmpeg
-  PATH="$(brew --prefix ffmpeg)/bin:$PATH"
-  export PATH
-fi
-ffmpeg_ready || fail 'FFmpeg >= 4.4 and ffprobe were not found after installation. Check your PATH.'
-
-mkdir -p "$ROOT" "$HOME/Applications"
-acquire_lock
+mkdir -p "$ROOT" "$APPLICATIONS"
+mkdir "$ROOT/.install-lock" 2>/dev/null || fail "Another install may be running. If not, remove $ROOT/.install-lock and retry."
 stage=''
-helper_stage=''
-activated=0
-helper_saved=0
-helper_promoted=0
-config_saved=0
-config_promoted=0
+promoted=0
+exchange_pending=0
 complete=0
+exchange() {
+  "$1/Contents/Resources/bin/node" "$1/Contents/Resources/swap.cjs" "$2" "$3"
+}
 cleanup() {
   set +e
+  restored=1
   if [ "$complete" -eq 0 ]; then
-    if [ "$activated" -eq 1 ]; then
-      if [ -n "$previous" ]; then
-        rm -f "$ROOT/.rollback"
-        ln -s "$previous" "$ROOT/.rollback" 2>/dev/null || true
-        node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$ROOT/.rollback" "$APP" 2>/dev/null || true
-      else
-        rm -f "$APP"
+    if [ "$exchange_pending" -eq 1 ]; then
+      current_inode=$(stat -f %i "$BUNDLE" 2>/dev/null)
+      if [ "$current_inode" = "$next_inode" ]; then
+        if ! exchange "$BUNDLE" "$next" "$BUNDLE"; then
+          printf 'Could not restore HearAlong; the previous app is kept at %s\n' "$next" >&2
+          restored=0
+        fi
+      elif [ "$current_inode" != "$old_inode" ]; then
+        printf 'Could not confirm the installed app; recovery files are kept in %s\n' "$stage" >&2
+        restored=0
       fi
+    elif [ "$promoted" -eq 1 ]; then
+      rm -rf "$BUNDLE"
     fi
-    if [ "$helper_promoted" -eq 1 ]; then rm -rf "$HELPER"; fi
-    if [ "$helper_saved" -eq 1 ]; then mv "$helper_stage/previous.app" "$HELPER" 2>/dev/null || true; fi
-    if [ "$config_promoted" -eq 1 ]; then rm -f "$HELPER_CONFIG"; fi
-    if [ "$config_saved" -eq 1 ]; then mv "$helper_stage/previous.json" "$HELPER_CONFIG" 2>/dev/null || true; fi
   fi
-  rm -f "$ROOT/.next" "$ROOT/.rollback"
-  if [ -n "$stage" ] && [ "$complete" -eq 0 ]; then rm -rf "$stage"; fi
-  if [ -n "$helper_stage" ]; then rm -rf "$helper_stage"; fi
+  if [ -n "$stage" ] && [ "$restored" -eq 1 ]; then rm -rf "$stage"; fi
   rmdir "$ROOT/.install-lock" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
-stage=$(mktemp -d "$ROOT/.app-XXXXXX")
-helper_stage=$(mktemp -d "$HOME/Applications/.hearalong-XXXXXX")
-DEFAULT_RELEASE_URL=https://github.com/Zihao-Qi/HearAlong/releases/latest/download
-release=${HEARALONG_RELEASE_URL:-https://github.com/Zihao-Qi/HearAlong/releases/latest/download}
-if [ "${HEARALONG_TEST_MODE:-0}" != 1 ]; then
-  release="$DEFAULT_RELEASE_URL"
+remove_legacy() {
+  rm -f "$APP" "$ROOT/helper.json"
+  rm -rf "$HELPER"
+  for dir in "$ROOT"/.app-*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    base=${dir##*/}
+    suffix=${base#.app-}
+    case "$suffix" in *[!a-zA-Z0-9]*|'') continue ;; esac
+    [ "${#suffix}" -eq 6 ] || continue
+    rm -rf "$dir"
+    [ ! -e "$dir" ] || fail "Could not remove $dir; cleanup incomplete."
+  done
+}
+if [ "${1:-}" = --uninstall ]; then
+  rm -rf "$BUNDLE" "$ROOT/Electron"
+  remove_legacy
+  printf 'HearAlong removed. Your meetings are kept in %s\n' "$DATA"
+  echo 'The old Chrome version can be removed from Chrome.'
+  complete=1
+  exit 0
 fi
+release=https://github.com/Zihao-Qi/HearAlong/releases/latest/download
+if [ "${HEARALONG_TEST_MODE:-0}" = 1 ]; then release=${HEARALONG_RELEASE_URL:-$release}; fi
 case "$release" in
   https://*) ;;
-  file://*)
-    [ "${HEARALONG_TEST_MODE:-0}" = 1 ] || fail 'file:// release URLs are permitted only in test mode.'
-    ;;
-  *)
-    fail 'Release URL must use https://.'
-    ;;
+  file://*) [ "${HEARALONG_TEST_MODE:-0}" = 1 ] || fail 'file:// release URLs are permitted only in test mode.' ;;
+  *) fail 'Release URL must use https://.' ;;
 esac
-asset=HearAlong.tar.gz
-printf 'Downloading HearAlong from %s\n' "$release"
+stage=$(mktemp -d "$APPLICATIONS/.hearalong-XXXXXX")
+asset=HearAlong-mac-arm64.zip
+echo 'Downloading HearAlong.'
 curl -fSL "$release/$asset" -o "$stage/$asset"
 curl -fSL "$release/$asset.sha256" -o "$stage/$asset.sha256"
-# Verify a fixed filename, not filenames supplied by the checksum file.
+# Do not trust filenames from the checksum file.
 expected=$(awk 'NR == 1 { print tolower($1) }' "$stage/$asset.sha256")
 case "$expected" in *[!a-f0-9]*|'') fail 'Invalid release checksum.' ;; esac
 [ "${#expected}" -eq 64 ] || fail 'Invalid release checksum.'
 actual=$(shasum -a 256 "$stage/$asset")
 actual=${actual%% *}
 [ "$expected" = "$actual" ] || fail 'Release checksum mismatch; nothing was installed.'
-# Releases contain only tracked source and licenses. Refuse unexpected top-level paths or runtime data.
-tar -tzf "$stage/$asset" > "$stage/contents"
+zipinfo -1 "$stage/$asset" > "$stage/contents"
 if ! awk '
-  /^\// || /(^|\/)\.\.($|\/)/ || /(^|\/)(private|data|node_modules|dist)($|\/)/ { bad=1 }
-  !/^(app\/|install\.sh$|LICENSE$|THIRD-PARTY-LICENSES\/)/ { bad=1 }
+  /^\// || /(^|\/)\.\.($|\/)/ { bad=1 }
+  !/^HearAlong\.app(\/|$)/ { bad=1 }
   END { exit bad }
 ' "$stage/contents"; then fail 'Unexpected paths in the release archive.'; fi
-tar -tvzf "$stage/$asset" > "$stage/listing"
-if ! awk '
-  /^[lh]/ || / -> / || / link to / { bad=1 }
-  END { exit bad }
-' "$stage/listing"; then fail 'Links are not permitted in the release archive.'; fi
-tar -xzf "$stage/$asset" -C "$stage"
-rm -f "$stage/$asset" "$stage/$asset.sha256" "$stage/contents" "$stage/listing"
-[ -f "$stage/app/package-lock.json" ] && [ -f "$stage/install.sh" ] || fail 'The release is incomplete.'
-rm -f "$stage/app/install.sh"
-cp "$stage/install.sh" "$stage/app/install.sh"
-echo 'Installing pinned runtime packages with npm (no lifecycle scripts).'
-(cd "$stage/app" && npm ci --ignore-scripts --omit=dev)
-HEARALONG_NO_REGISTER=1 HEARALONG_PREVIOUS_HELPER="$HELPER" sh "$stage/app/scripts/build-app.sh" --install "$helper_stage" "$DATA" "$APP"
-# Recheck immediately before activation: an app opened during download must not be replaced.
+ditto -x -k "$stage/$asset" "$stage/unpacked"
+next="$stage/unpacked/HearAlong.app"
+[ -d "$next" ] && [ ! -L "$next" ] || fail 'The release is incomplete.'
+codesign --verify --deep --strict "$next" || fail 'The app signature is invalid; nothing was installed.'
+[ "$(bundle_id "$next")" = io.github.zihao-qi.hearalong ] || fail 'The release has the wrong bundle identifier; nothing was installed.'
+# curl downloads are not quarantined. Refuse unexpected quarantine instead of bypassing Gatekeeper.
+xattr -r "$next" > "$stage/attributes"
+if grep -q com.apple.quarantine "$stage/attributes"; then fail 'The downloaded app is quarantined; nothing was installed.'; fi
 not_running
-[ -d "$DATA" ] || mkdir "$DATA"
-rm -f "$ROOT/.next"
-ln -s "$(basename "$stage")/app" "$ROOT/.next"
-node -e 'require("node:fs").renameSync(process.argv[1], process.argv[2])' "$ROOT/.next" "$APP"
-activated=1
-if [ -e "$HELPER" ] || [ -L "$HELPER" ]; then
-  mv "$HELPER" "$helper_stage/previous.app"
-  helper_saved=1
+# One atomic same-filesystem exchange on upgrade; the old bundle stays in staging until verification.
+# Inodes let the trap detect an exchange even if a signal arrives before the command returns.
+if [ -d "$BUNDLE" ]; then
+  next_inode=$(stat -f %i "$next")
+  old_inode=$(stat -f %i "$BUNDLE")
+  exchange_pending=1
+  exchange "$next" "$next" "$BUNDLE"
+else
+  promoted=1
+  mv "$next" "$BUNDLE"
 fi
-if [ -f "$HELPER_CONFIG" ]; then
-  mv "$HELPER_CONFIG" "$helper_stage/previous.json"
-  config_saved=1
-fi
-mv "$helper_stage/HearAlong Helper.json" "$HELPER_CONFIG"
-config_promoted=1
-mv "$helper_stage/HearAlong Helper.app" "$HELPER"
-helper_promoted=1
-if [ "${HEARALONG_NO_REGISTER:-0}" != 1 ]; then "$LSREGISTER" -f "$HELPER"; fi
+codesign --verify --deep --strict "$BUNDLE" || fail 'The installed app could not be verified; restoring the previous app.'
 complete=1
-if [ -n "$previous" ]; then
-  version=${previous%/app}
-  rm -rf "$ROOT/${version:?}"
-fi
-printf 'Installed code: %s\nData (kept on upgrade/uninstall): %s\nHelper: %s\n' "$APP" "$DATA" "$HELPER"
-printf 'Uninstall: sh "%s/install.sh" --uninstall\n' "$APP"
-echo 'Opening HearAlong. In Setup, download the speech model, then open the app.'
-open "$HELPER"
+remove_legacy
+printf 'HearAlong is installed in %s\nYour meetings are kept in %s\n' "$BUNDLE" "$DATA"
+echo 'The old Chrome version can be removed from Chrome.'
+printf 'Uninstall: sh "%s/Contents/Resources/install.sh" --uninstall\n' "$BUNDLE"
+open "$BUNDLE"
 }
 
 main "$@"

@@ -29,6 +29,23 @@ async function availablePort(config) {
   });
   await new Promise(resolve => probe.close(resolve));
 }
+function serverEnvironment(config, env = process.env) {
+  const result = { ...env, PORT: String(config.port), MEETING_DATA_DIR: config.data,
+    MEETING_OPEN_BROWSER: '0', MEETING_IDLE_EXIT_S: env.MEETING_IDLE_EXIT_S ?? '20' };
+  if (config.packaged) {
+    // Dock launches have no shell PATH. System tools win; optional FFmpeg remains discoverable.
+    result.PATH = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', dirname(config.node), '/opt/homebrew/bin', '/usr/local/bin'].join(':');
+    result.MEETING_PI = require('node:path').join(config.root, 'node_modules/.bin/pi');
+    result.HEARALONG_PDF_TEXT = config.pdfText;
+    result.HEARALONG_PACKAGED = '1';
+    result.PI_CODING_AGENT_DIR = require('node:path').join(config.data, 'pi');
+    // Do not let development fixtures or Node injection cross the installed runtime boundary.
+    for (const name of Object.keys(result)) {
+      if (/^(?:HEARALONG_DESKTOP_TEST|MEETING_TEST_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_)/.test(name)) delete result[name];
+    }
+  }
+  return result;
+}
 function startServer(config, log, onExit, env = process.env) {
   const version = execFileSync(config.node, ['--version'], { encoding: 'utf8' }).trim();
   if (!version.startsWith('v22.')) throw new Error(`Node 22 is required (found ${version}). Set HEARALONG_NODE.`);
@@ -36,8 +53,7 @@ function startServer(config, log, onExit, env = process.env) {
   // A detached POSIX child leads its own process group, including server grandchildren.
   const child = spawn(config.node, ['--experimental-strip-types', config.entry], {
     cwd: config.root, detached: true, stdio: ['ignore', fd, fd],
-    env: { ...env, PORT: String(config.port), MEETING_DATA_DIR: config.data,
-      MEETING_OPEN_BROWSER: '0', MEETING_IDLE_EXIT_S: env.MEETING_IDLE_EXIT_S ?? '20' },
+    env: serverEnvironment(config, env),
   });
   closeSync(fd);
   let exited = false;
@@ -92,4 +108,4 @@ class ServerSession {
     return Array.isArray(status.meetings) && typeof status.config === 'object';
   }
 }
-module.exports = { logger, logTail, availablePort, startServer, ServerSession };
+module.exports = { logger, logTail, availablePort, serverEnvironment, startServer, ServerSession };

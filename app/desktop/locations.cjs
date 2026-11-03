@@ -10,9 +10,19 @@ function findNode(env) {
   }
   throw new Error('Node 22 was not found. Set HEARALONG_NODE to its path.');
 }
-function locations(env = process.env, packaged = false) {
-  // Step 2 changes only this module to resolve bundled Node/server and installed data.
-  if (packaged) throw new Error('This development shell is not packaged yet.');
+function locations(env = process.env, packaged = false, resources = process.resourcesPath, home = require('node:os').homedir()) {
+  if (packaged) {
+    const root = join(resources, 'server');
+    const base = join(home, 'Library/Application Support/HearAlong');
+    const data = join(base, 'data');
+    return {
+      packaged: true, testing: false, root, data, port: 4318,
+      node: join(resources, 'bin/node'), pdfText: join(resources, 'bin/pdf-text'),
+      entry: join(root, 'src/server.ts'), log: join(data, 'logs/launcher.log'), userData: join(base, 'Electron'),
+      origin: 'http://127.0.0.1:4318', starting: join(__dirname, 'starting.html'), preload: join(__dirname, 'preload.cjs'),
+      icon: join(root, 'public/icons/icon-512.png'),
+    };
+  }
   const root = resolve(__dirname, '..');
   const data = resolve(root, env.MEETING_DATA_DIR || 'data');
   const port = Number(env.PORT ?? 4318);
@@ -22,7 +32,7 @@ function locations(env = process.env, packaged = false) {
   }
   const testing = !packaged && env.HEARALONG_DESKTOP_TEST === '1';
   return {
-    root, data, port, testing, node: findNode(env),
+    packaged: false, root, data, port, testing, node: findNode(env),
     entry: join(root, testing ? 'desktop/fixture-server.ts' : 'src/server.ts'),
     log: join(data, 'logs/launcher.log'), userData: join(dirname(data), data.endsWith('/Electron') ? 'HearAlong-Electron' : 'Electron'),
     origin: `http://127.0.0.1:${port}`,

@@ -2,7 +2,7 @@ import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,465 +10,208 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directory = mkdtempSync(join(tmpdir(), 'hearalong-install-'));
 const release = join(directory, 'release');
+const asset = 'HearAlong-mac-arm64.zip';
 const installer = join(repo, 'install.sh');
-const realNode = process.execPath;
+const real = process.env.HEARALONG_INSTALL_TEST_REAL === '1';
 const system = (command: string) => execFileSync('/usr/bin/which', [command], { encoding: 'utf8' }).trim();
-
+function checksum(folder: string) {
+  writeFileSync(join(folder, `${asset}.sha256`), `${createHash('sha256').update(readFileSync(join(folder, asset))).digest('hex')}  ${asset}\n`);
+}
 before(() => {
-  const source = join(directory, 'source');
-  mkdirSync(source);
   mkdirSync(release);
-  // Only Git-tracked files enter the fixture. Overlay the two implementation files so uncommitted work is tested too.
-  execFileSync('git', ['archive', '--format=tar', '-o', join(directory, 'tracked.tar'), 'HEAD', 'app', 'LICENSE', 'THIRD-PARTY-LICENSES'], { cwd: repo });
-  execFileSync('tar', ['-xf', join(directory, 'tracked.tar'), '-C', source]);
-  cpSync(join(repo, 'app/scripts/build-app.sh'), join(source, 'app/scripts/build-app.sh'));
-  cpSync(installer, join(source, 'install.sh'));
-  execFileSync('tar', ['-czf', join(release, 'HearAlong.tar.gz'), '-C', source, 'app', 'install.sh', 'LICENSE', 'THIRD-PARTY-LICENSES']);
+  if (real) {
+    assert.ok(process.env.HEARALONG_INSTALL_TEST_RELEASE);
+    cpSync(join(process.env.HEARALONG_INSTALL_TEST_RELEASE!, asset), join(release, asset));
+  } else {
+    const source = join(directory, 'source');
+    mkdirSync(join(source, 'HearAlong.app/Contents/Resources/bin'), { recursive: true });
+    // Plain logic fixture only. The real-archive mode executes bundled Node/Koffi's actual atomic exchange.
+    writeFileSync(join(source, 'HearAlong.app/Contents/Resources/bin/node'), `#!/bin/sh\n[ "\${TEST_SWAP_FAIL:-}" != 1 ] || exit 93\n"${system('mv')}" "$2" "$2.swap"\n"${system('mv')}" "$3" "$2"\n"${system('mv')}" "$2.swap" "$3"\n`, { mode: 0o755 });
+    writeFileSync(join(source, 'HearAlong.app/Contents/Info.plist'), 'fictional bundle');
+    writeFileSync(join(source, 'HearAlong.app/Contents/Resources/install.sh'), readFileSync(installer));
+    execFileSync('zip', ['-qr', join(release, asset), 'HearAlong.app'], { cwd: source });
+  }
   checksum(release);
 });
 after(() => rmSync(directory, { recursive: true, force: true }));
-function checksum(folder: string) {
-  const hash = createHash('sha256').update(readFileSync(join(folder, 'HearAlong.tar.gz'))).digest('hex');
-  writeFileSync(join(folder, 'HearAlong.tar.gz.sha256'), `${hash}  HearAlong.tar.gz\n`);
-}
-
 function fixture() {
-  const root = mkdtempSync(join(directory, 'case-'));
-  const home = join(root, 'fictional home');
-  const bin = join(root, 'bin');
-  const log = join(root, 'calls');
-  const appRoot = join(home, 'Library/Application Support/HearAlong');
-  const app = join(appRoot, 'app');
-  const data = join(appRoot, 'data');
-  const helper = join(home, 'Applications/HearAlong Helper.app');
-  const helperConfig = join(appRoot, 'helper.json');
-  mkdirSync(bin, { recursive: true });
-  mkdirSync(home);
-  mkdirSync(join(home, 'Applications/Google Chrome.app'), { recursive: true });
-  writeFileSync(log, '');
+  const root = mkdtempSync(join(directory, 'case-')), home = join(root, 'fictional home'), bin = join(root, 'bin'), log = join(root, 'calls');
+  const appRoot = join(home, 'Library/Application Support/HearAlong'), app = join(home, 'Applications/HearAlong.app');
+  const data = join(appRoot, 'data'), helper = join(home, 'Applications/HearAlong Helper.app');
+  mkdirSync(bin); mkdirSync(home); writeFileSync(log, '');
   const stub = (name: string, body: string) => writeFileSync(join(bin, name), `#!/bin/sh\nset -eu\n${body}\n`, { mode: 0o755 });
-  for (const name of ['sh', 'cat', 'dirname', 'basename', 'mkdir', 'rm', 'rmdir', 'ln', 'readlink', 'cp', 'awk', 'shasum', 'tar', 'gzip', 'mktemp']) {
-    symlinkSync(system(name), join(bin, name));
-  }
+  for (const name of ['mkdir', 'rm', 'rmdir', 'readlink', 'awk', 'shasum', 'mktemp', 'zipinfo', 'grep']) symlinkSync(system(name), join(bin, name));
   stub('uname', 'case "$1" in -s) echo "${TEST_OS:-Darwin}" ;; -m) echo "${TEST_ARCH:-arm64}" ;; esac');
-  stub('pgrep', 'echo pgrep >> "$CALLS"; [ "${TEST_RUNNING:-}" = helper ]');
-  stub('curl', `case "$*" in
-  *http://127.0.0.1:4318/*) echo health >> "$CALLS"; [ "\${TEST_RUNNING:-}" = server ] || [ -f "$TEST_ROOT/started" ]; exit $? ;;
-  *file://*) echo download >> "$CALLS"; exec "${system('curl')}" "$@" ;;
-  *) echo 'Internet curl refused by installer fixture' >&2; exit 90 ;;
-esac`);
-  stub('brew', `printf 'brew %s\\n' "$*" >> "$CALLS"
-case "$*" in
-  'install node@22') : > "$TEST_ROOT/node-installed" ;;
-  'install ffmpeg') : > "$TEST_ROOT/ffmpeg-installed" ;;
-  'install uv') : > "$TEST_ROOT/uv-installed" ;;
-  '--prefix node@22'|'--prefix ffmpeg'|'--prefix uv') echo "$TEST_ROOT/tools" ;;
-  *) exit 91 ;;
-esac`);
-  stub('node', `if [ "\${TEST_NODE:-}" = missing ] && [ ! -f "$TEST_ROOT/node-installed" ]; then exit 1; fi
-if [ "\${TEST_NODE:-}" = old ] && [ ! -f "$TEST_ROOT/node-installed" ] && [ "$1" = -e ]; then
-  case "$2" in *process.versions.node*) exit 1 ;; esac
-fi
-if [ "\${TEST_FAIL_SWAP:-}" = 1 ] && [ "$1" = -e ]; then
-  case "$2" in *renameSync*) case "$3" in */.next) exit 92 ;; esac ;; esac
-fi
-exec "${realNode}" "$@"`);
-  stub('npm', `printf 'npm %s\\n' "$*" >> "$CALLS"
-[ "$*" = 'ci --ignore-scripts --omit=dev' ]
-if [ -n "\${TEST_OLD_CODE:-}" ]; then [ -f "$TEST_OLD_CODE" ]; fi
-[ "\${TEST_NPM_FAIL:-}" != 1 ]`);
-  for (const name of ['ffmpeg', 'ffprobe']) {
-    stub(name, `if [ "\${TEST_FFMPEG:-}" = missing ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then exit 1; fi
-if [ "\${TEST_FFMPEG:-}" = old ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then echo '${name} version 3.2';
-elif [ "\${TEST_FFMPEG:-}" = clang_banner ] && [ ! -f "$TEST_ROOT/ffmpeg-installed" ]; then
-  printf '${name} version n4.3.2\\nbuilt with Apple clang version 16.0.0\\n'
-elif [ "\${TEST_FFMPEG:-}" = n44_banner ]; then
-  printf '${name} version n4.4.1\\nbuilt with Apple clang version 16.0.0\\n'
-else echo '${name} version 8.0'; fi`);
-  }
-  stub('uv', 'exit 0');
-  mkdirSync(join(root, 'tools/bin'), { recursive: true });
-  for (const name of ['node', 'npm', 'ffmpeg', 'ffprobe']) symlinkSync(join(bin, name), join(root, 'tools/bin', name));
-  cpSync(join(bin, 'uv'), join(root, 'tools/bin/uv')); // A test removes bin/uv to model a Mac without uv.
-  stub('xcrun', '[ "$*" = --show-sdk-path ]; echo /FictionalSDK');
-  stub('swiftc', `echo swiftc >> "$CALLS"
-if [ "$*" = -version ]; then echo 'Fictional Swift version 1'; exit 0; fi
-[ "$HEARALONG_NO_REGISTER" = 1 ]
-[ "\${TEST_BUILD_FAIL:-}" != 1 ]
-if [ "\${TEST_START_DURING_BUILD:-}" = 1 ]; then : > "$TEST_ROOT/started"; fi
-while [ "$1" != -o ]; do shift; done
-shift
-printf '#!/bin/sh\\nexit 0\\n' > "$1"`);
-  for (const name of ['sips', 'iconutil']) stub(name, `echo ${name} >> "$CALLS"`);
-  stub('codesign', 'echo codesign >> "$CALLS"; [ "${TEST_SIGN_FAIL:-}" != 1 ]');
-  stub('lsregister', 'echo lsregister >> "$CALLS"; exit 94');
-  stub('open', 'echo open >> "$CALLS"; [ "$HEARALONG_NO_REGISTER" = 1 ]');
-  stub('mv', `if [ "\${TEST_FAIL_HELPER_SWAP:-}" = 1 ] && [ "$2" = "$TEST_HELPER" ]; then
-  case "$1" in */previous.app) ;; *) exit 93 ;; esac
-fi
-if [ "\${TEST_FAIL_CONFIG_SWAP:-}" = 1 ] && [ "$2" = "$TEST_HELPER_CONFIG" ]; then
-  case "$1" in */previous.json) ;; *) exit 96 ;; esac
-fi
+  stub('sw_vers', 'echo "${TEST_MACOS:-26.0}"');
+  stub('pgrep', 'echo pgrep >> "$CALLS"; [ "${TEST_RUNNING:-}" = app ] || [ "${TEST_RUNNING:-}" = helper ]');
+  stub('nc', 'echo port-probe >> "$CALLS"; [ "${TEST_RUNNING:-}" = server ] || [ -f "$TEST_ROOT/started" ]');
+  stub('curl', `echo download >> "$CALLS"
+case "$*" in *file://*) exec "${system('curl')}" "$@" ;; *) echo 'Internet curl refused by installer fixture' >&2; exit 90 ;; esac`);
+  stub('ditto', `echo unpack >> "$CALLS"
+[ "\${TEST_UNPACK_FAIL:-}" != 1 ]
+${real ? `exec "${system('ditto')}" "$@"` : `exec "${system('unzip')}" -q "$3" -d "$4"`}`);
+  stub('codesign', `echo codesign >> "$CALLS"
+[ "\${TEST_SIGN_FAIL:-}" != 1 ]
+case "$*" in *unpacked*) ;; *) [ "\${TEST_FINAL_SIGN_FAIL:-}" != 1 ] ;; esac
+${real ? `exec "${system('codesign')}" "$@"` : ':'}`);
+  stub('plutil', `if [ "\${TEST_BAD_ID:-}" = 1 ]; then echo invalid.fixture; exit; fi
+${real ? `exec "${system('plutil')}" "$@"` : 'echo io.github.zihao-qi.hearalong'}`);
+  stub('xattr', `if [ "\${TEST_QUARANTINE:-}" = 1 ]; then echo com.apple.quarantine; exit; fi
+${real ? `exec "${system('xattr')}" "$@"` : ':'}`);
+  stub('open', 'echo open >> "$CALLS"');
+  if (process.platform === 'darwin') symlinkSync(system('stat'), join(bin, 'stat'));
+  else stub('stat', `exec "${system('stat')}" -c %i "$3"`);
+  stub('mv', `case "$1" in */unpacked/HearAlong.app) [ "\${TEST_SWAP_FAIL:-}" != 1 ] ;; esac
 exec "${system('mv')}" "$@"`);
-  const env = { ...process.env, HOME: home, PATH: bin, TMPDIR: root, CALLS: log, TEST_ROOT: root,
-    TEST_HELPER: helper, TEST_HELPER_CONFIG: helperConfig, HEARALONG_CHROME_APP: join(home, 'Applications/Google Chrome.app'),
-    HEARALONG_TEST_MODE: '1',
-    HEARALONG_NO_REGISTER: '1', HEARALONG_LSREGISTER: join(bin, 'lsregister'),
-    HEARALONG_RELEASE_URL: pathToFileURL(release).href };
+  const env = { ...process.env, PATH: bin, TMPDIR: root, CALLS: log, TEST_ROOT: root,
+    HEARALONG_TEST_MODE: '1', HEARALONG_TEST_HOME: home, HEARALONG_RELEASE_URL: pathToFileURL(release).href };
   const run = (extra: Record<string, string> = {}, args: string[] = [], input?: string) => {
-    assert.equal(env.HEARALONG_NO_REGISTER, '1');
     const result = spawnSync('/bin/sh', input === undefined ? [installer, ...args] : ['-s', '--', ...args], {
-      env: { ...env, ...extra }, input, encoding: 'utf8', timeout: 30_000,
+      env: { ...env, ...extra }, input, encoding: 'utf8', timeout: real ? 120_000 : 30_000,
     });
     assert.ifError(result.error);
-    assert.doesNotMatch(readFileSync(log, 'utf8'), /lsregister/);
     return { ...result, output: result.stdout + result.stderr };
   };
-  const ok = (extra: Record<string, string> = {}) => {
-    const result = run(extra);
-    assert.equal(result.status, 0, result.output);
-    return result;
-  };
-  const calls = () => readFileSync(log, 'utf8');
-  return { root, home, bin, appRoot, app, data, helper, helperConfig, run, ok, calls };
+  const ok = (extra: Record<string, string> = {}) => { const result = run(extra); assert.equal(result.status, 0, result.output); return result; };
+  return { root, home, bin, appRoot, app, data, helper, run, ok, calls: () => readFileSync(log, 'utf8') };
 }
-
-test('installer and builder default to the same system LaunchServices tool (never invoked here)', () => {
-  const expected = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister';
-  for (const file of [installer, join(repo, 'app/scripts/build-app.sh')]) {
-    const source = readFileSync(file, 'utf8');
-    assert.equal(/HEARALONG_LSREGISTER:-([^}]+)/.exec(source)?.[1], expected);
-  }
-});
-
-test('truncated installer streams execute no commands and change no files', () => {
-  const source = readFileSync(installer, 'utf8');
-  const f = fixture();
-  // Fail closed and record every stub, even prerequisite probes, if a partial stream executes anything.
-  for (const name of readdirSync(f.bin)) {
-    const path = join(f.bin, name);
-    if (!lstatSync(path).isSymbolicLink()) {
-      writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${name}' >> "$CALLS"\nexit 99\n`);
-    }
-  }
-  const snapshot = (path: string): unknown => {
-    const info = lstatSync(path);
-    return { inode: info.ino, mode: info.mode, mtime: info.mtimeMs,
-      content: info.isSymbolicLink() ? readlinkSync(path) : info.isDirectory()
-        ? readdirSync(path).sort().map(name => [name, snapshot(join(path, name))])
-        : readFileSync(path).toString('base64') };
-  };
-  const before = snapshot(f.root);
-  const markers = ['set -eu\n', 'not_running\n', 'brew install node@22\n', 'acquire_lock\nstage=',
-    'trap cleanup EXIT\n', 'curl -fSL "$release/$asset"', '(cd "$stage/app" && npm ci',
-    'activated=1\n', 'open "$HELPER"\n'];
-  for (const marker of markers) {
-    const start = source.indexOf(marker);
-    assert.ok(start >= 0, marker);
-    const result = f.run({}, [], source.slice(0, start + marker.length));
-    assert.notEqual(result.status, 0, marker);
-    assert.match(result.stderr, /syntax error|unexpected end/i, marker);
-    assert.equal(f.calls(), '', marker);
-    assert.deepEqual(snapshot(f.root), before, marker);
-  }
-});
-
-test('fresh offline install streamed through stdin builds the helper with separate data in HOME with a space', () => {
+function legacy(f: ReturnType<typeof fixture>) {
+  mkdirSync(join(f.appRoot, '.app-abc123/app'), { recursive: true });
+  symlinkSync('.app-abc123/app', join(f.appRoot, 'app'));
+  mkdirSync(f.helper, { recursive: true }); writeFileSync(join(f.helper, 'fictional'), 'old helper');
+  writeFileSync(join(f.appRoot, 'helper.json'), '{"fictional":"v0.2.0"}');
+  mkdirSync(f.data); writeFileSync(join(f.data, 'meeting.txt'), 'fictional meeting\0unchanged\n');
+}
+test('fresh streamed install, rerun and uninstall use only the test home and keep meetings', () => {
   const f = fixture();
   const result = f.run({}, [], readFileSync(installer, 'utf8'));
   assert.equal(result.status, 0, result.output);
-  assert.ok(existsSync(join(f.app, 'src/server.ts')));
-  assert.ok(existsSync(join(f.app, 'install.sh')));
-  assert.ok(statSync(f.data).isDirectory());
-  assert.match(readlinkSync(f.app), /^\.app-[a-zA-Z0-9]{6}\/app$/);
-  const config = JSON.parse(readFileSync(join(f.helper, 'Contents/Resources/launcher.json'), 'utf8'));
-  assert.equal(config.app, f.app);
-  assert.equal(config.data, f.data);
-  assert.equal(config.port, 4318);
-  assert.deepEqual(JSON.parse(readFileSync(f.helperConfig, 'utf8')), config);
-  assert.ok(!existsSync(join(f.home, 'Applications/HearAlong Helper.json')), 'no visible settings file in Applications');
-  assert.match(f.calls(), /npm ci --ignore-scripts --omit=dev/);
-  assert.doesNotMatch(f.calls(), /brew /);
+  assert.ok(existsSync(join(f.app, 'Contents/Resources/install.sh')));
+  assert.ok(!existsSync(f.data), 'installer never creates or changes data');
+  mkdirSync(f.data); writeFileSync(join(f.data, 'meeting.txt'), 'fictional meeting');
+  mkdirSync(join(f.appRoot, 'Electron')); writeFileSync(join(f.appRoot, 'Electron/profile'), 'fictional profile');
+  f.ok();
+  const removed = f.run({}, ['--uninstall']);
+  assert.equal(removed.status, 0, removed.output);
+  assert.ok(!existsSync(f.app)); assert.ok(!existsSync(join(f.appRoot, 'Electron')));
+  assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting');
+  assert.match(removed.output, /meetings are kept/);
+  assert.doesNotMatch(result.output, /127\.0\.0\.1|helper|Homebrew|Node|npm|Xcode/i);
   assert.match(f.calls(), /open/);
-  assert.match(result.output, /Uninstall:/);
 });
-
-test('checksum mismatch is refused before npm, build or data creation', () => {
-  const f = fixture();
-  const broken = join(f.root, 'broken');
-  cpSync(release, broken, { recursive: true });
-  writeFileSync(join(broken, 'HearAlong.tar.gz.sha256'), `${'0'.repeat(64)}  HearAlong.tar.gz\n`);
-  const result = f.run({ HEARALONG_RELEASE_URL: pathToFileURL(broken).href });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /checksum mismatch/);
-  assert.ok(!existsSync(f.app));
-  assert.ok(!existsSync(f.data));
-  assert.doesNotMatch(f.calls(), /npm|swiftc|open/);
+test('v0.2.0 migration removes only owned old layout; data survives byte-identical', () => {
+  const f = fixture(); legacy(f);
+  const before = readFileSync(join(f.data, 'meeting.txt'));
+  const outside = join(f.root, 'outside'); mkdirSync(outside); writeFileSync(join(outside, 'keep'), 'keep');
+  symlinkSync(outside, join(f.appRoot, '.app-def456'));
+  mkdirSync(join(f.appRoot, '.app-not-owned'));
+  f.ok();
+  for (const path of ['app', '.app-abc123', 'helper.json']) assert.ok(!existsSync(join(f.appRoot, path)), path);
+  assert.ok(!existsSync(f.helper));
+  assert.deepEqual(readFileSync(join(f.data, 'meeting.txt')), before);
+  assert.equal(readFileSync(join(outside, 'keep'), 'utf8'), 'keep');
+  assert.ok(lstatSync(join(f.appRoot, '.app-def456')).isSymbolicLink());
+  assert.ok(existsSync(join(f.appRoot, '.app-not-owned')));
 });
-
-test('missing Homebrew stops with the official command and no installation changes', () => {
-  const f = fixture();
-  rmSync(join(f.bin, 'brew'));
-  const result = f.run();
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /Homebrew is required/);
-  assert.match(result.output, /\/bin\/bash -c "\$\(curl -fsSL https:\/\/raw.githubusercontent.com\/Homebrew\/install\/HEAD\/install.sh\)"/);
-  assert.ok(!existsSync(f.appRoot));
-  assert.doesNotMatch(f.calls(), /brew |download|npm|swiftc|open/);
-});
-
-for (const state of ['missing', 'old']) {
-  test(`${state} Node and FFmpeg are installed only via the expected brew formulae`, () => {
-    const f = fixture();
-    f.ok({ TEST_NODE: state, TEST_FFMPEG: state });
-    assert.match(f.calls(), /brew install node@22\n/);
-    assert.match(f.calls(), /brew install ffmpeg\n/);
+for (const failure of ['TEST_SIGN_FAIL', 'TEST_FINAL_SIGN_FAIL', 'TEST_SWAP_FAIL', 'TEST_UNPACK_FAIL']) {
+  test(`${failure}: failed upgrade restores previous app and leaves legacy data untouched`, () => {
+    const f = fixture(); f.ok(); legacy(f);
+    writeFileSync(join(f.app, 'previous-marker'), 'fictional previous bundle');
+    const result = f.run({ [failure]: '1' });
+    assert.notEqual(result.status, 0, result.output);
+    assert.equal(readFileSync(join(f.app, 'previous-marker'), 'utf8'), 'fictional previous bundle');
+    assert.ok(existsSync(f.helper)); assert.equal(readlinkSync(join(f.appRoot, 'app')), '.app-abc123/app');
+    assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting\0unchanged\n');
+    assert.ok(!existsSync(join(f.appRoot, '.install-lock')));
   });
 }
-
-test('installer never installs uv, whether present or absent', () => {
-  const present = fixture();
-  present.ok();
-  assert.doesNotMatch(present.calls(), /brew install uv/);
-  const missing = fixture();
-  rmSync(join(missing.bin, 'uv'));
-  missing.ok();
-  assert.doesNotMatch(missing.calls(), /brew install uv/);
+for (const [state, message] of [['TEST_BAD_ID', 'wrong bundle identifier'], ['TEST_QUARANTINE', 'quarantined']]) {
+  test(`${state} release is refused before activation`, () => {
+    const f = fixture();
+    let extra = { [state]: '1' };
+    if (real && state === 'TEST_BAD_ID') {
+      const bad = join(f.root, 'wrong-id'), bundle = join(bad, 'HearAlong.app');
+      mkdirSync(join(bundle, 'Contents/MacOS'), { recursive: true });
+      cpSync('/usr/bin/true', join(bundle, 'Contents/MacOS/Fictional'));
+      writeFileSync(join(bundle, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>invalid.fixture</string><key>CFBundleExecutable</key><string>Fictional</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>');
+      execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', bundle]);
+      execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', bundle, join(bad, asset)]); checksum(bad);
+      extra = { HEARALONG_RELEASE_URL: pathToFileURL(bad).href };
+    }
+    const result = f.run(extra);
+    assert.notEqual(result.status, 0); assert.match(result.output, new RegExp(message)); assert.ok(!existsSync(f.app));
+  });
+}
+test('bad hash is refused before extraction; uppercase valid hash is accepted', () => {
+  const f = fixture(), broken = join(f.root, 'broken'); cpSync(release, broken, { recursive: true });
+  const hashfile = join(broken, `${asset}.sha256`), original = readFileSync(hashfile, 'utf8');
+  writeFileSync(hashfile, `${'0'.repeat(64)}  ignored-name\n`);
+  const result = f.run({ HEARALONG_RELEASE_URL: pathToFileURL(broken).href });
+  assert.notEqual(result.status, 0); assert.match(result.output, /checksum mismatch/);
+  assert.doesNotMatch(f.calls(), /unpack|codesign|open/); assert.ok(!existsSync(f.data));
+  writeFileSync(hashfile, original.toUpperCase()); f.ok({ HEARALONG_RELEASE_URL: pathToFileURL(broken).href });
 });
-
-test('upgrade preserves data and old code until npm, build and both swaps succeed', () => {
-  const f = fixture();
-  f.ok();
-  const oldTarget = readlinkSync(f.app);
-  const oldCode = join(f.appRoot, oldTarget, 'previous-version');
-  writeFileSync(oldCode, 'fictional previous code');
-  writeFileSync(join(f.data, 'meeting.txt'), 'fictional meeting');
-  writeFileSync(join(f.helper, 'previous-helper'), 'fictional helper');
-  const before = statSync(f.data);
-  const previousConfig = JSON.stringify({ ...JSON.parse(readFileSync(f.helperConfig, 'utf8')), path: 'fictional previous PATH' });
-  writeFileSync(f.helperConfig, previousConfig);
-  for (const failure of ['TEST_NPM_FAIL', 'TEST_BUILD_FAIL', 'TEST_SIGN_FAIL', 'TEST_FAIL_SWAP', 'TEST_FAIL_CONFIG_SWAP', 'TEST_FAIL_HELPER_SWAP']) {
-    const result = f.run({ [failure]: '1', TEST_OLD_CODE: oldCode });
-    assert.notEqual(result.status, 0, failure);
-    assert.equal(readlinkSync(f.app), oldTarget, failure);
-    assert.equal(readFileSync(oldCode, 'utf8'), 'fictional previous code');
-    assert.equal(readFileSync(join(f.helper, 'previous-helper'), 'utf8'), 'fictional helper');
-    assert.equal(readFileSync(f.helperConfig, 'utf8'), previousConfig, 'settings roll back with the bundle');
-  }
-  f.ok({ TEST_OLD_CODE: oldCode });
-  assert.notEqual(readlinkSync(f.app), oldTarget);
-  assert.notEqual(readFileSync(f.helperConfig, 'utf8'), previousConfig);
-  assert.ok(!existsSync(join(f.home, 'Applications/HearAlong Helper.json')));
-  assert.ok(!existsSync(oldCode));
-  assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting');
-  assert.equal(statSync(f.data).ino, before.ino);
-  assert.equal(statSync(f.data).mtimeMs, before.mtimeMs);
-});
-
-for (const running of ['helper', 'server']) {
-  test(`running HearAlong ${running} blocks installation and uninstall without killing anything`, () => {
+for (const running of ['app', 'helper', 'server']) {
+  test(`running ${running} refuses install and uninstall without stopping anything`, () => {
     const f = fixture();
     for (const args of [[], ['--uninstall']]) {
       const result = f.run({ TEST_RUNNING: running }, args);
-      assert.notEqual(result.status, 0);
-      assert.match(result.output, /Please quit HearAlong/);
-      assert.ok(!existsSync(f.appRoot));
-      assert.doesNotMatch(f.calls(), /download|brew |npm|swiftc|open/);
+      assert.notEqual(result.status, 0); assert.match(result.output, /Nothing was stopped/); assert.ok(!existsSync(f.appRoot));
     }
+    assert.doesNotMatch(f.calls(), /download|unpack|open/);
   });
 }
-
-test('a server opened during the build prevents activation', () => {
+test('listener appearing during unpack refuses activation', () => {
   const f = fixture();
-  f.ok();
-  const target = readlinkSync(f.app);
-  const result = f.run({ TEST_START_DURING_BUILD: '1' });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /Please quit HearAlong/);
-  assert.equal(readlinkSync(f.app), target);
-  assert.ok(!existsSync(join(f.appRoot, '.install-lock')));
+  writeFileSync(join(f.bin, 'xattr'), '#!/bin/sh\n: > "$TEST_ROOT/started"\n');
+  const result = f.run(); assert.notEqual(result.status, 0); assert.match(result.output, /Please quit/); assert.ok(!existsSync(f.app));
 });
-
-test('install and uninstall respect an existing installation lock', () => {
+test('Intel, older macOS, other OS and malformed arguments change nothing', () => {
   const f = fixture();
-  f.ok();
-  const target = readlinkSync(f.app);
-  mkdirSync(join(f.appRoot, '.install-lock'));
-  for (const args of [[], ['--uninstall']]) {
-    const result = f.run({}, args);
-    assert.notEqual(result.status, 0);
-    assert.match(result.output, /Another HearAlong install/);
-    assert.equal(readlinkSync(f.app), target);
-    assert.ok(existsSync(f.helper));
+  for (const [key, value] of [['TEST_ARCH', 'x86_64'], ['TEST_MACOS', '25.6'], ['TEST_OS', 'Linux']]) {
+    const result = f.run({ [key]: value }); assert.notEqual(result.status, 0); assert.ok(!existsSync(f.appRoot));
+  }
+  assert.match(f.run({ TEST_ARCH: 'x86_64' }).output, /Intel Macs are not supported yet/);
+  assert.notEqual(f.run({}, ['--unknown']).status, 0);
+  assert.equal(f.calls(), '');
+});
+test('install lock blocks both operations', () => {
+  const f = fixture(); mkdirSync(join(f.appRoot, '.install-lock'), { recursive: true });
+  for (const args of [[], ['--uninstall']]) assert.match(f.run({}, args).output, /Another HearAlong install/);
+  assert.doesNotMatch(f.calls(), /download/);
+});
+test('arbitrary old app symlink and symlinked version are refused, not traversed', () => {
+  for (const target of ['/fictional/elsewhere', '.app-abc123/app']) {
+    const f = fixture(); mkdirSync(f.appRoot, { recursive: true }); symlinkSync(target, join(f.appRoot, 'app'));
+    if (target.startsWith('.app')) symlinkSync(f.root, join(f.appRoot, '.app-abc123'));
+    assert.match(f.run().output, /Unrecognized installation/); assert.equal(readlinkSync(join(f.appRoot, 'app')), target);
   }
 });
-
-test('uninstall leaves all data and prints its path', () => {
-  const f = fixture();
-  f.ok();
-  writeFileSync(join(f.data, 'meeting.txt'), 'fictional meeting');
-  const result = f.run({}, ['--uninstall']);
-  assert.equal(result.status, 0, result.output);
-  assert.ok(!existsSync(f.app));
-  assert.ok(!existsSync(f.helper));
-  assert.ok(!existsSync(f.helperConfig));
-  assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting');
-  assert.ok(result.output.includes(f.data));
+test('uninstall removes orphaned owned legacy folders even without app symlink', () => {
+  const f = fixture(); legacy(f); rmSync(join(f.appRoot, 'app'));
+  const result = f.run({}, ['--uninstall']); assert.equal(result.status, 0, result.output);
+  assert.ok(!existsSync(join(f.appRoot, '.app-abc123'))); assert.ok(existsSync(join(f.data, 'meeting.txt')));
+  assert.equal(f.run({}, ['--uninstall']).status, 0);
 });
-
-test('Intel Macs proceed with the CPU transcription warning', () => {
+test('test release override is ignored without test mode; http is always refused', () => {
   const f = fixture();
-  assert.match(f.ok({ TEST_ARCH: 'x86_64' }).output, /transcription is slower on Intel Macs/);
+  // HOME itself is fictional too, so ignoring HEARALONG_TEST_HOME cannot touch the actual user.
+  const result = f.run({ HEARALONG_TEST_MODE: '0', HOME: f.home });
+  assert.notEqual(result.status, 0); assert.match(result.output, /Internet curl refused/);
+  assert.match(f.run({ HEARALONG_RELEASE_URL: 'http://example.invalid' }).output, /Release URL must use https/);
 });
-
-test('non-macOS and missing Chrome stop before installation changes', () => {
-  const f = fixture();
-  assert.match(f.run({ TEST_OS: 'Linux' }).output, /requires macOS/);
-  const result = f.run({ HEARALONG_CHROME_APP: join(f.home, 'not-installed.app') });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /needs Google Chrome.*https:\/\/www.google.com\/chrome\//);
-  assert.ok(!existsSync(f.appRoot));
-  assert.doesNotMatch(f.calls(), /brew |download|npm|swiftc|open/);
-});
-
-test('FFmpeg banner matching clang 16 but old ffmpeg version is rejected and installs via brew', () => {
-  const f = fixture();
-  f.ok({ TEST_FFMPEG: 'clang_banner' });
-  assert.match(f.calls(), /brew install ffmpeg\n/);
-});
-
-test('FFmpeg banner with supported version n4.4+ proceeds without brew install', () => {
-  const f = fixture();
-  f.ok({ TEST_FFMPEG: 'n44_banner' });
-  assert.doesNotMatch(f.calls(), /brew install ffmpeg/);
-});
-
-test('cleanup completes and removes lock even if rollback or previous helper restore fails', () => {
-  const f = fixture();
-  f.ok();
-  writeFileSync(join(f.appRoot, '.rollback'), 'stale rollback');
-  const result = f.run({ TEST_FAIL_HELPER_SWAP: '1' });
-  assert.notEqual(result.status, 0);
-  assert.ok(!existsSync(join(f.appRoot, '.install-lock')), 'lock removed');
-  assert.ok(!existsSync(join(f.appRoot, '.rollback')), 'stale rollback cleaned up');
-});
-
-test('release archive containing symlinks or hardlinks is rejected before extraction', () => {
-  const f = fixture();
-  const badRelease = join(f.root, 'bad-release');
-  mkdirSync(badRelease);
-  const badSource = join(f.root, 'bad-source');
-  mkdirSync(badSource);
-  mkdirSync(join(badSource, 'app'));
-  writeFileSync(join(badSource, 'app/package-lock.json'), '{}');
-  writeFileSync(join(badSource, 'LICENSE'), 'MIT');
-  writeFileSync(join(badSource, 'install.sh'), 'echo ok');
-  symlinkSync('../../data/settings.json', join(badSource, 'app/install.sh-link'));
-  execFileSync('tar', ['-czf', join(badRelease, 'HearAlong.tar.gz'), '-C', badSource, 'app', 'install.sh', 'LICENSE']);
-  const hash = createHash('sha256').update(readFileSync(join(badRelease, 'HearAlong.tar.gz'))).digest('hex');
-  writeFileSync(join(badRelease, 'HearAlong.tar.gz.sha256'), `${hash}  HearAlong.tar.gz\n`);
-  const result = f.run({ HEARALONG_RELEASE_URL: pathToFileURL(badRelease).href });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /Links are not permitted/);
-  assert.ok(!existsSync(f.app));
-  assert.doesNotMatch(f.calls(), /npm|swiftc|open/);
-});
-
-test('release archive containing unexpected or traversal paths is rejected', () => {
-  const f = fixture();
-  const badRelease = join(f.root, 'bad-paths-release');
-  mkdirSync(badRelease);
-  const badSource = join(f.root, 'bad-paths-source');
-  mkdirSync(badSource);
-  mkdirSync(join(badSource, 'app'));
-  writeFileSync(join(badSource, 'app/package-lock.json'), '{}');
-  writeFileSync(join(badSource, 'LICENSE'), 'MIT');
-  writeFileSync(join(badSource, 'install.sh'), 'echo ok');
-  mkdirSync(join(badSource, 'data'));
-  writeFileSync(join(badSource, 'data/evil.txt'), 'evil');
-  execFileSync('tar', ['-czf', join(badRelease, 'HearAlong.tar.gz'), '-C', badSource, 'app', 'install.sh', 'LICENSE', 'data']);
-  const hash = createHash('sha256').update(readFileSync(join(badRelease, 'HearAlong.tar.gz'))).digest('hex');
-  writeFileSync(join(badRelease, 'HearAlong.tar.gz.sha256'), `${hash}  HearAlong.tar.gz\n`);
-  const result = f.run({ HEARALONG_RELEASE_URL: pathToFileURL(badRelease).href });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /Unexpected paths in the release archive/);
+test('unexpected archive top-level paths are refused', () => {
+  const f = fixture(), bad = join(f.root, 'bad'); mkdirSync(bad); writeFileSync(join(bad, 'unwanted'), 'fictional');
+  execFileSync('zip', ['-q', join(bad, asset), 'unwanted'], { cwd: bad }); checksum(bad);
+  assert.match(f.run({ HEARALONG_RELEASE_URL: pathToFileURL(bad).href }).output, /Unexpected paths/);
   assert.ok(!existsSync(f.app));
 });
-
-test('uninstall retry removes orphaned version directory when app symlink is already gone', () => {
-  const f = fixture();
-  f.ok();
-  const oldTarget = readlinkSync(f.app);
-  const oldVersionDir = join(f.appRoot, oldTarget.slice(0, oldTarget.indexOf('/')));
-  rmSync(f.app);
-  assert.ok(existsSync(oldVersionDir));
-  const result = f.run({}, ['--uninstall']);
-  assert.equal(result.status, 0, result.output);
-  assert.ok(!existsSync(oldVersionDir), 'orphaned version directory removed');
-  assert.ok(!existsSync(f.helper));
-  assert.match(result.output, /HearAlong removed/);
-
-  const second = f.run({}, ['--uninstall']);
-  assert.equal(second.status, 0, second.output);
-});
-
-test('uninstall fails and does not report success if a version directory cannot be removed', () => {
-  const f = fixture();
-  f.ok();
-  const orphan = join(f.appRoot, '.app-123456');
-  mkdirSync(orphan);
-  writeFileSync(join(orphan, 'locked.txt'), 'locked');
-  execFileSync('/bin/chmod', ['000', orphan]);
-  try {
-    const result = f.run({}, ['--uninstall']);
-    assert.notEqual(result.status, 0);
-    assert.match(result.output, /uninstall incomplete|Could not remove/);
-    assert.doesNotMatch(result.output, /HearAlong removed/);
-  } finally {
-    execFileSync('/bin/chmod', ['755', orphan]);
+test('truncated installer streams execute no commands', () => {
+  const f = fixture(), source = readFileSync(installer, 'utf8');
+  for (const marker of ['set -eu\n', 'not_running\n', 'trap cleanup EXIT\n', 'curl -fSL "$release/$asset"', 'promoted=1\n', 'open "$BUNDLE"\n']) {
+    const start = source.indexOf(marker); assert.ok(start >= 0, marker);
+    const result = f.run({}, [], source.slice(0, start + marker.length));
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /syntax error|unexpected end/i); assert.equal(f.calls(), '');
+    assert.deepEqual(readdirSync(f.home), []);
   }
-});
-
-test('test overrides are ignored when HEARALONG_TEST_MODE is not 1', () => {
-  const f = fixture();
-  const result = f.run({ HEARALONG_TEST_MODE: '0', HEARALONG_LSREGISTER: join(f.bin, 'lsregister') });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /Internet curl refused by installer fixture/);
-  assert.doesNotMatch(f.calls(), /lsregister/);
-});
-
-test('release URL with http protocol is refused even in test mode', () => {
-  const f = fixture();
-  const result = f.run({ HEARALONG_RELEASE_URL: 'http://example.com/HearAlong' });
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /Release URL must use https:\/\//);
-});
-
-test('release workflow tag filter matches strict semver with optional suffix', () => {
-  const validTags = ['v0.1.0', 'v1.0.0', 'v26.0.1', 'v1.0.0-rc1', 'v2.1.0-alpha.1'];
-  const invalidTags = ['v', 'v-wip', 'vanilla', 'v1', 'v1.0', 'v1.0.0.0', '1.0.0'];
-  const semverRegex = /^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/;
-  for (const tag of validTags) assert.ok(semverRegex.test(tag), `should accept ${tag}`);
-  for (const tag of invalidTags) assert.ok(!semverRegex.test(tag), `should reject ${tag}`);
-  for (const tag of validTags) {
-    const isPrerelease = tag.includes('-');
-    assert.equal(isPrerelease, tag.includes('-rc') || tag.includes('-alpha'));
-  }
-});
-
-test('uninstall traps signals HUP, INT, TERM to remove install lock on interrupt', () => {
-  const source = readFileSync(installer, 'utf8');
-  const uninstallSection = source.slice(source.indexOf('if [ "${1:-}" = --uninstall ];'), source.indexOf('printf \'HearAlong removed.'));
-  assert.match(uninstallSection, /trap 'exit 1' HUP INT TERM/);
-  assert.match(uninstallSection, /trap 'rmdir "\$ROOT\/\.install-lock"' EXIT/);
-});
-
-test('uppercase SHA-256 checksum is accepted and verified', () => {
-  const f = fixture();
-  const upperRelease = join(f.root, 'upper-release');
-  cpSync(release, upperRelease, { recursive: true });
-  const hash = readFileSync(join(upperRelease, 'HearAlong.tar.gz.sha256'), 'utf8');
-  writeFileSync(join(upperRelease, 'HearAlong.tar.gz.sha256'), hash.toUpperCase());
-  f.ok({ HEARALONG_RELEASE_URL: pathToFileURL(upperRelease).href });
-  assert.ok(existsSync(f.app));
 });

@@ -24,6 +24,9 @@ export class Keychain {
     this.command = command; this.target = keychain ? [keychain] : [];
   }
   private run(args: string[], input = ''): Promise<{ code: number | null; stdout: string }> {
+    // An ad-hoc build has no stable Keychain identity. Never trigger an authorization prompt,
+    // including when an older install has saved keys. Revisit with Developer ID signing.
+    if (process.env.HEARALONG_PACKAGED === '1') return Promise.resolve({ code: null, stdout: '' });
     return new Promise(resolve => {
       const child = spawn(this.command, args, { stdio: ['pipe', 'pipe', 'ignore'], timeout: 15_000, killSignal: 'SIGKILL' });
       let stdout = '';
@@ -152,6 +155,7 @@ export class ApiKeys {
       await this.loaded;
       const key = typeof value === 'string' ? value.trim() : '';
       const company = KEY_SOURCES[provider].company;
+      if (process.env.HEARALONG_PACKAGED === '1') throw failure(503, 'Saving API keys is unavailable in this ad-hoc build. No Keychain access was requested.');
       if (!/^[\x21-\x7e]{8,512}$/.test(key)) throw failure(400, 'This doesn’t look like an API key.');
       if (envProvides(this.env, provider)) throw failure(409, `HearAlong’s environment already gives Pi a ${company} key.`);
       await checkKey(provider, key, this.env, this.options.fetch);

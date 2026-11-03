@@ -44,6 +44,30 @@ async function fakeExtractor(folder: string, body: string) {
 const ONE_PAGE = `echo '{"pageCount":1,"pages":["hello quoted words on a page"]}'`;
 const lineOf = async (pdfText: PdfText, pdf: string, part: string) => (await readFile(pdfText.textPath(pdf), 'utf8')).split('\n').findIndex(l => l.includes(part)) + 1;
 
+test('shell-provided pdf-text is used without compiling, even when it is missing', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'bundled-pdf-'));
+  const old = process.env.HEARALONG_PDF_TEXT;
+  let pdfText: PdfText | undefined;
+  try {
+    const fake = await fakeExtractor(folder, ONE_PAGE), pdf = join(folder, 'fixture.pdf');
+    await writeFile(pdf, 'fictional PDF input');
+    process.env.HEARALONG_PDF_TEXT = fake.path;
+    pdfText = new PdfText(folder);
+    const result = await pdfText.read(pdf);
+    assert.ok('text' in result); assert.match(result.text, /hello quoted words/);
+    assert.equal(await fake.runs(), 1);
+    assert.ok(!(await readdir(join(folder, 'pdf-text'))).includes('.bin'));
+    await pdfText.close();
+    process.env.HEARALONG_PDF_TEXT = join(folder, 'missing-bundled-binary');
+    pdfText = new PdfText(join(folder, 'other'), { log: () => {} });
+    const missing = await pdfText.read(pdf);
+    assert.ok('problem' in missing); assert.match(missing.problem, /ENOENT/);
+    assert.ok(!(await readdir(folder)).includes('other'), 'no compile fallback');
+  } finally {
+    if (old === undefined) delete process.env.HEARALONG_PDF_TEXT; else process.env.HEARALONG_PDF_TEXT = old;
+    await pdfText?.close(); await rm(folder, { recursive: true, force: true });
+  }
+});
 test('a PDF is extracted once into the data folder, page by page, and again after it changes', async () => {
   const m = await materials();
   const logs: string[] = [];
