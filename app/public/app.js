@@ -34,7 +34,7 @@ const listen = createListenPlayer($('transcript-pane'), { owner: () => meetingId
 const mini = { win: null, revealed: 0, byItself: false, saves: 0 }; // byItself: the user's setting, open it when they leave the app; saves: changes saved here
 const miniSupported = () => 'documentPictureInPicture' in window;
 /** The helper's native window is there (the installed app): the mini view is its window, not Chrome's. */
-const nativeMini = () => Boolean(lastSnapshot?.mini?.native);
+const nativeMini = () => Boolean(window.hearalong?.desktop || lastSnapshot?.mini?.native);
 // Dismissal belongs to this page load, not localStorage. Restart owns the strip until navigation or its failure line.
 const updateView = { dismissed: false, phase: 'ready', accepted: false };
 const quitView = { seen: false }; // a quit has begun (see quitting)
@@ -47,7 +47,7 @@ const notesView = { tab: ['notes', 'plans', 'project'].includes(store.get('right
 // Project memory (M6): the project of the shown meeting, what the Project tab shows, and rows resolved in the last 15 s.
 const projectView = { owner: null, project: null, data: null, run: null, filter: null, expanded: new Map(), editing: null, resolved: new Map(), resolvedEdits: new Map(), sources: new Map(), wordings: new Map(), commits: null, commitsFor: null, menu: null, sequence: 0, tell: null, menuProject: undefined, projects: [] };
 
-navigator.serviceWorker?.register('/sw.js').catch(() => {}); // only for the "Starting…" page of the installed app
+if (!window.hearalong?.desktop) navigator.serviceWorker?.register('/sw.js').catch(() => {}); // only for the "Starting…" page of the installed app
 /** An API call that gives up after `ms` (a stalled request must not hang recording or stopping). */
 function apiWithin(ms, path, options = {}) {
   const controller = new AbortController();
@@ -2383,6 +2383,7 @@ function closeStartMenu() {
 function startMenuStep(apps) {
   for (const node of [$('start-mic'), $('start-online'), document.querySelector('.start-consent')]) node.hidden = apps;
   for (const id of ['call-heading', 'call-tab', 'call-apps']) $(id).hidden = !apps;
+  if (window.hearalong?.desktop) $('call-tab').hidden = true;
   $('call-empty').hidden = true;
   $('start-menu').setAttribute('aria-label', apps ? 'Where is the call?' : 'Start recording');
 }
@@ -2554,11 +2555,11 @@ async function pollAppCapture() {
   finally { appCapturePolling = false; }
 }
 $('start-mic').onclick = guarded(() => startRecording(false));
-$('start-online').onclick = guarded(() => hasAppCapture() ? openCallMenu('start') : startRecording(true));
+$('start-online').onclick = guarded(() => window.hearalong?.desktop || hasAppCapture() ? openCallMenu('start') : startRecording(true));
 $('add-tab').onclick = guarded(async () => {
   const session = capture;
   if (!session) return;
-  if (hasAppCapture()) { openCallMenu('add-tab'); return; }
+  if (window.hearalong?.desktop || hasAppCapture()) { openCallMenu('add-tab'); return; }
   await attachTab(session, pickMeetingTab().then(stream => ({ stream }), error => ({ error }))); // called from the click: the picker needs it
 });
 $('stop').onclick = guarded(() => { closeStartMenu(); return stopCapture(); });

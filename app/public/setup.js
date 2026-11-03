@@ -3,7 +3,7 @@ import { startPageSession, endPageSession } from '/page-session.js';
 
 startPageSession();
 
-navigator.serviceWorker?.register('/sw.js').catch(() => {});
+if (!window.hearalong?.desktop) navigator.serviceWorker?.register('/sw.js').catch(() => {});
 const open = document.getElementById('open-app'), error = document.getElementById('setup-error');
 const showError = e => { error.hidden = !e; error.textContent = e?.message.replace(/'/g, '’') ?? ''; };
 const ui = new SetupUI(document.getElementById('setup-rows'), {
