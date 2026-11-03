@@ -17,7 +17,7 @@ function locations(env = process.env, packaged = false, resources = process.reso
     const data = join(base, 'data');
     return {
       packaged: true, testing: false, root, data, port: 4318,
-      node: join(resources, 'bin/node'), pdfText: join(resources, 'bin/pdf-text'),
+      node: join(resources, 'bin/node'), pdfText: join(resources, 'bin/pdf-text'), captureBinary: join(resources, 'bin/hearalong-capture'),
       entry: join(root, 'src/server.ts'), log: join(data, 'logs/launcher.log'), userData: join(base, 'Electron'),
       origin: 'http://127.0.0.1:4318', starting: join(__dirname, 'starting.html'), preload: join(__dirname, 'preload.cjs'),
       icon: join(root, 'public/icons/icon-512.png'),
@@ -33,6 +33,7 @@ function locations(env = process.env, packaged = false, resources = process.reso
   const testing = !packaged && env.HEARALONG_DESKTOP_TEST === '1';
   return {
     packaged: false, root, data, port, testing, node: findNode(env),
+    captureBinary: testing && env.HEARALONG_DESKTOP_TEST_CAPTURE ? resolve(env.HEARALONG_DESKTOP_TEST_CAPTURE) : null,
     entry: join(root, testing ? 'desktop/fixture-server.ts' : 'src/server.ts'),
     log: join(data, 'logs/launcher.log'), userData: join(dirname(data), data.endsWith('/Electron') ? 'HearAlong-Electron' : 'Electron'),
     origin: `http://127.0.0.1:${port}`,

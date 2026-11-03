@@ -8,6 +8,7 @@ import { join, dirname } from 'node:path';
 const require = createRequire(import.meta.url);
 const { locations } = require('../desktop/locations.cjs');
 const { ServerSession, availablePort, serverEnvironment } = require('../desktop/server.cjs');
+const { captureBinary } = require('../desktop/capture.cjs');
 const { backgroundLabel, backgroundVisible, backgroundQuitText, miniVisible, serverExit, permissionAllowed, navigation, launcherLogLines } = require('../desktop/policy.cjs');
 
 test('desktop paths use Node 22 outside Electron and keep Chromium separate from meetings', () => {
@@ -24,8 +25,10 @@ test('desktop paths use Node 22 outside Electron and keep Chromium separate from
   for (const PORT of ['0', '-1', '65536', 'bad']) assert.throws(() => locations({ PORT }), /PORT/);
 });
 test('desktop test-only entry and fake switches cannot be enabled in packaged builds', () => {
-  const env = { HEARALONG_NODE: process.execPath, HEARALONG_DESKTOP_TEST: '1' };
+  const env = { HEARALONG_NODE: process.execPath, HEARALONG_DESKTOP_TEST: '1', HEARALONG_DESKTOP_TEST_CAPTURE: '/fictional/fake-capture' };
   assert.equal(locations(env).testing, true);
+  assert.equal(locations(env).captureBinary, '/fictional/fake-capture');
+  assert.equal(locations({ ...env, HEARALONG_DESKTOP_TEST: '0' }).captureBinary, null);
   assert.match(locations(env).entry, /fixture-server.ts$/);
   assert.equal(locations({ ...env, HEARALONG_DESKTOP_TEST: '0' }).testing, false);
   const config = locations({ ...env, PORT: '9999', MEETING_DATA_DIR: '/ignored' }, true, '/fictional/HearAlong.app/Contents/Resources', '/fictional/home');
@@ -34,6 +37,7 @@ test('desktop test-only entry and fake switches cannot be enabled in packaged bu
   assert.equal(config.node, '/fictional/HearAlong.app/Contents/Resources/bin/node');
   assert.equal(config.entry, '/fictional/HearAlong.app/Contents/Resources/server/src/server.ts');
   assert.equal(config.pdfText, '/fictional/HearAlong.app/Contents/Resources/bin/pdf-text');
+  assert.equal(config.captureBinary, '/fictional/HearAlong.app/Contents/Resources/bin/hearalong-capture');
   assert.equal(config.data, '/fictional/home/Library/Application Support/HearAlong/data');
   assert.equal(config.userData, '/fictional/home/Library/Application Support/HearAlong/Electron');
   assert.equal(config.log, join(config.data, 'logs/launcher.log'));
@@ -54,6 +58,16 @@ test('packaged server has a Dock-safe PATH, bundled Pi/Node and extractor, never
   for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'HEARALONG_DESKTOP_TEST', 'MEETING_TEST_RECOGNIZER']) assert.equal(env[key], undefined);
   const dev = serverEnvironment({ ...config, packaged: false }, { PATH: '/dev-path', HEARALONG_DESKTOP_TEST: '1' });
   assert.equal(dev.PATH, '/dev-path'); assert.equal(dev.HEARALONG_DESKTOP_TEST, '1');
+});
+test('capture binary selection never compiles in packaged/tests; development tolerates absent swiftc', async () => {
+  const messages: string[] = [];
+  const log = (message: string) => messages.push(message);
+  const packaged = locations({ HEARALONG_DESKTOP_TEST_CAPTURE: '/fictional/ignored' }, true, '/fictional/Resources', '/fictional/home');
+  assert.equal(await captureBinary(packaged, log, { PATH: '' }), '/fictional/Resources/bin/hearalong-capture');
+  const config = locations({ HEARALONG_NODE: process.execPath, MEETING_DATA_DIR: '/tmp/fictional-meetings' });
+  assert.equal(await captureBinary({ ...config, testing: true }, log, { PATH: '' }), null);
+  assert.equal(await captureBinary(config, log, { PATH: '', HEARALONG_DESKTOP_TEST_CAPTURE: '/fictional/ignored' }), null);
+  assert.deepEqual(messages, ['Meeting-app audio unavailable: swiftc not found.']);
 });
 test('background labels and visibility match the helper', () => {
   assert.equal(backgroundLabel({ label: '  Writing notes  ' }), 'Writing notes');

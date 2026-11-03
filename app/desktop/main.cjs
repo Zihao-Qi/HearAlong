@@ -4,6 +4,7 @@ const { readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { locations } = require('./locations.cjs');
+const { captureBinary, startCapture } = require('./capture.cjs');
 const { backgroundLabel, backgroundVisible, backgroundQuitText, miniVisible, serverExit, permissionAllowed, navigation } = require('./policy.cjs');
 const { logger, logTail, availablePort, startServer, ServerSession } = require('./server.cjs');
 
@@ -21,7 +22,7 @@ function launch() {
   if (!app.requestSingleInstanceLock()) { app.exit(0); return; }
   const log = logger(config);
   const api = new ServerSession(config.origin);
-  let main, mini, server, tray, blocker, timer, pollBusy = false, live, background;
+  let main, mini, server, capture, tray, blocker, timer, pollBusy = false, live, background;
   let quitting = false, finished = false, askingQuit = false, failing = false, loaded = false, wasFrontmost = true;
   let focusCount = 0;
   const frontmost = () => Boolean(main?.isFocused());
@@ -156,7 +157,7 @@ function launch() {
     if (quitting) return;
     quitting = true; clearInterval(timer); tray?.destroy(); tray = null; mini?.hide();
     if (blocker !== undefined) { powerSaveBlocker.stop(blocker); blocker = undefined; }
-    try { await server?.stop(); }
+    try { try { await capture?.stop(); } finally { await server?.stop(); } }
     finally {
       log('Helper quitting.'); finished = true;
       // Destroy after graceful server/page drain: no second beforeunload confirmation.
@@ -248,6 +249,9 @@ function launch() {
       while (!quitting && !failing && server.alive() && Date.now() < deadline) {
         try {
           if (await api.ready()) {
+            const binary = await captureBinary(config, log);
+            if (quitting || failing || !server.alive()) return;
+            if (binary && !capture) capture = startCapture(binary, config, server.child.pid, log);
             loaded = true;
             if (main) await main.loadURL(config.origin);
             timer = setInterval(() => { void poll(); }, 500); await poll(); return;
@@ -259,6 +263,6 @@ function launch() {
     } catch (error) { await fail(`The server could not start: ${error.message}`); }
   }).catch(error => { void fail(error.message); });
   // No renderer debug/test IPC. Playwright can inspect the main process only in development.
-  if (config.testing) module.exports.state = () => ({ live, background, quitting, focusCount, loaded, serverPid: server?.child.pid,
+  if (config.testing) module.exports.state = () => ({ live, background, quitting, focusCount, loaded, serverPid: server?.child.pid, capturePid: capture?.pid(),
     miniVisible: mini?.isVisible() || false, frontmost: frontmost(), blocker, tray: Boolean(tray) });
 }

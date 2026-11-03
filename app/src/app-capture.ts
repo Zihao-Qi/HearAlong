@@ -34,7 +34,7 @@ export class AppCaptureControl {
     if (!v || !v.app || typeof v.app.id !== 'string' || typeof v.meetingId !== 'string' || !/^[a-f0-9-]{36}$/.test(v.recordingId) || !/^app:[a-f0-9-]{36}$/.test(v.source) || typeof v.pageId !== 'string' || !v.pageId || v.pageId.length > 64 || !Number.isFinite(v.clockStart) || v.clockStart <= 0 || v.clockStart >= 8.64e15) throw new Error('Invalid app capture request.');
     if (!current || current.stopping || current.meetingId !== v.meetingId || current.recordingId !== v.recordingId || current.pageId !== v.pageId) return false;
     if (this.used.has(v.source)) return false;
-    if (!this.available()) throw new Error('The helper is not available.');
+    if (!this.available()) throw new Error('Meeting-app audio is not available right now. You can record the microphone.');
     if (this.state && !this.state.ended || current.sources.some(isRemote)) throw new Error('Only one call source can record at a time.');
     const app = this.apps.find(a => a.id === v.app.id);
     if (!app) throw new Error('That app is no longer playing sound.');

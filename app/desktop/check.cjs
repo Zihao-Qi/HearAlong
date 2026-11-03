@@ -44,13 +44,14 @@ function finder() {
   let electron, owned = [], database;
   const passed = label => { results.cases.push(label); console.log('PASS', label); };
   try {
-    for (const mode of ['recording', 'crash', 'renderer', 'idle']) {
+    for (const mode of ['capture', 'recording', 'crash', 'renderer', 'idle']) {
       const scope = join(root, mode), home = join(scope, 'home'), data = join(scope, 'meetings');
       await mkdir(home, { recursive: true });
       const PORT = String(await port());
       const env = { ...process.env, HOME: home, MEETING_DATA_DIR: data, PORT, HEARALONG_NODE: process.execPath,
         MEETING_CLOUD: '0', HEARALONG_DESKTOP_TEST: '1', MEETING_IDLE_EXIT_S: mode === 'idle' ? '6' : '60',
-        HEARALONG_DESKTOP_TEST_SETUP: ['idle', 'renderer'].includes(mode) ? '1' : '0',
+        HEARALONG_DESKTOP_TEST_SETUP: ['idle', 'renderer', 'capture'].includes(mode) ? '1' : '0',
+        ...(mode === 'capture' ? { HEARALONG_DESKTOP_TEST_CAPTURE: join(__dirname, 'fixture-capture.cjs'), HEARALONG_DESKTOP_TEST_CAPTURE_EVENTS: join(scope, 'capture-events.jsonl') } : {}),
         HF_HOME: join(scope, 'empty-hf'), XDG_CACHE_HOME: join(scope, 'cache'), XDG_CONFIG_HOME: join(scope, 'config') };
       delete env.ELECTRON_RUN_AS_NODE;
       electron = await _electron.launch({ executablePath, args: [__dirname], env, timeout: 30000 });
@@ -69,7 +70,7 @@ function finder() {
       const starting = await page.locator('h1').textContent();
       assert.equal(starting, 'Starting HearAlong…');
       assert.equal(await page.locator('p').textContent(), 'This takes a few seconds.');
-      await page.waitForURL(`http://127.0.0.1:${PORT}/${['idle', 'renderer'].includes(mode) ? 'setup' : ''}`, { timeout: 30000 });
+      await page.waitForURL(`http://127.0.0.1:${PORT}/${['idle', 'renderer', 'capture'].includes(mode) ? 'setup' : ''}`, { timeout: 30000 });
       await page.waitForFunction(() => window.hearalong?.desktop);
       // Playwright otherwise emulates focus, making document.hasFocus() unusable as native evidence.
       await nativeFocus(page);
@@ -77,6 +78,38 @@ function finder() {
       await until(async () => { try { owned = [serverPid, ...Object.values(JSON.parse(await readFile(join(data, 'descendants.json'), 'utf8')))]; return owned.length === 3; } catch { return false; } }, 'descendants');
       const inspect = () => electron.evaluate(({ app }) => process.mainModule.require(app.getAppPath() + '/main.cjs').state());
       passed(`${mode}: disk starting page then own server page`);
+      if (mode === 'capture') {
+        const events = async () => (await readFile(join(scope, 'capture-events.jsonl'), 'utf8').catch(error => {
+          if (error.code === 'ENOENT') return ''; throw error;
+        })).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        await until(async () => (await events()).length === 1, 'capture started after server');
+        let previous = (await inspect()).capturePid;
+        owned.push(previous);
+        assert.equal((await events())[0].group, serverPid);
+        assert.equal((await events())[0].base, `http://127.0.0.1:${PORT}`);
+        passed('capture starts after own server answers, with base/Origin/server group');
+        for (const seconds of [1, 2, 4]) {
+          const crashedAt = Date.now();
+          process.kill(previous, 'SIGKILL');
+          await until(async () => { const pid = (await inspect()).capturePid; return pid && pid !== previous; }, `capture restart ${seconds} s`);
+          previous = (await inspect()).capturePid; owned.push(previous);
+          assert.ok(Date.now() - crashedAt >= seconds * 1000 - 50);
+          await until(async () => (await events()).filter(e => e.event === 'start').length === Math.log2(seconds) + 2, 'restart event');
+        }
+        passed('capture crash restarts with 1/2/4-second exponential backoff');
+        const closed = electron.waitForEvent('close');
+        electron.process().kill('SIGTERM');
+        await closed; electron = null;
+        const recorded = await events();
+        assert.deepEqual(recorded.slice(-2).map(e => [e.event, e.serverAlive]), [['term', true], ['drained', true]]);
+        assert.ok(recorded.at(-1).at - recorded.at(-2).at >= 550);
+        const log = await readFile(join(data, 'logs/launcher.log'), 'utf8');
+        for (const seconds of [1, 2, 4]) assert.ok(log.includes(`Restarting audio capture in ${seconds} s.`));
+        assert.ok(log.lastIndexOf('Audio capture exited (0).') < log.lastIndexOf('Server exited'));
+        await until(() => owned.every(pid => !alive(pid)), 'capture/server cleanup');
+        owned = []; passed('quit sends capture SIGTERM and waits for drain before stopping server');
+        continue;
+      }
       if (mode === 'renderer') {
         await page.waitForSelector('[data-setup-row="microphone"]');
         await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.getTitle() !== 'HearAlong mini')?.webContents.forcefullyCrashRenderer());

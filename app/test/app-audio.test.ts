@@ -30,6 +30,25 @@ test('call menu focuses the first visible desktop button, never the hidden Chrom
   }
 });
 
+test('disappearing focused app row moves focus to a visible item; desktop empty/unavailable copy', async () => {
+  const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const refresh = code.slice(code.indexOf('async function refreshCallApps('), code.indexOf('function openCallMenu('));
+  for (const [desktop, available, adding] of [[true, true, false], [true, false, true], [false, false, false]]) {
+    let focused = '';
+    const button = (id: string, hidden = false) => ({ hidden, offsetParent: hidden ? null : {}, focus() { focused = id; } });
+    const back = button('back', adding), tab = button('tab', desktop), remaining = button('remaining');
+    const gone = { dataset: { app: 'gone' }, remove() {} };
+    const empty = { textContent: '', hidden: true };
+    const nodes = { 'call-apps': { children: [gone] }, 'call-empty': empty, 'start-menu': { querySelectorAll: () => [back, tab, remaining] } };
+    const context = { $: (id: keyof typeof nodes) => nodes[id], callMenuAnchor: 'start', helperAvailable: false, helperCheckedAt: 0,
+      api: async () => ({ available, apps: [] }), window: { hearalong: { desktop } }, document: { activeElement: gone } };
+    await runInNewContext(`${refresh}\nrefreshCallApps();`, context);
+    assert.equal(focused, adding ? 'remaining' : 'back');
+    assert.equal(empty.hidden, false);
+    assert.equal(empty.textContent, desktop && !available ? 'Meeting-app audio is not available right now. You can record the microphone.' : 'No meeting app is playing sound.');
+  }
+});
+
 test('microphone app processing requests all only when advertised and records the applied mode', async () => {
   const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const attach = code.slice(code.indexOf('async function attachApp('), code.indexOf('let appCapturePolling'));
@@ -118,8 +137,12 @@ test('loopback app capture: endpoints, PCM, Them labels, notices, Stop and end p
     assert.equal((await (await post('/api/live/app-capture', { ...value, recordingId: randomUUID() })).json()).accepted, false);
     assert.equal((await (await post('/api/live/app-capture', value)).json()).accepted, true);
     assert.equal((await post('/api/live/app-capture', { ...value, source: source() })).status, 400);
+    assert.equal((await fetch(`${server.url}/api/live/capture`)).status, 403);
+    assert.equal((await request('/api/live/capture', { headers: { 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+    const capture = await (await request('/api/live/capture')).json();
+    assert.equal(capture.appList, true); assert.equal(capture.appCapture.source, remote);
     const window = await (await request('/api/live/window')).json();
-    assert.equal(window.appList, true); assert.equal(window.appCapture.source, remote);
+    assert.deepEqual(Object.keys(window).sort(), ['meetingId', 'session', 'show']);
     assert.equal((await pcm(`tab:${randomUUID()}`, 0)).status, 409);
     assert.equal((await pcm(remote, 0)).status, 201);
     const live = (await (await request('/api/live')).json()).recording;
@@ -167,6 +190,34 @@ async function appFixture(withAppFrame = true) {
   };
 }
 
+test('capture heartbeat owns liveness; window polls cannot keep a dead capture alive', async () => {
+  const f = await appFixture();
+  try {
+    await f.request('/api/live/capture');
+    for (let i = 0; i < 6; i++) { f.advance(500); await f.request('/api/live/window'); }
+    assert.equal((await f.state()).ended, false);
+    await f.request('/api/live/capture');
+    f.advance(3000); await f.request('/api/live/window');
+    assert.equal((await f.state()).ended, false, 'capture heartbeat extended the lease');
+    f.advance(501); await f.request('/api/live/window');
+    const state = await f.state();
+    assert.equal(state.ended, true);
+    assert.equal(state.message, "Fictional Meet capture stopped because HearAlong's audio capture stopped; the microphone keeps recording.");
+    assert.equal(f.server.store.openRecordings().some(r => r.source === f.mic), true);
+    assert.equal((await f.pcm(f.source, 1)).status, 409);
+  } finally { await f.close(); }
+});
+
+test('capture poll stops stale capture when the microphone ends', async () => {
+  const f = await appFixture();
+  try {
+    await f.end(f.mic);
+    const capture = await (await f.request('/api/live/capture')).json();
+    assert.equal(capture.appCapture.source, f.source);
+    assert.equal(capture.appCapture.stopping, true);
+  } finally { await f.close(); }
+});
+
 test('goodbye permanently ends app admission; a late frame cannot reopen an abandoned meeting', async () => {
   const f = await appFixture();
   try {
@@ -205,7 +256,7 @@ test('accepted PCM is liveness even while helper window polling is stale', async
   } finally { await f.close(); }
 });
 
-test('an empty loss seal yields to a concurrent window poll before committing end', async () => {
+test('an empty loss seal yields to a concurrent capture poll before committing end', async () => {
   const f = await appFixture(false);
   const endIfInactive = f.server.capture.endIfInactive.bind(f.server.capture);
   let lostAtEntry = false, macrotaskRan = false, macrotaskBeforeReturn = false;
@@ -218,12 +269,12 @@ test('an empty loss seal yields to a concurrent window poll before committing en
   };
   try {
     // Warm both connections before advancing the fake clock: both requests below are already queued I/O.
-    const warm = await Promise.all([f.request('/api/live/window'), f.request('/api/live/window')]);
+    const warm = await Promise.all([f.request('/api/live/capture'), f.request('/api/live/capture')]);
     await Promise.all(warm.map(response => response.json()));
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(f.server.store.heldFrames(f.meeting.id, f.source).length, 0);
     f.advance(3501);
-    const [state] = await Promise.all([f.state(), f.request('/api/live/window')]);
+    const [state] = await Promise.all([f.state(), f.request('/api/live/capture')]);
     assert.equal(lostAtEntry, true, 'exercise an actual loss decision, not a fresh poll before entry');
     assert.equal(macrotaskBeforeReturn, true, 'even an empty seal must yield beyond microtasks');
     assert.equal(state.ended, false);
@@ -276,7 +327,7 @@ test('a heartbeat during a slow loss seal cancels disconnect and keeps subsequen
   try {
     f.advance(3501);
     const pending = f.state(); await sealing;
-    await f.request('/api/live/window'); release();
+    await f.request('/api/live/capture'); release();
     assert.equal((await pending).ended, false);
     assert.equal((await f.pcm(f.source, 1)).status, 201);
     assert.equal(f.server.store.openRecordings().filter(r => r.source === f.source).length, 1);

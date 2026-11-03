@@ -40,7 +40,7 @@ function macho(path) {
   const shell = join(out, 'shell');
   mkdirSync(shell);
   // Explicit allowlist: never copy meetings, test fixtures, development dependencies or local configuration.
-  for (const file of ['main.cjs', 'locations.cjs', 'server.cjs', 'policy.cjs', 'preload.cjs']) cpSync(join(source, 'desktop', file), join(shell, file));
+  for (const file of ['main.cjs', 'locations.cjs', 'server.cjs', 'capture.cjs', 'policy.cjs', 'preload.cjs']) cpSync(join(source, 'desktop', file), join(shell, file));
   writeFileSync(join(shell, 'starting.html'), readFileSync(join(source, 'desktop/starting.html'), 'utf8').replace('../public/starting.css', './starting.css'));
   cpSync(join(source, 'public/starting.css'), join(shell, 'starting.css'));
   writeFileSync(join(shell, 'package.json'), JSON.stringify({ name: 'hearalong', version: manifest.version, main: 'main.cjs' }));
@@ -64,6 +64,8 @@ function macho(path) {
   cpSync(join(nodeRoot, 'bin/node'), join(bin, 'node'));
   cpSync(join(nodeRoot, 'LICENSE'), join(resources, 'NODE-LICENSE'));
   run('/usr/bin/swiftc', ['-O', '-target', 'arm64-apple-macosx26.0', '-module-cache-path', join(cache, 'swift'), '-o', join(bin, 'pdf-text'), join(source, 'native/pdf-text.swift')]);
+  run('/usr/bin/swiftc', ['-O', '-target', 'arm64-apple-macosx26.0', '-module-cache-path', join(cache, 'swift'), '-o', join(bin, 'hearalong-capture'),
+    ...['AppAudio.swift', 'AudioPipeline.swift', 'AppCaptureClient.swift', 'capture-main.swift'].map(file => join(source, 'launcher', file))]);
   const iconset = join(out, 'AppIcon.iconset'); mkdirSync(iconset);
   for (const size of [16, 32, 128, 256, 512]) {
     for (const scale of [1, 2]) run('/usr/bin/sips', ['-z', String(size * scale), String(size * scale), join(source, 'public/icons/icon-1024.png'), '--out', join(iconset, `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`)]);

@@ -12,3 +12,5 @@ swiftc -O -DAPP_AUDIO_TESTING -o "$TMP/tap-regressions" launcher/AudioPipeline.s
 for scenario in backlog timestamp overrun overrun-live gate banks; do "$TMP/tap-regressions" "$scenario"; done
 swiftc -O -DHELPER_TESTING -o "$TMP/helper-tests" launcher/main.swift launcher/AudioPipeline.swift launcher/AppAudio.swift launcher/AppCaptureClient.swift launcher/HelperTests.swift -framework Cocoa -framework WebKit -framework CoreAudio -framework AVFoundation
 "$TMP/helper-tests"
+# Compile the shipped, windowless entry point too. No launch/discovery/tap here; fake SIGTERM/end is exercised by app-audio-check.ts.
+swiftc -O -target arm64-apple-macosx26.0 -o "$TMP/hearalong-capture" launcher/capture-main.swift launcher/AudioPipeline.swift launcher/AppAudio.swift launcher/AppCaptureClient.swift -framework CoreAudio -framework AVFoundation

@@ -4,6 +4,7 @@
 # Runtime folders stay local, including the old location on legacy branches.
 /app/data/
 /app/artifacts/
+/app/desktop/.build/
 /prototype/data/
 /prototype/artifacts/
 

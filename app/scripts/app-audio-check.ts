@@ -1,4 +1,4 @@
-// Production helper sources with test-only input and a loopback fault proxy. Never creates a HAL tap or accesses TCC.
+// Production headless capture sources with test-only input and a loopback fault proxy. Never creates a HAL tap or accesses TCC.
 import './check-env.ts';
 import { testBrowser } from './test-browser.ts';
 import assert from 'node:assert/strict';
@@ -32,9 +32,15 @@ const server = await startServer({ directory: data, port: 0, quick: null, heavy:
 // Only the helper uses the proxy. Faults must not interrupt the page's microphone or other local services.
 let failUploads = false;
 const attempts: { source: string; sequence: number; at: number; startMs: number; wallMs: number; clockStart: number }[] = [];
+const ends: { source: string; message?: string }[] = [];
 const sockets = new Set<Socket>();
 const proxy = createServer((req, res) => {
   const source = String(req.headers['x-audio-source'] ?? '');
+  if (req.url?.endsWith('/pcm/end')) {
+    let body = '';
+    req.on('data', bytes => { body += bytes.toString(); });
+    req.on('end', () => { ends.push(JSON.parse(body)); });
+  }
   if (req.url?.endsWith('/pcm')) {
     attempts.push({ source, sequence: Number(req.headers['x-sequence']), at: Date.now(), startMs: Number(req.headers['x-start-ms']), wallMs: Number(req.headers['x-capture-wall-ms']), clockStart: Number(req.headers['x-clock-start']) });
     if (failUploads) { req.resume(); res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"error":"Fictional upload outage"}'); return; }
@@ -52,15 +58,12 @@ const disconnect = async () => { for (const socket of sockets) socket.destroy();
 let helper: ChildProcess | undefined;
 const browser = await chromium.launch({ executablePath: testBrowser(), headless: true, args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
 try {
-  const bundle = join(directory, 'HearAlong Helper.app');
-  await mkdir(join(bundle, 'Contents/MacOS'), { recursive: true }); await mkdir(join(bundle, 'Contents/Resources'));
-  const binary = join(bundle, 'Contents/MacOS/HearAlongHelper');
-  execFileSync('swiftc', ['-DAPP_AUDIO_TESTING', '-o', binary, 'launcher/main.swift', 'launcher/AudioPipeline.swift', 'launcher/AppAudio.swift', 'launcher/AppCaptureClient.swift', '-framework', 'Cocoa', '-framework', 'WebKit', '-framework', 'CoreAudio', '-framework', 'AVFoundation']);
-  await writeFile(join(bundle, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>test.hearalong.app-audio</string><key>CFBundleExecutable</key><string>HearAlongHelper</string><key>LSUIElement</key><true/></dict></plist>');
-  await writeFile(join(directory, 'HearAlong Helper.json'), JSON.stringify({ node: process.execPath, path: process.env.PATH, app: resolve('.'), data, port: proxyPort }));
+  const binary = join(directory, 'hearalong-capture');
+  execFileSync('swiftc', ['-DAPP_AUDIO_TESTING', '-o', binary, 'launcher/capture-main.swift', 'launcher/AudioPipeline.swift', 'launcher/AppAudio.swift', 'launcher/AppCaptureClient.swift', '-framework', 'CoreAudio', '-framework', 'AVFoundation']);
   const control = join(directory, 'fictional-app-control');
   await writeFile(control, 'normal');
-  helper = spawn(binary, [], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, MEETING_LAUNCHER_NO_WINDOW: '1', HEARALONG_FAKE_APP_AUDIO: '1', HEARALONG_FAKE_APP_CONTROL: control } });
+  const launchCapture = () => spawn(binary, [`http://127.0.0.1:${proxyPort}`, server.url, String(process.pid)], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, HEARALONG_FAKE_APP_AUDIO: '1', HEARALONG_FAKE_APP_CONTROL: control } });
+  helper = launchCapture();
   let helperErrors = '';
   helper.stderr!.on('data', bytes => { helperErrors += bytes.toString(); });
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
@@ -177,25 +180,38 @@ try {
   console.log('PASS exhausted real upload/backoff budget: no queue advance, app ends, mic continues');
 
   const disconnected = await chooseApp(); await hasFrames(disconnected);
-  const noticesBefore = await logCount('helper disconnected');
+  const noticesBefore = await logCount("HearAlong's audio capture stopped");
   await disconnect(); await waitFor(async () => (await state())?.ended === true);
   await page.locator('#add-tab').waitFor(); await micContinues();
   await new Promise<void>(resolve => proxy.listen(proxyPort, '127.0.0.1', resolve));
   await page.waitForTimeout(4500);
-  assert.equal(await logCount('helper disconnected'), noticesBefore + 1);
+  assert.equal(await logCount("HearAlong's audio capture stopped"), noticesBefore + 1);
   assert.equal(server.store!.openRecordings().filter(r => r.source.startsWith('app:')).length, 0, 'late uploads cannot reopen the ended source');
   await stop(); console.log('PASS helper loses server and reconnects: one message, no orphan/reopened source, mic continues');
 
   await waitFor(() => page.evaluate(async () => (await (await fetch('/api/live/app-capture')).json()).available)); await page.waitForTimeout(1200);
   const crashed = await chooseApp(); await hasFrames(crashed);
-  const crashNotices = await logCount('helper disconnected');
+  const crashNotices = await logCount("HearAlong's audio capture stopped");
   helper.kill('SIGKILL');
   await new Promise<void>(resolve => helper!.once('exit', () => resolve())); helper = undefined;
   await waitFor(async () => (await state())?.ended === true); await page.locator('#add-tab').waitFor();
-  await micContinues(); assert.equal(await logCount('helper disconnected'), crashNotices + 1); await stop();
-  console.log('PASS helper crash: one message, only app ends, mic continues');
+  await micContinues(); assert.equal(await logCount("HearAlong's audio capture stopped"), crashNotices + 1); await stop();
+  console.log('PASS capture crash: one message, only app ends, mic continues');
 
-  await page.waitForTimeout(1500);
+  helper = launchCapture();
+  helper.stderr!.on('data', bytes => { helperErrors += bytes.toString(); });
+  await waitFor(() => page.evaluate(async () => (await (await fetch('/api/live/app-capture')).json()).available));
+  await page.waitForTimeout(1200); // Let the page's independent one-second availability poll observe the new process.
+  const terminated = await chooseApp(); await hasFrames(terminated);
+  const exited = new Promise<number | null>(resolve => helper!.once('exit', code => resolve(code)));
+  helper.kill('SIGTERM');
+  assert.equal(await exited, 0); helper = undefined;
+  assert.ok(ends.some(end => end.source === terminated && end.message === 'HearAlong quit; the microphone keeps recording.'), 'SIGTERM sends pcm/end before exit');
+  await waitFor(async () => (await state())?.ended === true);
+  await page.locator('#add-tab').waitFor(); await micContinues(); await stop();
+  console.log('PASS headless SIGTERM drains fake frames and sends pcm/end before exiting');
+
+  await page.waitForTimeout(4500);
   await page.evaluate(() => {
     const devices = navigator.mediaDevices as MediaDevices & { pickerCalls?: number };
     devices.pickerCalls = 0;

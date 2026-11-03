@@ -8,14 +8,14 @@ import Foundation
         let fictional = AudioProcess(object: 1, pid: 1, bundle: "test.fictional.meet", name: "Fictional Meet", running: true, excluded: false)
         let child = AudioProcess(object: 2, pid: 2, bundle: fictional.bundle, name: fictional.name, running: true, excluded: false)
         let excluded = [
-            AudioProcess(object: 3, pid: 3, bundle: "com.google.Chrome.helper", name: "Chrome Helper", running: true, excluded: false),
+            AudioProcess(object: 3, pid: 3, bundle: "io.github.zihao-qi.hearalong.helper", name: "HearAlong Helper", running: true, excluded: false),
             AudioProcess(object: 4, pid: 4, bundle: "", name: "No bundle", running: true, excluded: false),
             AudioProcess(object: 5, pid: 5, bundle: "test.server", name: "Server child", running: true, excluded: true),
             AudioProcess(object: 6, pid: 6, bundle: "local.meeting-research-assistant.helper", name: "Helper", running: true, excluded: false),
             AudioProcess(object: 7, pid: 7, bundle: "test.idle", name: "Idle", running: false, excluded: false),
         ]
         try require(groupAudioApps([fictional, child] + excluded) == [AudioApp(id: fictional.bundle, name: fictional.name)], "grouping/filtering")
-        print("PASS app grouping: child processes, Chrome, own/server processes, no bundle, inactive outputs")
+        print("PASS app grouping: child processes, own/server processes, no bundle, inactive outputs")
 
         let safari = AudioApp(id: "com.apple.Safari", name: "Safari")
         let raycast = AudioApp(id: "com.raycast.macos", name: "Raycast")
@@ -34,19 +34,24 @@ import Foundation
         try require(attributeAudioProcess(gpu, responsibleApp: unknownOwner) == gpu, "unresolved responsible app must preserve fallback")
         print("PASS WebKit attribution: Safari/Raycast GPU helpers give separate app names and disjoint tap process sets; missing owner falls back")
 
+        let chrome = AudioApp(id: "com.google.Chrome", name: "Chrome")
+        let chromeProcess = attributeAudioProcess(gpu, responsibleApp: AudioAppOwner(app: chrome, excluded: false))
+        try require(groupAudioApps([chromeProcess]) == [chrome], "Chrome is an ordinary meeting app")
+        try require(audioProcesses(for: chrome, in: [chromeProcess]).map(\.object) == [gpu.object], "Chrome's responsible audio process reaches its tap")
         let forbiddenOwners = [
-            AudioAppOwner(app: AudioApp(id: "com.google.Chrome", name: "Chrome"), excluded: false),
+            AudioAppOwner(app: AudioApp(id: "io.github.zihao-qi.hearalong", name: "HearAlong"), excluded: false),
+            AudioAppOwner(app: AudioApp(id: "io.github.zihao-qi.hearalong.helper.Renderer", name: "HearAlong Renderer"), excluded: false),
             AudioAppOwner(app: AudioApp(id: "local.meeting-research-assistant.helper", name: "HearAlong"), excluded: false),
             AudioAppOwner(app: safari, excluded: true), // Responsible pid is this helper or in the server's group.
         ]
-        let remappedExcluded = excluded.filter { $0.excluded || $0.bundle.hasPrefix("com.google.Chrome") || $0.bundle.hasPrefix("local.meeting-research-assistant") }
+        let remappedExcluded = excluded.filter { $0.excluded || $0.bundle.hasPrefix("io.github.zihao-qi.hearalong") || $0.bundle.hasPrefix("local.meeting-research-assistant") }
             .map { attributeAudioProcess($0, responsibleApp: safariOwner) }
             + forbiddenOwners.map { attributeAudioProcess(gpu, responsibleApp: $0) }
         try require(groupAudioApps(remappedExcluded).isEmpty, "raw or responsible-app exclusions must survive attribution")
         for owner in [safari, raycast] + forbiddenOwners.map(\.app) {
             try require(audioProcesses(for: owner, in: remappedExcluded).isEmpty, "excluded processes must never reach a tap")
         }
-        print("PASS attribution exclusions: raw and mapped Chrome, HearAlong and server-group processes stay out of rows and taps")
+        print("PASS attribution exclusions: raw and mapped HearAlong/Electron helpers and server-group processes stay out of rows and taps; Chrome is eligible")
 
         let clock = 1_000_000.0, first = clock + 2375.5
         let timeline = AppTimeline(clockStart: clock, firstWallMs: first)
