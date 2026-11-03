@@ -26,6 +26,19 @@ Open **http://127.0.0.1:4318** (not `localhost`: the server validates host and o
 
 If a speech model goes missing later, existing meetings remain readable; use Settings › This Mac › Setup to restore speech. Missing FFmpeg only prevents importing audio/video files; recording and transcription still work. Advanced options: `MEETING_MODEL_PATH=/path/to/model.gguf` overrides the saved speech choice; Pi Voice settings are also discovered read-only. The unit tests and `app-check` below need neither speech weights nor a cloud account.
 
+## Run the app (development)
+
+On macOS with Node 22, install the server dependencies above, then run from `app/`:
+
+```sh
+cd desktop
+npm ci --ignore-scripts
+node node_modules/electron/install.js
+npm start
+```
+
+This opens one HearAlong window without Chrome. The shell starts and stops the server; closing the window leaves it running until its idle stop. `HEARALONG_NODE` selects Node 22 (otherwise PATH); `MEETING_DATA_DIR` and `PORT` keep their server defaults. Chromium settings live beside the meetings folder in `Electron/`; startup and shutdown append to `logs/launcher.log` in the meetings folder. macOS calls this development build Electron when asking for microphone access. Meeting-app capture and packaging are later steps. The local fake-audio check is `npm run check` in `desktop/` (macOS only; uses the parent app’s Playwright).
+
 ## Use
 
 - Create a meeting, start the microphone, or replay a recording you supply. **Microphone + online call** offers a Chrome tab or, with the installed helper, an app playing sound. The built helper bundle declares macOS 26.0 as its minimum; its audio-tap implementation requires macOS 14.4. Use headphones to keep the call out of your microphone. Me/Them labels identify capture channels, not individual people. Settings › Microphone chooses the input and shows its level. Room mode, for in-person meetings, turns off echo cancellation and noise suppression; online capture keeps echo cancellation.

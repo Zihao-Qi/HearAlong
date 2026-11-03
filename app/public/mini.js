@@ -12,7 +12,7 @@ function el(tag, text, className) {
   return node;
 }
 // Where the page is shown: the helper's window gives a message handler; Chrome's window holds it in a frame of the app's page.
-const native = window.webkit?.messageHandlers?.mini;
+const native = window.hearalong?.desktop ? { postMessage: () => window.hearalong.activate() } : window.webkit?.messageHandlers?.mini;
 const host = native ? 'native' : window.parent !== window ? 'frame' : 'page';
 document.documentElement.dataset.host = host;
 /** Brings HearAlong forward: the helper opens the installed app; Chrome's window asks the app's page to focus itself. */

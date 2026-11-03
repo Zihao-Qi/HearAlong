@@ -493,6 +493,13 @@ export class SetupUI {
     this.permissions();
   }
   async permissions() {
+    if (window.hearalong?.desktop) {
+      const status = await window.hearalong.microphoneStatus();
+      this.mic = status === 'granted' ? 'granted' : ['denied', 'restricted'].includes(status) ? 'denied' : 'prompt';
+      if (this.active) this.render();
+      await this.devices();
+      return;
+    }
     try { this.permission = await navigator.permissions.query({ name: 'microphone' }); this.permission.addEventListener('change', this.permissionChanged); this.permissionChanged(); }
     catch { /* Safari and older Chrome may not expose microphone permissions. */ }
     await this.devices();
@@ -506,6 +513,7 @@ export class SetupUI {
     else this.container.replaceChildren(node('p', 'Checking setup…', 'su-muted'));
     const settings = await setupRequest('/api/settings').catch(() => null);
     if (settings) this.audioRetention = settings.audioRetention;
+    if (window.hearalong?.desktop) await this.permissions();
     await this.refresh();
   }
   stop({ dispose = false } = {}) {
@@ -644,6 +652,7 @@ export class SetupUI {
     };
     this.stopMic = finish; this.pendingActions.add('microphone'); this.render();
     try {
+      if (window.hearalong?.desktop && !await window.hearalong.allowMicrophone()) throw new DOMException('Microphone access was not allowed.', 'NotAllowedError');
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (version !== this.micVersion || !this.active) { stream.getTracks().forEach(t => t.stop()); return; }
       this.pendingActions.delete('microphone');
@@ -671,8 +680,10 @@ export class SetupUI {
       return row('Microphone', 'Say something', 'busy', [], [meter]);
     }
     if (this.mic === 'granted') return row('Microphone', `Allowed${this.details && this.device ? ` · ${this.device}` : ''}`, 'ok');
-    if (this.mic === 'denied') return row('Microphone', 'Blocked. In Chrome, click the site controls beside the address, then allow Microphone.', 'warn');
-    return row('Microphone', 'So Chrome won’t ask in your first meeting', 'todo', [button('Allow', () => this.allowMic())]);
+    if (this.mic === 'denied') return window.hearalong?.desktop
+      ? row('Microphone', 'Blocked. Turn on HearAlong in System Settings › Privacy & Security › Microphone.', 'warn', [button('Open Settings', () => window.hearalong.openMicrophoneSettings())])
+      : row('Microphone', 'Blocked. In Chrome, click the site controls beside the address, then allow Microphone.', 'warn');
+    return row('Microphone', window.hearalong?.desktop ? 'So HearAlong won’t ask in your first meeting' : 'So Chrome won’t ask in your first meeting', 'todo', [button('Allow', () => this.allowMic())]);
   }
   render() {
     if (!this.status) return;
@@ -687,7 +698,7 @@ export class SetupUI {
     });
     const optional = [ai, mic];
     const chrome = /Chrome\//.test(navigator.userAgent) && !/(Edg|OPR)\//.test(navigator.userAgent);
-    if (!chrome) {
+    if (!chrome && !window.hearalong?.desktop) {
       const open = link('Open in Chrome', `google-chrome://${location.host}/setup`);
       open.className = 'su-button'; open.removeAttribute('target');
       const chromeRow = row('Chrome', 'Recording needs Google Chrome', 'todo', [open]); chromeRow.dataset.setupRow = 'chrome'; optional.push(chromeRow);

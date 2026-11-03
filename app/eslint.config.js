@@ -68,9 +68,14 @@ const promisePlugin = { ...tseslint.plugin, rules: { ...tseslint.plugin.rules,
 } };
 
 export default [
-  { ignores: ['public/vendor/**'] },
+  { ignores: ['public/vendor/**', 'desktop/node_modules/**'] },
   {
-    files: ['{src,scripts,test}/**/*.ts'],
+    files: ['desktop/**/*.cjs'],
+    ...js.configs.recommended,
+    languageOptions: { sourceType: 'commonjs', globals: { ...globals.node, ...globals.browser } },
+  },
+  {
+    files: ['{src,scripts,test,desktop}/**/*.ts'],
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: { project: './tsconfig.json', tsconfigRootDir: import.meta.dirname },
