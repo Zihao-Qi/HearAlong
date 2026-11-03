@@ -7,6 +7,7 @@ const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { packager } = require('@electron/packager');
 const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
+const { assertUnquarantined } = require('../quarantine.cjs');
 const NODE_VERSION = '22.22.2';
 const ID = 'io.github.zihao-qi.hearalong';
 const source = resolve(__dirname, '../..');
@@ -94,6 +95,7 @@ function macho(path) {
   for (const path of paths.filter(path => /\.(?:framework|app)$/.test(path) && lstatSync(path).isDirectory())) run('/usr/bin/codesign', ['--force', '--sign', '-', path]);
   run('/usr/bin/codesign', ['--force', '--sign', '-', app]);
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
+  assertUnquarantined(app, join(out, 'quarantine-attributes.txt'));
   // Both Koffi's arm64 addon and the actual Metal speech dylib must load on the shipped Node, not the build host's Node.
   run(node, ['--input-type=module', '-e', "import { version, libraryPath, getAvailableBackends } from 'transcribe-cpp'; console.log(JSON.stringify({version:version(), library:libraryPath(), backends:getAvailableBackends()}));"], { cwd: join(bundled, 'server') });
   const zip = join(out, 'HearAlong-mac-arm64.zip');

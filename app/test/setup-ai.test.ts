@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, copyFile, chmod, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, copyFile, chmod, writeFile, readFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { LOCAL_MODELS_EXTENSION, resolvePi } from '../src/pi-command.ts';
+import { execFileSync } from 'node:child_process';
+import { LOCAL_MODELS_EXTENSION, resolvePi, piSignInCommand } from '../src/pi-command.ts';
 import { PiModels, parseModels, hasWebPackage } from '../src/setup/pi-models.ts';
 import { AiSetup, modelChoices, CHOOSE_AI, type AiSettings } from '../src/setup/ai.ts';
 import { ModelRpc } from '../src/pi-rpc.ts';
@@ -79,6 +80,22 @@ test('executable resolution: explicit override > PATH > bundled > absent', async
   assert.equal(resolvePi({ root, env: { PATH: f.directory } }), f.command);
   assert.equal(resolvePi({ root, env: { PATH: '' } }), bundled);
   assert.equal(resolvePi({ root: f.directory, env: { PATH: '' } }), null);
+});
+
+test('packaged sign-in quotes bundled Node and the real Pi entry, without relying on Terminal PATH', async t => {
+  const f = await fakePi(t), root = join(f.directory, "HearAlong's App/Contents/Resources/server");
+  const bin = join(root, 'node_modules/.bin'), entry = join(root, 'node_modules/fictional package/cli.js');
+  const node = join(root, '../bin/node');
+  await mkdir(bin, { recursive: true }); await mkdir(join(root, 'node_modules/fictional package'));
+  await mkdir(join(root, '../bin'));
+  await writeFile(entry, 'console.log("fictional-login-entry");');
+  await symlink(entry, join(bin, 'pi')); await symlink(process.execPath, node);
+  const quote = (path: string) => `'${path.replace(/'/g, `'\\''`)}'`;
+  const command = piSignInCommand({ HEARALONG_PACKAGED: '1', MEETING_PI: '/ignored/pi', PATH: '' }, root, node);
+  assert.equal(command, `${quote(node)} ${quote(entry)}`);
+  assert.equal(execFileSync('/bin/sh', ['-c', command], { env: { ...process.env, PATH: '' }, encoding: 'utf8' }).trim(), 'fictional-login-entry');
+  assert.equal(piSignInCommand({ MEETING_PI: '/explicit/pi', PATH: '' }, root, node), 'pi');
+  assert.equal(piSignInCommand({ PATH: '' }, root, node), `cd ${quote(root)} && npx pi`);
 });
 
 test('default names prefer openai-codex, then the first other provider, never an unrelated model', async t => {

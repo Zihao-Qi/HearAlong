@@ -2416,7 +2416,11 @@ function openCallMenu(anchor) {
   closeStartMenu(); callMenuAnchor = anchor;
   $(anchor).parentElement.append($('start-menu'));
   startMenuStep(true); $('call-back').hidden = anchor !== 'start';
-  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true'); $('call-tab').focus();
+  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
+  const first = $('call-tab').hidden
+    ? [...$('start-menu').querySelectorAll('button')].find(item => !item.hidden && item.offsetParent)
+    : $('call-tab');
+  first?.focus();
   void refreshCallApps(); callMenuTimer = setInterval(refreshCallApps, 1000);
 }
 $('start').onclick = () => {

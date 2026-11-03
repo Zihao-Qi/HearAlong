@@ -26,7 +26,26 @@ before(() => {
     const source = join(directory, 'source');
     mkdirSync(join(source, 'HearAlong.app/Contents/Resources/bin'), { recursive: true });
     // Plain logic fixture only. The real-archive mode executes bundled Node/Koffi's actual atomic exchange.
-    writeFileSync(join(source, 'HearAlong.app/Contents/Resources/bin/node'), `#!/bin/sh\n[ "\${TEST_SWAP_FAIL:-}" != 1 ] || exit 93\n"${system('mv')}" "$2" "$2.swap"\n"${system('mv')}" "$3" "$2"\n"${system('mv')}" "$2.swap" "$3"\n`, { mode: 0o755 });
+    writeFileSync(join(source, 'HearAlong.app/Contents/Resources/bin/node'), `#!/bin/sh
+set -eu
+[ "\${TEST_SWAP_FAIL:-}" != 1 ] || exit 93
+if [ "$2" = --install ]; then
+  case "\${TEST_APPEAR_DURING_MOVE:-}" in
+    file) printf fictional-foreign > "$4" ;;
+    directory) "${system('mkdir')}" "$4" ;;
+    symlink) "${system('ln')}" -s "$TEST_ROOT/outside" "$4" ;;
+  esac
+  if [ "\${TEST_INTERRUPT_MOVE:-}" = 1 ]; then /bin/kill -INT "$PPID"; exit 97; fi
+  [ ! -e "$4" ] && [ ! -L "$4" ] || exit 94
+  exec "${system('mv')}" "$3" "$4"
+fi
+case "$0" in "$TEST_APP"/*)
+  if [ "\${TEST_CLEANUP_INTERRUPT:-}" = 1 ]; then /bin/kill -INT "$PPID"; echo rollback-interrupt >> "$CALLS"; fi ;;
+esac
+"${system('mv')}" "$2" "$2.swap"
+"${system('mv')}" "$3" "$2"
+"${system('mv')}" "$2.swap" "$3"
+`, { mode: 0o755 });
     writeFileSync(join(source, 'HearAlong.app/Contents/Info.plist'), 'fictional bundle');
     writeFileSync(join(source, 'HearAlong.app/Contents/Resources/install.sh'), readFileSync(installer));
     execFileSync('zip', ['-qr', join(release, asset), 'HearAlong.app'], { cwd: source });
@@ -52,7 +71,10 @@ case "$*" in *file://*) exec "${system('curl')}" "$@" ;; *) echo 'Internet curl 
 ${real ? `exec "${system('ditto')}" "$@"` : `exec "${system('unzip')}" -q "$3" -d "$4"`}`);
   stub('codesign', `echo codesign >> "$CALLS"
 [ "\${TEST_SIGN_FAIL:-}" != 1 ]
-case "$*" in *unpacked*) ;; *) [ "\${TEST_FINAL_SIGN_FAIL:-}" != 1 ] ;; esac
+case "$*" in *unpacked*) ;; *)
+  if [ "\${TEST_CLEANUP_INTERRUPT:-}" = 1 ]; then /bin/kill -INT "$PPID"; exit 1; fi
+  [ "\${TEST_FINAL_SIGN_FAIL:-}" != 1 ] ;;
+esac
 ${real ? `exec "${system('codesign')}" "$@"` : ':'}`);
   stub('plutil', `if [ "\${TEST_BAD_ID:-}" = 1 ]; then echo invalid.fixture; exit; fi
 ${real ? `exec "${system('plutil')}" "$@"` : 'echo io.github.zihao-qi.hearalong'}`);
@@ -64,7 +86,7 @@ ${real ? `exec "${system('xattr')}" "$@"` : ':'}`);
   stub('mv', `case "$1" in */unpacked/HearAlong.app) [ "\${TEST_SWAP_FAIL:-}" != 1 ] ;; esac
 exec "${system('mv')}" "$@"`);
   const env = { ...process.env, PATH: bin, TMPDIR: root, CALLS: log, TEST_ROOT: root,
-    HEARALONG_TEST_MODE: '1', HEARALONG_TEST_HOME: home, HEARALONG_RELEASE_URL: pathToFileURL(release).href };
+    TEST_APP: app, HEARALONG_TEST_MODE: '1', HEARALONG_TEST_HOME: home, HEARALONG_RELEASE_URL: pathToFileURL(release).href };
   const run = (extra: Record<string, string> = {}, args: string[] = [], input?: string) => {
     const result = spawnSync('/bin/sh', input === undefined ? [installer, ...args] : ['-s', '--', ...args], {
       env: { ...env, ...extra }, input, encoding: 'utf8', timeout: real ? 120_000 : 30_000,
@@ -161,6 +183,76 @@ for (const running of ['app', 'helper', 'server']) {
     assert.doesNotMatch(f.calls(), /download|unpack|open/);
   });
 }
+test('live server.lock PID without a newline refuses fresh install, upgrade and uninstall; data stays untouched', () => {
+  const f = fixture();
+  mkdirSync(f.data, { recursive: true });
+  const lock = join(f.data, 'server.lock'), marker = join(f.data, 'meeting.txt');
+  const pid = String(process.pid); // Only probe our own live test process, never signal it.
+  writeFileSync(marker, 'fictional meeting'); writeFileSync(lock, pid);
+  let lockInode = lstatSync(lock).ino;
+  const refused = () => {
+    const calls = f.calls().length;
+    for (const args of [[], ['--uninstall']]) {
+      const result = f.run({}, args);
+      assert.notEqual(result.status, 0); assert.match(result.output, /Nothing was stopped/);
+      assert.equal(readFileSync(lock, 'utf8'), pid); assert.equal(lstatSync(lock).ino, lockInode);
+      assert.equal(readFileSync(marker, 'utf8'), 'fictional meeting');
+    }
+    assert.doesNotMatch(f.calls().slice(calls), /download|unpack|open/);
+  };
+  refused(); assert.ok(!existsSync(f.app));
+  rmSync(lock); // Fixture setup only; the installer never removes this file.
+  f.ok(); writeFileSync(lock, pid);
+  lockInode = lstatSync(lock).ino;
+  const appInode = lstatSync(f.app).ino;
+  refused(); assert.equal(lstatSync(f.app).ino, appInode);
+});
+test('unmanaged app appearing during download is preserved before activation', () => {
+  for (const kind of ['file', 'directory', 'symlink']) {
+    const f = fixture();
+    const create = kind === 'file' ? 'printf fictional-foreign > "$TEST_APP"'
+      : kind === 'directory' ? `"${system('mkdir')}" "$TEST_APP"`
+        : `"${system('ln')}" -s "$TEST_ROOT/outside" "$TEST_APP"`;
+    writeFileSync(join(f.bin, 'xattr'), `#!/bin/sh\n${create}\n`);
+    writeFileSync(join(f.bin, 'plutil'), `#!/bin/sh\ncase "$*" in *"$TEST_APP/Contents/Info.plist"*) echo invalid.fixture ;; *) echo io.github.zihao-qi.hearalong ;; esac\n`);
+    const result = f.run();
+    assert.notEqual(result.status, 0); assert.match(result.output, /unmanaged HearAlong.app/);
+    const info = lstatSync(f.app);
+    assert.equal(info.isSymbolicLink(), kind === 'symlink'); assert.equal(info.isDirectory(), kind === 'directory');
+    if (kind === 'file') assert.equal(readFileSync(f.app, 'utf8'), 'fictional-foreign');
+    if (kind === 'directory') assert.deepEqual(readdirSync(f.app), []);
+    assert.ok(!existsSync(join(f.appRoot, '.install-lock')));
+  }
+});
+test('fresh promotion refuses late destinations and interrupted moves never delete a foreign item', { skip: real }, () => {
+  for (const kind of ['file', 'directory', 'symlink']) for (const interrupted of ['0', '1']) {
+    const f = fixture();
+    const result = f.run({ TEST_APPEAR_DURING_MOVE: kind, TEST_INTERRUPT_MOVE: interrupted });
+    assert.notEqual(result.status, 0);
+    assert.ok(lstatSync(f.app));
+    if (kind === 'file') assert.equal(readFileSync(f.app, 'utf8'), 'fictional-foreign');
+    if (kind === 'directory') assert.deepEqual(readdirSync(f.app), [], 'no nested bundle');
+    if (kind === 'symlink') assert.equal(readlinkSync(f.app), join(f.root, 'outside'));
+    assert.ok(!existsSync(join(f.appRoot, '.install-lock')));
+  }
+});
+test('fresh rollback does not delete a foreign replacement of the promoted bundle', () => {
+  const f = fixture();
+  writeFileSync(join(f.bin, 'codesign'), `#!/bin/sh\ncase "$*" in *unpacked*) exit 0 ;; esac\n"${system('mv')}" "$TEST_APP" "$TEST_ROOT/saved-app"\nprintf fictional-foreign > "$TEST_APP"\nexit 1\n`);
+  const result = f.run(); assert.notEqual(result.status, 0);
+  assert.equal(readFileSync(f.app, 'utf8'), 'fictional-foreign');
+  assert.ok(!existsSync(join(f.appRoot, '.install-lock')));
+});
+test('second Ctrl-C during cleanup cannot interrupt rollback or leave the lock', { skip: real }, () => {
+  const f = fixture(); f.ok();
+  writeFileSync(join(f.app, 'previous-marker'), 'fictional old bundle');
+  const inode = lstatSync(f.app).ino;
+  const result = f.run({ TEST_CLEANUP_INTERRUPT: '1' });
+  assert.notEqual(result.status, 0); assert.match(f.calls(), /rollback-interrupt/);
+  assert.equal(lstatSync(f.app).ino, inode);
+  assert.equal(readFileSync(join(f.app, 'previous-marker'), 'utf8'), 'fictional old bundle');
+  assert.ok(!existsSync(join(f.appRoot, '.install-lock')));
+});
 test('listener appearing during unpack refuses activation', () => {
   const f = fixture();
   writeFileSync(join(f.bin, 'xattr'), '#!/bin/sh\n: > "$TEST_ROOT/started"\n');

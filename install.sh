@@ -25,10 +25,19 @@ BUNDLE="$APPLICATIONS/HearAlong.app"
 APP="$ROOT/app"
 DATA="$ROOT/data"
 HELPER="$APPLICATIONS/HearAlong Helper.app"
+server_running() {
+  # server.ts writes String(process.pid), without a newline, and keeps it until shutdown finishes.
+  # Read only this PID; never modify the lock or any other meeting data.
+  [ -f "$DATA/server.lock" ] && [ ! -L "$DATA/server.lock" ] || return 1
+  server_pid=''
+  IFS= read -r server_pid < "$DATA/server.lock" || true
+  case "$server_pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$server_pid" -gt 0 ] && kill -0 "$server_pid" 2>/dev/null
+}
 not_running() {
   # One TCP attempt, not an HTTP request: even a non-HTTP listener must block replacement.
   if pgrep -f '/Contents/MacOS/HearAlong(Helper)?([[:space:]]|$)' >/dev/null 2>&1 ||
-     nc -z -G 2 127.0.0.1 4318 >/dev/null 2>&1; then
+     nc -z -G 2 127.0.0.1 4318 >/dev/null 2>&1 || server_running; then
     fail 'Please quit HearAlong and wait for it to exit, then run this command again. Nothing was stopped.'
   fi
 }
@@ -47,10 +56,13 @@ elif [ -e "$APP" ]; then
   fail "An unmanaged folder exists at $APP; leave it untouched."
 fi
 bundle_id() { plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist"; }
-if [ -e "$BUNDLE" ] || [ -L "$BUNDLE" ]; then
-  [ ! -L "$BUNDLE" ] && [ "$(bundle_id "$BUNDLE")" = io.github.zihao-qi.hearalong ] ||
-    fail 'An unmanaged HearAlong.app exists; leave it untouched.'
-fi
+managed_bundle() {
+  if [ -e "$BUNDLE" ] || [ -L "$BUNDLE" ]; then
+    [ -d "$BUNDLE" ] && [ ! -L "$BUNDLE" ] && [ "$(bundle_id "$BUNDLE")" = io.github.zihao-qi.hearalong ] ||
+      fail 'An unmanaged HearAlong.app exists; leave it untouched.'
+  fi
+}
+managed_bundle
 mkdir -p "$ROOT" "$APPLICATIONS"
 mkdir "$ROOT/.install-lock" 2>/dev/null || fail "Another install may be running. If not, remove $ROOT/.install-lock and retry."
 stage=''
@@ -61,6 +73,7 @@ exchange() {
   "$1/Contents/Resources/bin/node" "$1/Contents/Resources/swap.cjs" "$2" "$3"
 }
 cleanup() {
+  trap '' HUP INT TERM
   set +e
   restored=1
   if [ "$complete" -eq 0 ]; then
@@ -76,7 +89,8 @@ cleanup() {
         restored=0
       fi
     elif [ "$promoted" -eq 1 ]; then
-      rm -rf "$BUNDLE"
+      # A late replacement is not ours to delete, even after a successful fresh promotion.
+      if [ -d "$BUNDLE" ] && [ ! -L "$BUNDLE" ] && [ "$(stat -f %i "$BUNDLE" 2>/dev/null)" = "$next_inode" ]; then rm -rf "$BUNDLE"; fi
     fi
   fi
   if [ -n "$stage" ] && [ "$restored" -eq 1 ]; then rm -rf "$stage"; fi
@@ -139,16 +153,18 @@ codesign --verify --deep --strict "$next" || fail 'The app signature is invalid;
 xattr -r "$next" > "$stage/attributes"
 if grep -q com.apple.quarantine "$stage/attributes"; then fail 'The downloaded app is quarantined; nothing was installed.'; fi
 not_running
+managed_bundle
 # One atomic same-filesystem exchange on upgrade; the old bundle stays in staging until verification.
 # Inodes let the trap detect an exchange even if a signal arrives before the command returns.
+next_inode=$(stat -f %i "$next")
 if [ -d "$BUNDLE" ]; then
-  next_inode=$(stat -f %i "$next")
   old_inode=$(stat -f %i "$BUNDLE")
   exchange_pending=1
   exchange "$next" "$next" "$BUNDLE"
 else
+  # RENAME_EXCL refuses any destination created since managed_bundle (including directories and symlinks).
+  "$next/Contents/Resources/bin/node" "$next/Contents/Resources/swap.cjs" --install "$next" "$BUNDLE"
   promoted=1
-  mv "$next" "$BUNDLE"
 fi
 codesign --verify --deep --strict "$BUNDLE" || fail 'The installed app could not be verified; restoring the previous app.'
 complete=1
