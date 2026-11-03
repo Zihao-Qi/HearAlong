@@ -20,7 +20,7 @@ struct AudioAppOwner {
     let excluded: Bool
 }
 private func excludedAudioBundle(_ bundle: String) -> Bool {
-    bundle.hasPrefix("com.google.Chrome") || bundle.hasPrefix("local.meeting-research-assistant")
+    bundle.hasPrefix("io.github.zihao-qi.hearalong") || bundle.hasPrefix("local.meeting-research-assistant")
 }
 
 /** Keep the HAL object/pid, but attribute shared XPC helpers to their responsible app. Never undo an exclusion. */

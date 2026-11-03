@@ -617,7 +617,7 @@ export async function startServer(options: {
         if (!ended || appCapture.state !== s || !appCapture.lost()) return;
         recording.get(s.meetingId)?.delete(s.source);
         liveView.ended(s.source, s.stopping);
-        appCapture.ended(s.source, `${s.app.name} capture stopped because the helper disconnected; the microphone keeps recording.`);
+        appCapture.ended(s.source, `${s.app.name} capture stopped because HearAlong's audio capture stopped; the microphone keeps recording.`);
         if (!s.stopping && s.message && liveView.has(s.source)) liveView.appMessage(s.message);
       })().catch(error => { console.warn(`Could not seal a disconnected app source: ${(error as Error).message}`); }).finally(() => { endingLostApp = null; });
       return endingLostApp;
@@ -886,14 +886,17 @@ export async function startServer(options: {
           send(res, 200, { ok: true }); return;
         }
         if (url.pathname === '/api/live' && req.method === 'GET') { send(res, 200, await liveModel(url.searchParams.get('have'))); return; }
-        if (url.pathname === '/api/live/window' && req.method === 'GET') {
-          // The helper, twice a second: whether its window should show.
-          liveView.helperSeen();
+        if (url.pathname === '/api/live/capture' && req.method === 'GET') {
+          // Only the capturing process renews this lease, never the Electron window poll.
           appCapture.heartbeat();
-          const now = recordingNow();
           const s = appCapture.state;
           if (s && !s.ended && (shuttingDown || liveView.stopping() || liveView.recordingId() !== s.recordingId || !appStore.openRecordings().some(r => r.source.startsWith('mic:') && r.meetingId === s.meetingId && r.pageId === s.pageId))) appCapture.stop();
-          send(res, 200, { show: Boolean(now) && liveView.miniState() === 'open', meetingId: now?.meetingId ?? null, session: now ? liveView.sessionId() : null, appList: appCapture.wantsList(), appCapture: appCapture.command() }); return;
+          send(res, 200, { appList: appCapture.wantsList(), appCapture: appCapture.command() }); return;
+        }
+        if (url.pathname === '/api/live/window' && req.method === 'GET') {
+          liveView.helperSeen();
+          const now = recordingNow();
+          send(res, 200, { show: Boolean(now) && liveView.miniState() === 'open', meetingId: now?.meetingId ?? null, session: now ? liveView.sessionId() : null }); return;
         }
         if (url.pathname.startsWith('/api/live/') && req.method === 'POST') {
           const value = await json(req);

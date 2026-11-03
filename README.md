@@ -31,7 +31,7 @@ curl -fsSL https://github.com/Zihao-Qi/HearAlong/releases/latest/download/instal
 
 The installer verifies and opens one app, `~/Applications/HearAlong.app`. No other software is required. In Setup, download the speech model (731 MB) or pick one already on your Mac. Run the same command again to upgrade; your meetings stay where they are. FFmpeg is optional, for importing media files.
 
-The desktop package is being prepared for the next release; meeting-app audio capture is not available in this intermediate build. It is not released separately.
+For a call, choose the meeting app playing sound, including a browser. On first capture, allow HearAlong in System Settings › Privacy & Security › Screen & System Audio Recording.
 
 The AI features are optional and set up separately: a local model through Ollama or LM Studio (the suggested one is about 4 GB), or a cloud provider you approve.
 
