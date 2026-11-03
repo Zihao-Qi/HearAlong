@@ -32,11 +32,13 @@ function startCapture(binary, config, serverGroup, log) {
       fd = openSync(config.log, 'a', 0o600);
       child = spawn(binary, [config.origin, config.origin, String(serverGroup)], { stdio: ['ignore', fd, fd] });
     } finally { if (fd !== undefined) closeSync(fd); }
-    const owned = child;
+    const owned = child, startedAt = Date.now();
     const exit = (code, signal, error) => {
       if (exited.has(owned)) return;
       exited.add(owned);
       log(`Audio capture exited (${error?.message || signal || code}).`);
+      // A crash after a long healthy run starts the backoff over; only repeated quick crashes wait longer.
+      if (Date.now() - startedAt >= 60000) attempt = 0;
       if (!stopping) {
         const seconds = Math.min(30, 2 ** Math.min(attempt++, 5));
         log(`Restarting audio capture in ${seconds} s.`);
