@@ -12,7 +12,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  desktop:
+    runs-on: macos-26 # Apple Silicon hosted runner
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.22.2'
+      - name: Install pinned build tools
+        run: |
+          npm ci --prefix app/desktop --ignore-scripts
+          ELECTRON_CACHE="$RUNNER_TEMP/electron-cache" node app/desktop/node_modules/electron/install.js
+      - name: Build signed arm64 app and archive
+        run: node app/desktop/scripts/package.cjs "$RUNNER_TEMP/desktop"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-release
+          path: |
+            ${{ runner.temp }}/desktop/HearAlong-mac-arm64.zip
+            ${{ runner.temp }}/desktop/HearAlong-mac-arm64.zip.sha256
+          if-no-files-found: error
   release:
+    needs: desktop
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,6 +74,13 @@ jobs:
           cp install.sh "$RUNNER_TEMP/release/install.sh"
           cd "$RUNNER_TEMP/release"
           sha256sum HearAlong.tar.gz > HearAlong.tar.gz.sha256
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.0
+        with:
+          name: desktop-release
+          path: ${{ runner.temp }}/release
+      - name: Verify desktop archive checksum
+        shell: bash
+        run: cd "$RUNNER_TEMP/release" && sha256sum -c HearAlong-mac-arm64.zip.sha256
       - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -70,9 +101,11 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" --clobber \
             "$RUNNER_TEMP/release/HearAlong.tar.gz" \
             "$RUNNER_TEMP/release/HearAlong.tar.gz.sha256" \
+            "$RUNNER_TEMP/release/HearAlong-mac-arm64.zip" \
+            "$RUNNER_TEMP/release/HearAlong-mac-arm64.zip.sha256" \
             "$RUNNER_TEMP/release/install.sh"
           ASSETS=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
-          for ASSET in HearAlong.tar.gz HearAlong.tar.gz.sha256 install.sh; do
+          for ASSET in HearAlong.tar.gz HearAlong.tar.gz.sha256 HearAlong-mac-arm64.zip HearAlong-mac-arm64.zip.sha256 install.sh; do
             if ! grep -Fxq "$ASSET" <<< "$ASSETS"; then
               echo "Missing release asset: $ASSET" >&2
               exit 1

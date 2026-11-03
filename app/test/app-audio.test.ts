@@ -14,6 +14,22 @@ import { startServer } from '../src/server.ts';
 const app = { id: 'test.fictional.meet', name: 'Fictional Meet' };
 const source = () => `app:${randomUUID()}`;
 
+test('call menu focuses the first visible desktop button, never the hidden Chrome tab', async () => {
+  const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const open = code.slice(code.indexOf('function openCallMenu('), code.indexOf("$('start').onclick ="));
+  for (const [desktop, anchor, expected] of [[true, 'start', 'call-back'], [true, 'add-tab', 'app'], [false, 'start', 'call-tab']] as const) {
+    let focused = '';
+    const button = (id: string, hidden = false) => ({ hidden, offsetParent: {}, focus() { focused = id; }, setAttribute() {}, parentElement: { append() {} } });
+    const back = button('call-back'), tab = button('call-tab', desktop), appItem = button('app');
+    const nodes = { start: button('start'), 'add-tab': button('add-tab'), 'call-back': back,
+      'call-tab': tab, 'start-menu': { hidden: true, querySelectorAll: () => [back, tab, appItem] } };
+    const context = { $: (id: keyof typeof nodes) => nodes[id], closeStartMenu() {}, startMenuStep() {}, callMenuAnchor: null, callMenuTimer: null,
+      refreshCallApps: async () => {}, setInterval: () => 1 };
+    runInNewContext(`${open}\nopenCallMenu(${JSON.stringify(anchor)});`, context);
+    assert.equal(focused, expected);
+  }
+});
+
 test('microphone app processing requests all only when advertised and records the applied mode', async () => {
   const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const attach = code.slice(code.indexOf('async function attachApp('), code.indexOf('let appCapturePolling'));

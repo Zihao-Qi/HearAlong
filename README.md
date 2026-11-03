@@ -23,17 +23,19 @@ HearAlong is a Mac app for people who mostly listen in meetings and lectures. It
 
 ## Install
 
-You need macOS 26 or later, [Google Chrome](https://www.google.com/chrome/), [Homebrew](https://brew.sh/) and Apple's command line tools (`xcode-select --install`). Apple Silicon is recommended; Intel Macs work, with slower transcription.
+You need an Apple Silicon Mac with macOS 26 or later. Intel Macs are not supported yet.
 
 ```sh
 curl -fsSL https://github.com/Zihao-Qi/HearAlong/releases/latest/download/install.sh | sh
 ```
 
-The installer checks the release checksum, installs or updates Node.js and FFmpeg through Homebrew when needed, and never asks for an administrator password. HearAlong then opens in Chrome; in Setup, download the speech model (731 MB) or pick one already on your Mac. Run the same command again to upgrade.
+The installer verifies and opens one app, `~/Applications/HearAlong.app`. No other software is required. In Setup, download the speech model (731 MB) or pick one already on your Mac. Run the same command again to upgrade; your meetings stay where they are. FFmpeg is optional, for importing media files.
+
+The desktop package is being prepared for the next release; meeting-app audio capture is not available in this intermediate build. It is not released separately.
 
 The AI features are optional and set up separately: a local model through Ollama or LM Studio (the suggested one is about 4 GB), or a cloud provider you approve.
 
-To uninstall, quit HearAlong and run `sh "$HOME/Library/Application Support/HearAlong/app/install.sh" --uninstall`. Your transcripts and notes stay in `~/Library/Application Support/HearAlong/data/` until you delete them. Audio is deleted one day after it's transcribed; you can keep it longer in Settings.
+To uninstall, quit HearAlong and run `sh "$HOME/Applications/HearAlong.app/Contents/Resources/install.sh" --uninstall`. Your transcripts and notes stay in `~/Library/Application Support/HearAlong/data/` until you delete them. Audio is deleted one day after it's transcribed; you can keep it longer in Settings.
 
 To run from source, see [app/README.md](app/README.md).
 
@@ -63,7 +65,7 @@ Accuracy and latency on a public meeting corpus are in [Benchmarks](docs/benchma
 
 ## Built with
 
-TypeScript and Node.js, plain JavaScript in the browser, SQLite, Swift for the macOS helper, NVIDIA's Parakeet speech model through `transcribe-cpp`, and the [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent for language models.
+TypeScript and Node.js, plain JavaScript in the browser, SQLite, Electron, Swift for native macOS tools, NVIDIA's Parakeet speech model through `transcribe-cpp`, and the [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) agent for language models.
 
 I designed HearAlong and made its product decisions; the code was written with AI coding agents under my direction.
 

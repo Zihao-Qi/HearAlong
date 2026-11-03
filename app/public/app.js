@@ -2406,6 +2406,9 @@ async function refreshCallApps() {
       }
     }
     for (const row of known.values()) { if (row === document.activeElement) $('call-tab').focus(); row.remove(); }
+    $('call-empty').textContent = window.hearalong?.desktop
+      ? 'Meeting-app audio capture is not available in this build. You can record the microphone.'
+      : 'No meeting app is playing sound.';
     $('call-empty').hidden = apps.length > 0;
   } catch { /* keep the last list until the next refresh */ }
 }
@@ -2413,7 +2416,11 @@ function openCallMenu(anchor) {
   closeStartMenu(); callMenuAnchor = anchor;
   $(anchor).parentElement.append($('start-menu'));
   startMenuStep(true); $('call-back').hidden = anchor !== 'start';
-  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true'); $('call-tab').focus();
+  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
+  const first = $('call-tab').hidden
+    ? [...$('start-menu').querySelectorAll('button')].find(item => !item.hidden && item.offsetParent)
+    : $('call-tab');
+  first?.focus();
   void refreshCallApps(); callMenuTimer = setInterval(refreshCallApps, 1000);
 }
 $('start').onclick = () => {

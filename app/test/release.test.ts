@@ -19,14 +19,14 @@ test('release stays draft (or keeps its public state on rerun) until assets are 
   assert.match(source.slice(publish), /^gh release edit "\$GITHUB_REF_NAME" --verify-tag --draft=false "\$\{FLAGS\[@\]\}"\s*$/);
 });
 
-test('release checks all three uploaded asset names and exits before publication if any is absent', () => {
+test('release checks all five uploaded asset names and exits before publication if any is absent', () => {
   const upload = source.slice(source.indexOf('gh release upload '), source.indexOf('ASSETS='));
-  for (const name of ['HearAlong.tar.gz', 'HearAlong.tar.gz.sha256', 'install.sh']) {
+  for (const name of ['HearAlong.tar.gz', 'HearAlong.tar.gz.sha256', 'HearAlong-mac-arm64.zip', 'HearAlong-mac-arm64.zip.sha256', 'install.sh']) {
     assert.ok(upload.includes(`"$RUNNER_TEMP/release/${name}"`), name);
   }
   assert.match(upload, /--clobber/);
   assert.match(source, /ASSETS=\$\(gh release view "\$GITHUB_REF_NAME" --json assets --jq '\.assets\[\]\.name'\)/);
-  assert.match(source, /for ASSET in HearAlong\.tar\.gz HearAlong\.tar\.gz\.sha256 install\.sh; do/);
+  assert.match(source, /for ASSET in HearAlong\.tar\.gz HearAlong\.tar\.gz\.sha256 HearAlong-mac-arm64\.zip HearAlong-mac-arm64\.zip\.sha256 install\.sh; do/);
   assert.match(source, /if ! grep -Fxq "\$ASSET" <<< "\$ASSETS"; then\s+echo [^\n]+ >&2\s+exit 1\s+fi\s+done\s+gh release edit/);
   // Actions' explicit bash shell is fail-fast (-e -o pipefail), including failed uploads/listing.
   assert.match(source, /shell: bash/);

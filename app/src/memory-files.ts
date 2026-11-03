@@ -587,7 +587,20 @@ export class MemoryFiles {
 /** Commits in the repo, newest first, with the paths they touch (read-only `git log`). */
 export async function recentCommits(repo: string, limit: number, since: string | null = null) {
   const range = since ? [`${since}..HEAD`] : [];
-  const { stdout } = await run('git', ['-C', repo, 'log', `--max-count=${limit}`, '--format=%x1e%H%x09%ct%x09%s', '--name-only', ...range], { maxBuffer: 4 * 1024 * 1024 });
+  let git = 'git';
+  if (process.env.HEARALONG_PACKAGED === '1') {
+    // /usr/bin/git is a developer-tools shim on a fresh Mac. Do not cause an Xcode install prompt.
+    const candidates = ['/opt/homebrew/bin/git', '/usr/local/bin/git'];
+    try {
+      const selected = await run('/usr/bin/xcode-select', ['-p'], { timeout: 5000 });
+      candidates.push(join(selected.stdout.trim(), 'usr/bin/git'));
+    } catch { /* Git history is optional; project memory itself needs no developer tools. */ }
+    const found = await Promise.all(candidates.map(path => stat(path).then(info => info.isFile() ? path : null, () => null)));
+    const available = found.find(Boolean);
+    if (!available) return [];
+    git = available;
+  }
+  const { stdout } = await run(git, ['-C', repo, 'log', `--max-count=${limit}`, '--format=%x1e%H%x09%ct%x09%s', '--name-only', ...range], { maxBuffer: 4 * 1024 * 1024 });
   return stdout.split('\x1e').filter(Boolean).map(block => {
     const [first, ...rest] = block.trim().split('\n');
     const [hashPart, seconds, ...subject] = first.split('\t');

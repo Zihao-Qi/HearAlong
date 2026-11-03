@@ -45,6 +45,19 @@ try {
   app = await startServer({ directory, port, setup, quick: null, heavy: null, recognizer: null, drafts: null });
   await page.locator('#meeting-button').waitFor({ timeout: 15_000 });
   check('server back: the app loads by itself', true);
+  const desktop = await context.newPage();
+  desktop.on('pageerror', e => errors.push(e.message));
+  await desktop.addInitScript(() => { Object.defineProperty(window, 'hearalong', { value: { desktop: true, microphoneStatus: async () => 'granted' } }); });
+  await desktop.goto(app.url);
+  await desktop.evaluate(async () => {
+    const meeting = await (await fetch('/api/meetings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Fictional desktop focus' }) })).json();
+    localStorage.setItem('meeting-id', meeting.id);
+  });
+  await desktop.reload();
+  await desktop.locator('#start').click(); await desktop.locator('#start-online').click();
+  check('desktop call chooser keeps the Chrome tab hidden', await desktop.locator('#call-tab').isHidden());
+  check('desktop call chooser focuses the first visible button', await desktop.evaluate(() => document.activeElement === [...document.querySelectorAll<HTMLButtonElement>('#start-menu button')].find(item => !item.hidden && item.offsetParent)));
+  await desktop.keyboard.press('Escape'); await desktop.close();
   check('no page errors', errors.length === 0, errors.join(' | '));
 } catch (error) {
   check('the run finished', false, (error as Error).message.split('\n')[0]);

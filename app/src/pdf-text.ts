@@ -58,14 +58,15 @@ export class PdfText {
     log?: (message: string) => void; maxPages?: number; maxChars?: number; maxBytes?: number; timeoutMs?: number;
     /** How long a failed build of the extractor is not tried again. */
     rebuildAfterMs?: number;
-    /** Tests: a program to run instead of the compiled extractor (same arguments and output). */
+    /** A program to run instead of the compiled extractor (same arguments and output); otherwise HEARALONG_PDF_TEXT. */
     extractor?: string;
   } = {}) {
     this.folder = join(directory, 'pdf-text');
     this.log = options.log ?? (message => console.warn(message));
     // Hundreds of pages stay bounded: at most 1,000 pages, 4 million characters, a 300 MB file and 2 minutes per PDF.
     this.options = { maxPages: options.maxPages ?? 1_000, maxChars: options.maxChars ?? 4_000_000, maxBytes: options.maxBytes ?? 300 * 1024 * 1024,
-      timeoutMs: options.timeoutMs ?? 120_000, rebuildAfterMs: options.rebuildAfterMs ?? 300_000, extractor: options.extractor };
+      timeoutMs: options.timeoutMs ?? 120_000, rebuildAfterMs: options.rebuildAfterMs ?? 300_000,
+      extractor: options.extractor ?? process.env.HEARALONG_PDF_TEXT };
   }
 
   /** Where a PDF's text is kept (`pdf` is a real absolute path). */

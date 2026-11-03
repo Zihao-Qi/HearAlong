@@ -58,9 +58,17 @@ function launch() {
         detail: 'This recording stops now.', buttons: ['Stay', 'Leave'], defaultId: 0, cancelId: 0,
       }) === 1) event.preventDefault(); // Electron: prevent the prevention, i.e. allow leaving.
     });
-    wc.on('render-process-gone', () => {
+    wc.on('render-process-gone', (_event, details) => {
       if (!quitting && window === mini) setTimeout(() => { if (!quitting && mini && !mini.isDestroyed()) void mini.loadURL(config.origin + '/mini.html'); }, 2000);
-      else if (!quitting) void fail('The window stopped unexpectedly.');
+      else if (!quitting) {
+        log(`Main window stopped (${details.reason}); reloading.`);
+        setTimeout(() => {
+          if (!quitting && main && !main.isDestroyed()) {
+            const reload = loaded ? main.loadURL(config.origin) : main.loadFile(config.starting);
+            void reload.catch(error => log(`Main window reload failed: ${error.message}`));
+          }
+        }, 2000);
+      }
     });
   }
   function makeMain() {
@@ -189,7 +197,7 @@ function launch() {
   process.on('SIGINT', () => { void stop(); });
   app.whenReady().then(async () => {
     app.dock?.setIcon(config.icon);
-    app.setAboutPanelOptions({ applicationName: 'HearAlong', applicationVersion: '0.2.0' });
+    app.setAboutPanelOptions({ applicationName: 'HearAlong', applicationVersion: app.getVersion() });
     const ses = session.defaultSession;
     ses.setPermissionCheckHandler((wc, permission, origin, details) =>
       Boolean(wc && navigation(config.origin, wc.getURL()) === 'allow' && permissionAllowed(config.origin, permission, origin, details)));

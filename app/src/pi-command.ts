@@ -1,4 +1,4 @@
-import { accessSync, statSync, constants } from 'node:fs';
+import { accessSync, statSync, constants, realpathSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { toolEnv } from '../pi-extensions/tool-sandbox.ts';
@@ -45,6 +45,14 @@ export function piLaunch(args: string[], options: { mode?: AiMode; model?: strin
     ...(mode === 'local' || options.listing ? ['-e', LOCAL_MODELS_EXTENSION] : []), ...trailing.filter((arg, index) => mode !== 'local' || arg !== '--no-skills' || (trailing.indexOf('--') >= 0 && index > trailing.indexOf('--'))),
   ], env };
 }
+/** Terminal sign-in must not require an installed Node or Pi when running from the desktop bundle. */
+export function piSignInCommand(env: NodeJS.ProcessEnv = process.env, root = ROOT, node = process.execPath): string {
+  const quote = (path: string) => `'${path.replace(/'/g, `'\\''`)}'`;
+  if (env.HEARALONG_PACKAGED === '1') return `${quote(node)} ${quote(realpathSync(join(root, 'node_modules/.bin/pi')))}`;
+  // Exclude the bundled fallback when deciding whether bare pi works in the user's terminal.
+  return resolvePi({ env, root: '/dev/null' }) ? 'pi' : `cd ${quote(root)} && npx pi`;
+}
+
 /** One executable policy for tasks, RPC and setup probes. An explicit override is authoritative, even if broken. */
 export function resolvePi(options: { env?: NodeJS.ProcessEnv; root?: string } = {}): string | null {
   const env = options.env ?? process.env;

@@ -16,7 +16,7 @@ import { CodeFingerprint, type FingerprintOptions } from './update-guard.ts';
 import { SpeechSetup, type SetupOptions } from './setup/service.ts';
 import { AiSetup } from './setup/ai.ts';
 import type { ModeSettings } from './setup/ai-settings.ts';
-import { isKeyProvider, RECOMMENDED_LOCAL_MODEL, resolvePi, setPiAdmission, stopPiRuns, type KeyProvider } from './pi-command.ts';
+import { isKeyProvider, RECOMMENDED_LOCAL_MODEL, piSignInCommand, setPiAdmission, stopPiRuns, type KeyProvider } from './pi-command.ts';
 import { ApiKeys, Keychain } from './setup/api-keys.ts';
 import { probeDuration, CHUNK_SECONDS } from './audio.ts';
 import { serveMeetingAudio } from './listen.ts';
@@ -313,10 +313,7 @@ export async function startServer(options: {
       loadCloudKeys().catch(error => console.warn(`Could not load cloud keys: ${(error as Error).message}`));
     }
     ai.start(); // Discovery, package detection and auth must never delay startup.
-    // Exclude the bundled fallback when deciding whether a bare `pi` works in the user's terminal.
-    const signInEnv = options.ai?.env ?? process.env;
-    const signInCommand = resolvePi({ env: signInEnv, root: '/dev/null' }) ? 'pi'
-      : `cd '${ROOT.replace(/'/g, `'\\''`)}' && npx pi`;
+    const signInCommand = piSignInCommand(options.ai?.env ?? process.env);
     const setupStatus = () => { const status = speechSetup.status(); return { ...status, rows: [...status.rows, { ...ai.status(), signInCommand }] }; };
     const quick: Quick | null = startup.quick = options.quick !== undefined ? options.quick
       : cloud ? new ModelRpc(() => ai.correction(), { cwd: scratchRoot, unavailable: () => localLiveUnavailable(), systemPrompt: CORRECTION_SYSTEM_PROMPT, log: message => console.log(`[pi correction] ${message}`) }) : null;

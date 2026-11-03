@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { join, dirname } from 'node:path';
 const require = createRequire(import.meta.url);
 const { locations } = require('../desktop/locations.cjs');
-const { ServerSession, availablePort } = require('../desktop/server.cjs');
+const { ServerSession, availablePort, serverEnvironment } = require('../desktop/server.cjs');
 const { backgroundLabel, backgroundVisible, backgroundQuitText, miniVisible, serverExit, permissionAllowed, navigation, launcherLogLines } = require('../desktop/policy.cjs');
 
 test('desktop paths use Node 22 outside Electron and keep Chromium separate from meetings', () => {
@@ -28,7 +28,32 @@ test('desktop test-only entry and fake switches cannot be enabled in packaged bu
   assert.equal(locations(env).testing, true);
   assert.match(locations(env).entry, /fixture-server.ts$/);
   assert.equal(locations({ ...env, HEARALONG_DESKTOP_TEST: '0' }).testing, false);
-  assert.throws(() => locations(env, true), /not packaged/);
+  const config = locations({ ...env, PORT: '9999', MEETING_DATA_DIR: '/ignored' }, true, '/fictional/HearAlong.app/Contents/Resources', '/fictional/home');
+  assert.equal(config.testing, false);
+  assert.equal(config.packaged, true);
+  assert.equal(config.node, '/fictional/HearAlong.app/Contents/Resources/bin/node');
+  assert.equal(config.entry, '/fictional/HearAlong.app/Contents/Resources/server/src/server.ts');
+  assert.equal(config.pdfText, '/fictional/HearAlong.app/Contents/Resources/bin/pdf-text');
+  assert.equal(config.data, '/fictional/home/Library/Application Support/HearAlong/data');
+  assert.equal(config.userData, '/fictional/home/Library/Application Support/HearAlong/Electron');
+  assert.equal(config.log, join(config.data, 'logs/launcher.log'));
+  assert.equal(config.port, 4318);
+});
+test('packaged server has a Dock-safe PATH, bundled Pi/Node and extractor, never development test switches', () => {
+  const config = locations({}, true, '/fictional/Resources', '/fictional/home');
+  const env = serverEnvironment(config, { PATH: '/untrusted', PORT: '9999', NODE_OPTIONS: '--inspect', NODE_PATH: '/bad',
+    HEARALONG_DESKTOP_TEST: '1', MEETING_TEST_RECOGNIZER: 'scripted', ELECTRON_RUN_AS_NODE: '1' });
+  assert.equal(env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin:/fictional/Resources/bin:/opt/homebrew/bin:/usr/local/bin');
+  assert.equal(env.MEETING_PI, '/fictional/Resources/server/node_modules/.bin/pi');
+  assert.equal(env.HEARALONG_PDF_TEXT, config.pdfText);
+  assert.equal(env.HEARALONG_PACKAGED, '1');
+  assert.equal(env.PI_CODING_AGENT_DIR, undefined, 'leave Pi on its existing default configuration folder');
+  assert.equal(serverEnvironment(config, { PI_CODING_AGENT_DIR: '/fictional/pi-config' }).PI_CODING_AGENT_DIR,
+    '/fictional/pi-config', 'preserve an explicit inherited Pi configuration');
+  assert.equal(env.MEETING_OPEN_BROWSER, '0'); assert.equal(env.PORT, '4318');
+  for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'HEARALONG_DESKTOP_TEST', 'MEETING_TEST_RECOGNIZER']) assert.equal(env[key], undefined);
+  const dev = serverEnvironment({ ...config, packaged: false }, { PATH: '/dev-path', HEARALONG_DESKTOP_TEST: '1' });
+  assert.equal(dev.PATH, '/dev-path'); assert.equal(dev.HEARALONG_DESKTOP_TEST, '1');
 });
 test('background labels and visibility match the helper', () => {
   assert.equal(backgroundLabel({ label: '  Writing notes  ' }), 'Writing notes');
