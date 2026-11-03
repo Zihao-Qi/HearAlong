@@ -38,7 +38,6 @@ function serverEnvironment(config, env = process.env) {
     result.MEETING_PI = require('node:path').join(config.root, 'node_modules/.bin/pi');
     result.HEARALONG_PDF_TEXT = config.pdfText;
     result.HEARALONG_PACKAGED = '1';
-    result.PI_CODING_AGENT_DIR = require('node:path').join(config.data, 'pi');
     // Do not let development fixtures or Node injection cross the installed runtime boundary.
     for (const name of Object.keys(result)) {
       if (/^(?:HEARALONG_DESKTOP_TEST|MEETING_TEST_|NODE_OPTIONS$|NODE_PATH$|ELECTRON_)/.test(name)) delete result[name];

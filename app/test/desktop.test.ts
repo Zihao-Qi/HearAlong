@@ -47,6 +47,9 @@ test('packaged server has a Dock-safe PATH, bundled Pi/Node and extractor, never
   assert.equal(env.MEETING_PI, '/fictional/Resources/server/node_modules/.bin/pi');
   assert.equal(env.HEARALONG_PDF_TEXT, config.pdfText);
   assert.equal(env.HEARALONG_PACKAGED, '1');
+  assert.equal(env.PI_CODING_AGENT_DIR, undefined, 'leave Pi on its existing default configuration folder');
+  assert.equal(serverEnvironment(config, { PI_CODING_AGENT_DIR: '/fictional/pi-config' }).PI_CODING_AGENT_DIR,
+    '/fictional/pi-config', 'preserve an explicit inherited Pi configuration');
   assert.equal(env.MEETING_OPEN_BROWSER, '0'); assert.equal(env.PORT, '4318');
   for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'HEARALONG_DESKTOP_TEST', 'MEETING_TEST_RECOGNIZER']) assert.equal(env[key], undefined);
   const dev = serverEnvironment({ ...config, packaged: false }, { PATH: '/dev-path', HEARALONG_DESKTOP_TEST: '1' });

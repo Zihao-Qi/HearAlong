@@ -66,7 +66,7 @@ test('the warm lane restarts when the saved keys change, so the next request see
 
 test('the Keychain gets the key on stdin only, hex-encoded, never in any argv; read, update and remove work', async t => {
   const security = await fakeSecurity(t);
-  useEnvironment(t, security.env);
+  useEnvironment(t, { ...security.env, HEARALONG_PACKAGED: '1' });
   const keychain = new Keychain();
   const key = `AIza-te"st$\`\\ '%x;&|*key#END`;
   assert.equal(await keychain.read('google'), null);
@@ -147,7 +147,7 @@ async function keysServer(t: any, initial: Record<string, unknown> = {}, saved: 
 }
 
 test('saving a key: rejected and unreachable save nothing; a good key is stored, listed at once, and its models can be chosen; removing resets them', async t => {
-  const s = await keysServer(t, {}, { mainModel: 'example/example-main', quickModel: 'example/example-quick:0' });
+  const s = await keysServer(t, {}, { mainModel: 'example/example-main', quickModel: 'example/example-quick:0' }, { HEARALONG_PACKAGED: '1' });
   assert.deepEqual(Object.values(await s.keys()).map((k: any) => k.state), ['none', 'none', 'none']);
   let response = await s.call('/api/setup/ai/keys/google', 'PUT', { key: 'AIza-wrong-fictional-key' });
   assert.equal(response.status, 400); assert.equal(response.body.error, 'Google didn’t accept this key. Check it and try again.');
@@ -183,7 +183,7 @@ test('saving a key: rejected and unreachable save nothing; a good key is stored,
 });
 
 test('a saved key is read from the Keychain at start (only when one was saved) and given to Pi', async t => {
-  const s = await keysServer(t);
+  const s = await keysServer(t, {}, {}, { HEARALONG_PACKAGED: '1' });
   assert.equal((await s.security.calls()).length, 0); // nothing saved: the Keychain is never touched
   assert.equal((await s.call('/api/setup/ai/keys/google', 'PUT', { key: GEMINI })).status, 200);
   await s.restart();
