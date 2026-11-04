@@ -718,32 +718,30 @@ window.addEventListener('resize', () => {
   layoutFrame = requestAnimationFrame(() => { closeSelectionMenu(); applyLayout(); });
 });
 
-/** Old citations to a hidden echo still open at its meeting time, on the surviving call line. */
+let citationSequence = 0;
+/** Resolve first, then use the ordinary span scroll/flash/highlight path. A later click or meeting switch wins. */
 async function scrollToSegment(owner, segmentId, citedIds = [segmentId]) {
+  const sequence = ++citationSequence, generation = selectionGeneration;
   if (owner !== meetingId) return;
-  // A hidden transcript cannot scroll; after switching tabs, jump at once (a smooth scroll from the top takes seconds).
-  const switched = layoutView.compact && layoutView.tab !== 'live';
-  if (switched) showCompactTab('live', true);
   let node = $('transcript').querySelector(`span[data-id="${CSS.escape(segmentId)}"]`);
   if (!node) {
     let location;
     try { location = await api(`/api/meetings/${owner}/segment-location?id=${encodeURIComponent(segmentId)}`); }
-    catch { /* Deleted lines still report the ordinary missing-line message. */ }
-    if (owner !== meetingId) return;
-    if (location && !lastSnapshot?.replay) {
-      const rows = [...$('transcript').querySelectorAll('.para[data-kind="final"]')];
-      const distance = row => Math.max(Number(row.dataset.start) - location.startMs, location.startMs - Number(row.dataset.end), 0);
-      const row = rows.sort((a, b) => distance(a) - distance(b))[0];
-      node = row?.querySelector('span[data-id]');
-    }
+    catch { /* Missing lines still report the ordinary message, without changing tabs or scroll. */ }
+    if (sequence !== citationSequence || generation !== selectionGeneration || owner !== meetingId) return;
+    node = location?.id ? $('transcript').querySelector(`span[data-id="${CSS.escape(location.id)}"]`) : null;
   }
   if (!node) { log('That line is not in the transcript shown now (it may be past the replay position or no longer exist).', true); return; }
+  // Do not leave the current compact pane until resolution succeeds.
+  const switched = layoutView.compact && layoutView.tab !== 'live';
+  if (switched) showCompactTab('live', true);
   view.following = false;
   node.scrollIntoView({ block: 'center', behavior: switched ? 'auto' : 'smooth' });
   $('transcript').querySelectorAll('.cited').forEach(old => old.classList.remove('cited'));
   node.classList.remove('flash');
   void node.offsetWidth;
   node.classList.add('flash');
+  node.classList.add('cited');
   for (const id of citedIds) $('transcript').querySelector(`span[data-id="${CSS.escape(id)}"]`)?.classList.add('cited');
   updateJump();
 }

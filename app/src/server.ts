@@ -640,20 +640,21 @@ export async function startServer(options: {
     };
     /** Speaker-labelled visible lines in the transcript's order, as the snapshot gives them. */
     const labelledLines = (meetingId: string) => {
-      const { labelled, roleOf } = appStore.speakers(meetingId);
-      const visible = appStore.visibleSegments(meetingId, clock());
+      const { speakers: { labelled, roleOf }, segments: visible, heldChunks } = appStore.displaySegments(meetingId,
+        capture.liveSources(meetingId).map(s => s.source).filter(isRemote), clock());
       if (labelled) visible.sort(compareSegments);
       const speaker = (source: string, startMs: number, endMs: number) => { const role = roleOf(source, startMs, endMs); return role ? ROLE_LABEL[role] : null; };
-      return { labelled, roleOf, visible, speaker };
+      return { labelled, roleOf, visible, heldChunks, speaker };
     };
     /** Display-only previews, annotated once for both response shapes. Retirement sees the finals in the same reply. */
-    const displayPreviews = (meetingId: string, visible: ReturnType<typeof appStore.visibleSegments>, speaker: (source: string, startMs: number, endMs: number) => string | null) => {
+    const displayPreviews = (meetingId: string, visible: ReturnType<typeof appStore.visibleSegments>, heldChunks: Set<string>, speaker: (source: string, startMs: number, endMs: number) => string | null) => {
       const annotate = <T extends Draft>(draft: T) => {
         const { meetingId: _meetingId, ...display } = draft;
         return { ...display, speaker: speaker(draft.source, draft.windowStartMs, Math.max(draft.coveredUntilMs, draft.windowStartMs + 1)) };
       };
-      const chunks = drafts ? appStore.chunks(meetingId) : [];
-      // Hidden echo finals still own their audio interval, so their grey pending tail retires too.
+      // A held mic final is not a terminal display outcome yet: keep its sealed grey tail alive.
+      const chunks = drafts ? appStore.chunks(meetingId).map(c => heldChunks.has(c.id) ? { ...c, status: 'running' as const } : c) : [];
+      // Decided hidden echoes, unlike held finals, own their audio interval and retire the preview.
       const rendered = new Set([...visible.map(s => s.chunkId),
         ...(!appStore.replay(meetingId) ? chunks.filter(c => c.status === 'completed').map(c => c.id) : [])]);
       const terminal = chunks.filter(c => ownsDisplayInterval(c, rendered));
@@ -675,10 +676,10 @@ export async function startServer(options: {
       const now = recordingNow();
       if (!now) return { recording: null, mini: { native: liveView.native(), state: liveView.miniState() } };
       const { meetingId } = now;
-      const { labelled, roleOf, visible, speaker } = labelledLines(meetingId);
+      const { labelled, roleOf, visible, heldChunks, speaker } = labelledLines(meetingId);
       // The whole meeting's paragraphs, grouped as the transcript groups them; the mini view scrolls back through them.
       const lines = visible.map(s => ({ id: s.id, source: s.source, startMs: s.startMs, endMs: s.endMs, revision: s.revision, text: s.text, ...(labelled ? { speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
-      const previews = displayPreviews(meetingId, visible, speaker);
+      const previews = displayPreviews(meetingId, visible, heldChunks, speaker);
       const { paragraphs: meeting, placements } = miniLog(lines, previews.drafts, previews.pending);
       // Names the first n paragraphs as they are now, in this recording: any change among them (a correction, a line hidden)
       // changes it, and so does a new recording, even of the same meeting (a page that held the last one starts afresh).
@@ -686,7 +687,7 @@ export async function startServer(options: {
       const tag = (n: number) => `${session}.${n}.${createHash('sha1').update(meeting.slice(0, n).map(p => `${p.key}/${p.signature}`).join('\n')).digest('base64url').slice(0, 16)}`;
       const held = Number((have ?? '').split('.')[1]);
       const from = Number.isInteger(held) && held >= 0 && held <= meeting.length && have === tag(held) ? held : 0;
-      const paragraphs = meeting.slice(from).map(p => ({ key: p.key, signature: p.signature, startMs: p.startMs, endMs: p.endMs, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
+      const paragraphs = meeting.slice(from).map(p => ({ key: p.key, signature: p.signature, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
       // One preview slot per live source, the microphone first: its newest 20 words.
       const all = previews.drafts;
       const slots = now.sources.map(s => s.source).sort((a, b) => (a.startsWith('mic:') ? 0 : 1) - (b.startsWith('mic:') ? 0 : 1)).map(source => {
@@ -1146,13 +1147,13 @@ export async function startServer(options: {
           res.end(plain ? appStore.plainText(meetingId) : appStore.markdown(meetingId, raw ? 'raw' : 'corrected', locale)); return;
         }
         if (req.method === 'GET' && action === 'segment-location') {
-          const segment = appStore.segment(url.searchParams.get('id') ?? '');
-          if (!segment || segment.meetingId !== meetingId) throw new HttpError(404, 'Line not found.');
-          send(res, 200, { startMs: segment.startMs, endMs: segment.endMs }); return;
+          const id = appStore.citationSegment(meetingId, url.searchParams.get('id') ?? '');
+          if (!id) throw new HttpError(404, 'Line not found.');
+          send(res, 200, { id }); return;
         }
         if (req.method === 'GET' && action === 'segments') {
           // Only the transcript list is a delta; all live state still travels on every poll.
-          const { labelled, visible, speaker } = labelledLines(meetingId);
+          const { labelled, visible, heldChunks, speaker } = labelledLines(meetingId);
           const segments = visible.map(s => ({ id: s.id, startMs: s.startMs, endMs: s.endMs, text: s.text, originalText: s.originalText, edits: JSON.parse(s.edits),
             revision: s.revision, timing: s.timing, ...(labelled ? { source: s.source, speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
           const delta = segmentsTag.delta(meetingId, segments, url.searchParams.get('have'));
@@ -1166,7 +1167,7 @@ export async function startServer(options: {
             captureGaps: appStore.captureGaps(meetingId),
             replay: replay ? { speed: replay.speed, positionMs: appStore.replayPositionMs(replay, now), durationMs: replay.durationMs, baseMs: replay.baseMs } : null,
             // Active recognizers and sealed display previews have separate lifetimes.
-            ...displayPreviews(meetingId, visible, speaker),
+            ...displayPreviews(meetingId, visible, heldChunks, speaker),
             draftsAvailable: drafts?.available() ?? false,
             // Sources recording now, and whether each has been quiet for a minute (problem notices in the app and the mini view).
             sources: capture.liveSources(meetingId),

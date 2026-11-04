@@ -36,10 +36,15 @@ export function rolesFor(ranges: { source: string; startMs: number; endMs: numbe
 }
 
 type EchoSegment = { id: string; source: string; startMs: number; endMs: number; text: string };
-const echoWords = (text: string) => text.toLowerCase().replace(/\p{Pd}/gu, ' ').replace(/[^\p{L}\p{M}\p{N}\s]/gu, '').split(/\s+/).filter(Boolean);
+const echoWords = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, (char, at: number, raw: string) => {
+  const before = raw[at - 1] ?? '', after = raw[at + 1] ?? '';
+  if ((char === '.' || char === ',') && /\d/.test(before) && /\d/.test(after)) return char;
+  if ((char === '-' || char === '−') && /\d/.test(after) && !/[\p{L}\p{M}\p{N}]/u.test(before)) return '-';
+  return /\p{Pd}/u.test(char) ? ' ' : '';
+}).split(/\s+/).filter(Boolean);
 
 /** Read-time acoustic-echo heuristic. Never changes stored text or hides the call channel.
- * Hyphens separate words; other punctuation is removed. Digits are not expanded to number names.
+ * Hyphens separate words; other punctuation is removed except numeric separators/signs. Numbers are not expanded.
  * All overlapping remote pieces are joined in meeting order, regardless of their chunk boundaries.
  */
 export function echoesFor(segments: EchoSegment[], speakers: Speakers): Set<string> {
@@ -85,7 +90,7 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers): Set<stri
           diagonal = previous;
         }
         // Appending more remote words cannot reduce the LCS; no need to visit later intervals once it qualifies.
-        if (row[words.length] * 5 >= words.length * 3) return true;
+        if (row[words.length] * 5 >= words.length * 4) return true;
       }
       return false;
     };

@@ -109,7 +109,11 @@ test('M9a fix 2: equal-time mic finals split around tab pending; all promoted te
     app.store.completeChunk(micChunk.id, { text: 'mic-zero mic-two', segments: [
       { text: 'mic-zero', t0Ms: 0, t1Ms: 500 }, { text: 'mic-two', t0Ms: 2000, t1Ms: 2500 },
     ], backend: 'scripted', computeMs: 0, decodeMs: 0, audioSeconds: 3, processRssBytes: 0, words: [], timestampKind: 'segment' });
-    const model = (await (await fetch(`${app.url}/api/live`, { headers: { Cookie: cookie } })).json()).recording;
+    const live = async () => (await (await fetch(`${app.url}/api/live`, { headers: { Cookie: cookie } })).json()).recording;
+    assert.deepEqual((await live()).paragraphs, [], 'fresh mic finals now wait for the call before promotion');
+    // This geometry regression exercises decided finals alongside a still-pending tab, after the bounded hold expires.
+    app.store.db.prepare('UPDATE chunks SET completedAt=? WHERE id=?').run(Date.now() - 8000, micChunk.id);
+    const model = await live();
     assert.deepEqual(model.paragraphs.map((p: any) => p.text), ['mic-zero', 'mic-two'], 'the pending row at 0 s must split the mic paragraph between its 0 s and 2 s lines');
     const placement = model.pending.find((p: any) => p.chunkId === tabChunk.id).placements[0];
     assert.equal(placement.beforeKey, model.paragraphs[1].key);

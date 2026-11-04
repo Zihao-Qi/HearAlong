@@ -11,7 +11,7 @@ import { scanWindow, scanInput } from '../src/board.ts';
 import { simpleEchoesFor } from './helpers/echo-reference.ts';
 
 test('interval-indexed echo detection equals the simple rule on 250 randomized fictional meetings', () => {
-  const vocabulary = ['paper', 'lantern', 'cedar', 'copper', 'ribbon', 'reef', 'shell', 'kelp', '12', "can't", 'sky-blue', 'café'];
+  const vocabulary = ['paper', 'lantern', 'cedar', 'copper', 'ribbon', 'reef', 'shell', 'kelp', '12', '1.2', '1,200', '-3', '−3', "can't", 'sky-blue', 'café'];
   for (let seed = 1; seed <= 250; seed++) {
     let state = seed;
     const random = (n: number) => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % n; };
@@ -45,12 +45,20 @@ for (const [name, me, remote] of [
   ['case, punctuation and hyphens', 'The SKY-blue lantern, is ready!', 'the sky blue lantern is ready'],
   ['apostrophes', "We can't move the lantern", 'we cant move the lantern'],
   ['missing mic words', 'blue lantern is ready', 'The blue paper lantern is finally ready'],
-  ['60 percent exactly', 'one two three extra words', 'one two three'],
-  ['just above 60 percent', 'one two three four extra words', 'one two three four'],
+  ['80 percent exactly', 'one two three four extra', 'one two three four'],
+  ['100 percent with numeric punctuation', 'Use -3 and 1.2 units', 'Use −3 and 1.2 units!'],
+  ['numeric comma kept', 'Bring 1,200 paper lanterns', 'bring 1,200 paper lanterns.'],
 ] as const) test(`echo: ${name}`, () => assert.deepEqual(hidden(mic(me), them(remote)), ['mic']));
 
 for (const [name, me, remote] of [
-  ['below 60 percent with added mic words', 'one two three extra spare words', 'one two three'],
+  ['60 percent no longer sufficient', 'one two three extra words', 'one two three'],
+  ['just below 80 percent', 'one two three extra', 'one two three'],
+  ['negated genuine reply', 'No we should not ship', 'We should ship'],
+  ['genuine Friday reply', 'I can do Friday', 'Can you do Friday?'],
+  ['decimal point is not dropped', 'Set 1.2 units', 'Set 12 units'],
+  ['numeric comma is not dropped', 'Bring 1,200 lanterns', 'Bring 1200 lanterns'],
+  ['minus sign is not dropped', 'Set -3 units', 'Set 3 units'],
+  ['negative decimal distinct', 'Set -1.2 units', 'Set 12 units'],
   ['reordered words are not a bag match', 'one two three four five', 'five four three two one'],
   ['actual user speech', 'I prefer a round green lantern', 'The paper lantern is ready'],
   ['headphones', 'Please bring the spare battery tomorrow', 'The paper lantern is ready'],
@@ -101,6 +109,7 @@ test('all transcript readers hide echoes at read time; pending partner arrival a
       assert.deepEqual(store.segments(meeting.id).map(s => s.id), [callId]);
       assert.deepEqual(store.visibleSegments(meeting.id).map(s => s.id), [callId]);
       assert.equal(store.segment(micId)?.text, text, 'old citations still resolve');
+      assert.equal(store.citationSegment(meeting.id, micId), callId, 'hidden citation resolves to surviving span');
       const pinned = { [micId]: { text }, [callId]: { text } };
       assert.deepEqual(Object.keys(store.withoutEchoes(meeting.id, pinned)), [callId], 'old pinned prompt evidence uses the same rule');
       assert.deepEqual(Object.keys(pinned), [micId, callId], 'saved evidence itself is never rewritten');

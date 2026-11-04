@@ -212,28 +212,21 @@ function selected() {
 /** The first line showing at the top of the lines, and where its top is on screen. */
 function topLine() {
   const top = $('m-scroll').getBoundingClientRect().top;
-  const lines = [...$('m-scroll').querySelectorAll('.ln')].filter(node => node.getBoundingClientRect().bottom > top);
-  const positions = lines.map(node => ({ key: node.dataset.key, y: node.getBoundingClientRect().top }));
-  return lines.length ? { ...positions[0], at: Number(lines[0].dataset.start), positions, height: $('m-scroll').scrollHeight } : null;
+  for (const node of $('m-scroll').querySelectorAll('.ln')) {
+    const box = node.getBoundingClientRect();
+    if (box.bottom > top) return { key: node.dataset.key, y: box.top };
+  }
+  return null;
 }
 /**
  * After an update or a resize: following, the newest line in view; otherwise the line read put back where it was on screen
  * (anything above it may have changed height: a notice, a paragraph, lines rewrapped to a new width).
  */
 function settle(reading, selection) {
-  const scroll = $('m-scroll');
-  if (!reading) {
-    view.heightFloor = 0; view.reserve = 0; scroll.style.paddingBottom = '';
-    toBottom();
-  } else {
-    view.heightFloor = Math.max(view.heightFloor ?? 0, reading.height ?? 0);
-    view.reserve = Math.max(0, view.heightFloor - (scroll.scrollHeight - (view.reserve ?? 0)));
-    scroll.style.paddingBottom = view.reserve ? `${view.reserve}px` : '';
-    // An echo row can vanish after its call partner finishes. Prefer a surviving row at its old screen position.
-    const survivor = reading.positions?.find(p => view.rows.has(p.key));
-    const node = view.rows.get(reading.key) ?? (survivor ? view.rows.get(survivor.key) : [...view.rows.values()]
-      .find(n => Number(n.dataset.start) <= reading.at && reading.at <= Number(n.dataset.end)));
-    if (node) setTop($('m-scroll').scrollTop + node.getBoundingClientRect().top - (node.dataset.key === survivor?.key ? survivor.y : reading.y));
+  if (!reading) toBottom();
+  else {
+    const node = view.rows.get(reading.key);
+    if (node) setTop($('m-scroll').scrollTop + node.getBoundingClientRect().top - reading.y);
   }
   view.reading = view.follow && !selection ? null : topLine();
   edges();
@@ -260,7 +253,7 @@ function renderFinals(wanted, selection) {
     if (!node || node.dataset.signature !== w.signature) {
       const fresh = lineRow(w.speaker, w.label, w.text, w.pending ? 'pending-preview' : 'final');
       if (w.pending) { fresh.className = 'pending-ln'; fresh.setAttribute('aria-hidden', 'true'); }
-      Object.assign(fresh.dataset, { key: w.key, signature: w.signature, speaker: w.speaker ?? '', start: w.startMs, end: w.endMs });
+      Object.assign(fresh.dataset, { key: w.key, signature: w.signature, speaker: w.speaker ?? '' });
       if (node) node.replaceWith(fresh);
       view.rows.set(w.key, fresh);
       node = fresh;
@@ -293,7 +286,6 @@ function toBottom() { setTop($('m-scroll').scrollHeight - $('m-scroll').clientHe
  * to the latest in the previews' place.
  */
 function follow(on) {
-  view.heightFloor = 0; view.reserve = 0; $('m-scroll').style.paddingBottom = '';
   if (view.follow === on) return;
   view.follow = on;
   // The way back is at least as high as the previews it replaces, so the lines' view never grows then: it would pull them back

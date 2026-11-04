@@ -123,19 +123,14 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     const rect = box.getBoundingClientRect();
     const y = pointer && pointer.y > rect.top && pointer.y < rect.bottom ? pointer.y : rect.top + 12;
     const x = pointer?.x ?? rect.left + Math.min(140, rect.width / 2);
-    // Keep a surviving row as a fallback if the row under the caret is removed (for example a late echo match).
-    const fallbacks = [...box.children].filter(n => n.getBoundingClientRect().bottom > rect.top && n.getBoundingClientRect().top < rect.bottom)
-      .map(node => ({ node, y: node.getBoundingClientRect().top }));
     const caret = document.caretRangeFromPoint?.(x, y);
     if (caret && box.contains(caret.startContainer) && caret.startContainer.nodeType === Node.TEXT_NODE) {
       const range = caret.cloneRange();
       range.setEnd(range.startContainer, Math.min(range.startOffset + 1, range.startContainer.length));
-      const node = caret.startContainer.parentElement.closest('.para');
-      return { range, y: range.getBoundingClientRect().top, node, nodeY: node?.getBoundingClientRect().top,
-        at: node ? Number(node.dataset.start) : undefined, fallbacks };
+      return { range, y: range.getBoundingClientRect().top };
     }
     const node = [...box.children].find(n => n.getBoundingClientRect().bottom > y);
-    return node ? { node, y: node.getBoundingClientRect().top, at: Number(node.dataset.start), fallbacks } : null;
+    return node ? { node, y: node.getBoundingClientRect().top } : null;
   }
   function noteAt(draft, event) {
     const row = displayed.get(draft.closest('.para').dataset.key);
@@ -294,7 +289,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     syncDraftNote();
     // A shorter preview below a selection must not let the browser clamp scrollTop and move the selected line.
     // Keep that room through the clear/flush; later text consumes it, or an explicit scroll/follow releases it.
-    if (ranges.length || selectionAnchor || (!view.following && box.scrollHeight < oldHeight)) heightFloor = Math.max(heightFloor, oldHeight);
+    if (ranges.length || selectionAnchor) heightFloor = Math.max(heightFloor, oldHeight);
     reserveHeight(Math.max(0, heightFloor - (box.scrollHeight - extraBottom)));
     if (!extraBottom) heightFloor = 0;
     let anchored = false;
@@ -302,12 +297,8 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
       const rangeLive = reading.range?.startContainer.isConnected && reading.range.startContainer.nodeType === Node.TEXT_NODE;
       const replacement = !reading.node?.isConnected && rows.find(r => r.segments.some(s => reading.ids?.includes(s.id)
         || (reading.at !== undefined && coversTime(s, reading.at) && (!s.source || s.source === reading.source))));
-      const fallback = reading.fallbacks?.find(f => f.node.isConnected);
-      const atTime = rows.find(r => r.kind === 'final' && reading.at !== undefined && coversTime(r, reading.at));
-      const target = rangeLive ? reading.range : reading.node?.isConnected ? reading.node : fallback?.node
-        ?? (replacement || atTime ? view.paragraphs.get((replacement ?? atTime).key) : null);
-      const targetY = rangeLive ? reading.y : target === fallback?.node ? fallback.y : reading.nodeY ?? reading.y;
-      if (target) { scrollTo(box.scrollTop + target.getBoundingClientRect().top - targetY); anchored = true; }
+      const target = rangeLive ? reading.range : reading.node?.isConnected ? reading.node : replacement ? view.paragraphs.get(replacement.key) : null;
+      if (target) { scrollTo(box.scrollTop + target.getBoundingClientRect().top - (rangeLive ? reading.y : reading.nodeY ?? reading.y)); anchored = true; }
     }
     if (heardMs === null && view.following && !preserve && !ranges.length) scrollTo(box.scrollHeight - box.clientHeight);
     else if (!anchored) scrollTo(oldTop);

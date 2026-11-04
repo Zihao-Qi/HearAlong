@@ -10,6 +10,7 @@ import type { Recognition } from './recognizer.ts';
 import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Role, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
+import { heldMicrophoneFinals } from './live-finals.ts';
 import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/capture-gaps.js';
 
 export type Mode = 'periodic' | 'manual' | 'questions';
@@ -28,7 +29,7 @@ export type Chunk = {
   decodeStart: number; startMs: number; seconds: number; sampleRate: number | null;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   text: string; error: string | null; metrics: string | null; hash: string;
-  attempts: number; retryAt: number | null;
+  attempts: number; retryAt: number | null; completedAt?: number | null;
 };
 
 /** A saved 1 s piece of live audio (16 kHz mono f32). It belongs to no window until a seal groups it into a chunk. */
@@ -220,8 +221,7 @@ export class MeetingStore {
       if (!existing) this.publishSegments(chunk, result.text, result);
     });
   }
-  private transcript(meetingId: string) {
-    const speakers = this.speakers(meetingId);
+  private transcript(meetingId: string, speakers = this.speakers(meetingId)) {
     // TEMP triggers cover all writes through this connection, including direct SQL and metadata-only edits.
     // data_version covers commits made by another SQLite connection. Never cache an uncommitted snapshot.
     const external = (this.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
@@ -244,7 +244,27 @@ export class MeetingStore {
     const { all, echoes } = this.transcript(meetingId);
     return all.filter(s => !echoes.has(s.id)).map(s => ({ ...s }));
   }
-  /** Pinned evidence in an old action or notes file follows the same rule when used in a new prompt, without rewriting it. */
+  /** Main transcript and mini share this display-only hold; exports/AI keep reading settled segments(). */
+  displaySegments(meetingId: string, callSources: string[], now: number) {
+    const speakers = this.speakers(meetingId);
+    if (this.replay(meetingId)) return { speakers, segments: this.visibleSegments(meetingId, now), heldChunks: new Set<string>() };
+    const { all, echoes } = this.transcript(meetingId, speakers);
+    const held = callSources.length ? heldMicrophoneFinals(all, this.chunks(meetingId), callSources, speakers, now) : new Set<string>();
+    return { speakers, segments: all.filter(s => !held.has(s.id) && !echoes.has(s.id)).map(s => ({ ...s })),
+      heldChunks: new Set(all.filter(s => held.has(s.id)).map(s => s.chunkId)) };
+  }
+  /** Resolve a hidden echo citation to an actual surviving span, never an unrelated nearby paragraph. */
+  citationSegment(meetingId: string, id: string): string | undefined {
+    const { all, echoes } = this.transcript(meetingId);
+    const cited = all.find(s => s.id === id);
+    if (!cited) return undefined;
+    if (!echoes.has(id)) return id;
+    const speakers = this.speakers(meetingId);
+    const overlap = (s: Segment) => Math.min(s.endMs, cited.endMs) - Math.max(s.startMs, cited.startMs);
+    return all.filter(s => !echoes.has(s.id) && speakers.roleOf(s.source, s.startMs, s.endMs) === 'them' && overlap(s) > 0)
+      .sort((a, b) => overlap(b) - overlap(a) || compareSegments(a, b))[0]?.id;
+  }
+  /** Pinned evidence in an old notes file follows the same rule when used in a new prompt, without rewriting it. */
   withoutEchoes<T>(meetingId: string, lines: Record<string, T>): Record<string, T> {
     const { echoes } = this.transcript(meetingId);
     return Object.fromEntries(Object.entries(lines).filter(([id]) => !echoes.has(id)));
