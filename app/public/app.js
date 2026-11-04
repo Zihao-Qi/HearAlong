@@ -718,13 +718,25 @@ window.addEventListener('resize', () => {
   layoutFrame = requestAnimationFrame(() => { closeSelectionMenu(); applyLayout(); });
 });
 
-/** Scrolls the transcript to a line, if this meeting is still shown and the line still exists. */
-function scrollToSegment(owner, segmentId, citedIds = [segmentId]) {
+/** Old citations to a hidden echo still open at its meeting time, on the surviving call line. */
+async function scrollToSegment(owner, segmentId, citedIds = [segmentId]) {
   if (owner !== meetingId) return;
   // A hidden transcript cannot scroll; after switching tabs, jump at once (a smooth scroll from the top takes seconds).
   const switched = layoutView.compact && layoutView.tab !== 'live';
   if (switched) showCompactTab('live', true);
-  const node = $('transcript').querySelector(`span[data-id="${CSS.escape(segmentId)}"]`);
+  let node = $('transcript').querySelector(`span[data-id="${CSS.escape(segmentId)}"]`);
+  if (!node) {
+    let location;
+    try { location = await api(`/api/meetings/${owner}/segment-location?id=${encodeURIComponent(segmentId)}`); }
+    catch { /* Deleted lines still report the ordinary missing-line message. */ }
+    if (owner !== meetingId) return;
+    if (location && !lastSnapshot?.replay) {
+      const rows = [...$('transcript').querySelectorAll('.para[data-kind="final"]')];
+      const distance = row => Math.max(Number(row.dataset.start) - location.startMs, location.startMs - Number(row.dataset.end), 0);
+      const row = rows.sort((a, b) => distance(a) - distance(b))[0];
+      node = row?.querySelector('span[data-id]');
+    }
+  }
   if (!node) { log('That line is not in the transcript shown now (it may be past the replay position or no longer exist).', true); return; }
   view.following = false;
   node.scrollIntoView({ block: 'center', behavior: switched ? 'auto' : 'smooth' });

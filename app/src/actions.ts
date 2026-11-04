@@ -847,7 +847,9 @@ export class ActionJobs {
       const pdfs = this.options.pdfText && ACTIONS[job.action].tools.split(',').includes('read')
         ? await this.options.pdfText.prepare(roots, { waitMs: 60_000, signal: controller.signal, view }) : [];
       if (controller.signal.aborted) throw new Error('cancelled');
-      await writeFile(inputPath, actionInput(job, pdfs), { mode: 0o600 });
+      // A retry/follow-up may pin a microphone line that only became an echo after the original snapshot.
+      const lines = Object.values(this.options.store.withoutEchoes(job.meetingId, Object.fromEntries(job.context.lines.map(line => [line.id, line]))));
+      await writeFile(inputPath, actionInput({ ...job, context: { ...job.context, lines } }, pdfs), { mode: 0o600 });
       if (job.action === 'compute') {
         before = await materialManifest(roots);
       }
@@ -877,7 +879,7 @@ export class ActionJobs {
       const evidence = mergeEvidence(own, job.parentId ? await this.loadEvidence(job.meetingId, job.parentId) : null);
       // Saved beside the job (own plus inherited pages), so follow-ups of follow-ups can check against every ancestor's pages.
       await writeFile(join(this.jobDir(job.meetingId), `${job.id}.evidence`), JSON.stringify(evidence), { mode: 0o600 });
-      const checked = await checkAnswer(result.text, roots, evidence, job.context.lines,
+      const checked = await checkAnswer(result.text, roots, evidence, lines,
         this.options.pdfText && { text: this.options.pdfText, view, deadline: Date.now() + 60_000, signal: controller.signal }, cwd);
       const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null;
       await recordQuoteChecks(this.options.directory, 'actions', model, actionOutcomes(checked.checks), this.options.clock());

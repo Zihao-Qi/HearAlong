@@ -30,6 +30,38 @@ export function rolesFor(ranges: { source: string; startMs: number; endMs: numbe
   return { labelled: tabs.length > 0, roleOf, tabs };
 }
 
+type EchoSegment = { id: string; source: string; startMs: number; endMs: number; text: string };
+const echoWords = (text: string) => text.toLowerCase().replace(/\p{Pd}/gu, ' ').replace(/[^\p{L}\p{M}\p{N}\s]/gu, '').split(/\s+/).filter(Boolean);
+
+/** Read-time acoustic-echo heuristic. Never changes stored text or hides the call channel.
+ * Hyphens separate words; other punctuation is removed. Digits are not expanded to number names.
+ * All overlapping remote pieces are joined in meeting order, regardless of their chunk boundaries.
+ */
+export function echoesFor(segments: EchoSegment[], speakers: Speakers): Set<string> {
+  const echoes = new Set<string>();
+  if (!speakers.labelled) return echoes;
+  const role = (s: EchoSegment) => speakers.roleOf(s.source, s.startMs, s.endMs);
+  const remote = segments.filter(s => role(s) === 'them').sort(compareSegments).map(s => ({ ...s, words: echoWords(s.text) }));
+  for (const mic of segments) {
+    if (role(mic) !== 'me') continue;
+    const words = echoWords(mic.text);
+    if (words.length < 3) continue;
+    const reference = remote.filter(s => s.startMs <= mic.endMs + 3000 && s.endMs >= mic.startMs - 3000).flatMap(s => s.words);
+    // Longest common word subsequence, using one row of memory (recognition may omit or insert words).
+    const row = new Uint32Array(words.length + 1);
+    for (const word of reference) {
+      let diagonal = 0;
+      for (let j = 1; j <= words.length; j++) {
+        const previous = row[j];
+        row[j] = word === words[j - 1] ? diagonal + 1 : Math.max(row[j], row[j - 1]);
+        diagonal = previous;
+      }
+    }
+    if (row[words.length] * 5 >= words.length * 3) echoes.add(mic.id);
+  }
+  return echoes;
+}
+
 /** One order for every view of a labelled meeting: time, then source, then position in its chunk. */
 export function compareSegments(a: { startMs: number; source: string; ord?: number; id: string }, b: { startMs: number; source: string; ord?: number; id: string }) {
   const order = (source: string) => source.startsWith('app:') ? `tab:${source.slice(4)}` : source;

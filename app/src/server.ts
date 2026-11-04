@@ -336,7 +336,7 @@ export async function startServer(options: {
     const notesJobs = startup.notes = new NotesJobs({ store, directory, runner: notesRunner, clock, glossaryFor, onSaved: id => afterNotes(id), cooldowns });
     // Memory proposals use sol with no tools (as notes); "Tell the project…" uses the quick model for a sentence.
     const proposals = startup.proposals = new Proposals(store, memory, { runner: notesRunner, briefRunner: notesRunner, directory, clock,
-      notesFor: id => notesJobs.file(id).load(), projectOf: id => projects.projectOf(id), onChange: id => files.touch(id), cooldowns });
+      notesFor: id => notesJobs.forPrompt(id), projectOf: id => projects.projectOf(id), onChange: id => files.touch(id), cooldowns });
     const tellRunner: NotesRunner | null = cloud && options.heavy !== null ? piNotesRunner(() => ai.require('quick')) : options.notes ?? null;
     // The memory files in each project's repo (§3.3, §6); the quick model reads agents' notes and guesses sources.
     const files: MemoryFiles = startup.files = new MemoryFiles(store, memory, proposals, { directory, clock, project: id => projects.get(id), projects: () => projects.list(),
@@ -395,7 +395,7 @@ export async function startServer(options: {
           await writeFile(join(folder, file), content, { mode: 0o600 });
         }
         for (const other of appStoreRef.meetings().filter(m => m.id !== meetingId && projects.projectOf(m.id) === projectId)) {
-          const record = await notesJobs.file(other.id).load();
+          const record = await notesJobs.forPrompt(other.id);
           if (record) await writeFile(join(folder, 'past-notes', `${new Date(other.createdAt).toISOString().slice(0, 10)}-${other.id.slice(0, 8)}.md`), notesMarkdown(record, false), { mode: 0o600 });
         }
         // Keep every snapshot an action of this meeting still refers to (its citations stay checkable), plus the latest 30.
@@ -654,7 +654,9 @@ export async function startServer(options: {
         return { ...display, speaker: speaker(draft.source, draft.windowStartMs, Math.max(draft.coveredUntilMs, draft.windowStartMs + 1)) };
       };
       const chunks = drafts ? appStore.chunks(meetingId) : [];
-      const rendered = new Set(visible.map(s => s.chunkId));
+      // Hidden echo finals still own their audio interval, so their grey pending tail retires too.
+      const rendered = new Set([...visible.map(s => s.chunkId),
+        ...(!appStore.replay(meetingId) ? chunks.filter(c => c.status === 'completed').map(c => c.id) : [])]);
       const terminal = chunks.filter(c => ownsDisplayInterval(c, rendered));
       return {
         // A final may win even while sealWindow is finishing asynchronous frame cleanup, before the old stream is frozen.
@@ -685,7 +687,7 @@ export async function startServer(options: {
       const tag = (n: number) => `${session}.${n}.${createHash('sha1').update(meeting.slice(0, n).map(p => `${p.key}/${p.signature}`).join('\n')).digest('base64url').slice(0, 16)}`;
       const held = Number((have ?? '').split('.')[1]);
       const from = Number.isInteger(held) && held >= 0 && held <= meeting.length && have === tag(held) ? held : 0;
-      const paragraphs = meeting.slice(from).map(p => ({ key: p.key, signature: p.signature, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
+      const paragraphs = meeting.slice(from).map(p => ({ key: p.key, signature: p.signature, startMs: p.startMs, endMs: p.endMs, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
       // One preview slot per live source, the microphone first: its newest 20 words.
       const all = previews.drafts;
       const slots = now.sources.map(s => s.source).sort((a, b) => (a.startsWith('mic:') ? 0 : 1) - (b.startsWith('mic:') ? 0 : 1)).map(source => {
@@ -1143,6 +1145,11 @@ export async function startServer(options: {
           let locale: string | undefined;
           try { locale = Intl.getCanonicalLocales(req.headers['accept-language']?.split(',')[0].split(';')[0] ?? [])[0]; } catch { /* use the Mac's locale */ }
           res.end(plain ? appStore.plainText(meetingId) : appStore.markdown(meetingId, raw ? 'raw' : 'corrected', locale)); return;
+        }
+        if (req.method === 'GET' && action === 'segment-location') {
+          const segment = appStore.segment(url.searchParams.get('id') ?? '');
+          if (!segment || segment.meetingId !== meetingId) throw new HttpError(404, 'Line not found.');
+          send(res, 200, { startMs: segment.startMs, endMs: segment.endMs }); return;
         }
         if (req.method === 'GET' && action === 'segments') {
           // Only the transcript list is a delta; all live state still travels on every poll.

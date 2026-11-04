@@ -7,7 +7,7 @@ import { CHUNK_SECONDS } from './audio.ts';
 import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
 import { buildSegments, type Timing } from './segments.ts';
 import type { Recognition } from './recognizer.ts';
-import { ROLE_LABEL, compareSegments, rolesFor, type Role, type Speakers } from './speakers.ts';
+import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Role, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
 import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/capture-gaps.js';
@@ -213,9 +213,21 @@ export class MeetingStore {
       if (!existing) this.publishSegments(chunk, result.text, result);
     });
   }
-  segments(meetingId: string): Segment[] {
-    return this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[];
+  private transcript(meetingId: string) {
+    const all = this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[];
+    return { all, echoes: echoesFor(all, this.speakers(meetingId)) };
   }
+  /** Shared transcript read boundary: echoes stay on disk and addressable by id, but no reader gets doubled lines. */
+  segments(meetingId: string): Segment[] {
+    const { all, echoes } = this.transcript(meetingId);
+    return all.filter(s => !echoes.has(s.id));
+  }
+  /** Pinned evidence in an old action or notes file follows the same rule when used in a new prompt, without rewriting it. */
+  withoutEchoes<T>(meetingId: string, lines: Record<string, T>): Record<string, T> {
+    const { echoes } = this.transcript(meetingId);
+    return Object.fromEntries(Object.entries(lines).filter(([id]) => !echoes.has(id)));
+  }
+  /** Raw id lookup preserves old citations, even when their line is now hidden. */
   segment(id: string): Segment | undefined {
     return this.db.prepare('SELECT * FROM segments WHERE id=?').get(id) as Segment | undefined;
   }
