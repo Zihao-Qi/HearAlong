@@ -271,8 +271,10 @@ async function main(): Promise<void> {
       speechWorker: { cpu: counts(resources.map(item => item.workerCpu)), rssBytes: counts(resources.map(item => item.workerRss)) },
     },
   };
-  await mkdir(paths.results, { recursive: true, mode: 0o700 });
-  const output = resultPath(paths.results, 'live', started);
+  // Keep corpus input read-only when measurements belong in a separate job folder.
+  const results = process.env.HEARALONG_BENCH_RESULTS_DIR ? resolve(process.env.HEARALONG_BENCH_RESULTS_DIR) : paths.results;
+  await mkdir(results, { recursive: true, mode: 0o700 });
+  const output = resultPath(results, 'live', started);
   await writeFile(output, `${JSON.stringify({
     ...result, previewSamples: headline.preview, finalSamples: headline.final,
     diagnosticPreviewSamples: serverPreview, diagnosticFinalSamples: serverFinal,

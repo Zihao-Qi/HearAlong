@@ -6,6 +6,57 @@ const worker = new URL('./fixtures/fake-stream-worker.ts', import.meta.url);
 const pcm = (first: number) => { const a = new Float32Array(16000); a[0] = first; return a; };
 import { until } from './helpers/until.ts';
 
+test('startup spare survives idle, transfers to the first source, counts toward the cap, then idles normally', async t => {
+  const drafts = new LiveDrafts({ modelPath: 'unused', workerScript: worker, maxSources: 1, idleCloseMs: 10 });
+  t.after(() => drafts.close());
+  // Inspect process identity, not timing: a first-source lazy spawn would otherwise pass this test too.
+  const state = drafts as unknown as { spare?: { child: import('node:child_process').ChildProcess; ready: boolean }; workers: Map<string, { child: import('node:child_process').ChildProcess }> };
+  drafts.warm(); drafts.warm();
+  await until(() => Boolean(state.spare?.ready));
+  const child = state.spare!.child;
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.tick(100);
+  assert.equal(state.spare?.child, child, 'no idle-close while unassigned');
+  assert.equal(drafts.begin('m', 'mic:first', 'first', 0), true);
+  assert.equal(state.workers.get('mic:first')?.child, child, 'first begin reuses the loaded spare');
+  assert.equal(state.spare, undefined);
+  assert.equal(drafts.begin('m', 'tab:second', 'second', 0), false, 'the assigned spare still consumes the only slot');
+  drafts.feed('first', pcm(2));
+  await until(() => drafts.drafts('m')[0]?.text === 'w2');
+  drafts.drop('first');
+  t.mock.timers.tick(10);
+  t.mock.timers.reset();
+  await until(() => child.exitCode !== null);
+  assert.equal(drafts.begin('m', 'tab:second', 'second', 0), true);
+});
+
+test('a model switch disposes an unassigned spare and unsupported models never warm', async t => {
+  const drafts = new LiveDrafts({ modelPath: 'unused', workerScript: worker });
+  t.after(() => drafts.close());
+  const state = drafts as unknown as { spare?: { child: import('node:child_process').ChildProcess; ready: boolean } };
+  drafts.warm();
+  await until(() => Boolean(state.spare?.ready));
+  const child = state.spare!.child;
+  drafts.setModel(null, false);
+  assert.equal(state.spare, undefined);
+  drafts.warm(); assert.equal(state.spare, undefined);
+  await until(() => child.exitCode !== null);
+});
+
+test('a failed startup spare frees its slot and the first source retries lazily', async t => {
+  const logs: string[] = [];
+  const drafts = new LiveDrafts({ modelPath: 'unused', workerScript: worker, maxSources: 1, log: line => logs.push(line) });
+  t.after(() => drafts.close());
+  const state = drafts as unknown as { spare?: { child: import('node:child_process').ChildProcess; ready: boolean } };
+  drafts.warm();
+  await until(() => Boolean(state.spare?.ready));
+  state.spare!.child.kill('SIGKILL');
+  await until(() => logs.length === 1);
+  assert.equal(drafts.begin('m', 'mic:first', 'first', 0), true);
+  drafts.feed('first', pcm(2));
+  await until(() => drafts.drafts('m')[0]?.text === 'w2');
+});
+
 test('drafts follow their window and drop cleanly; a crashed worker only costs the draft', async () => {
   const logs: string[] = [];
   const drafts = new LiveDrafts({ modelPath: 'unused', workerScript: worker, log: m => logs.push(m) });

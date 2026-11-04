@@ -20,6 +20,13 @@ export class SwitchableRecognizer implements Recognizer {
     this.options = options;
     if (path) this.current = new LocalRecognizer(path, options.workerScript);
   }
+  /** Background startup preflight; switches keep their separate candidate and never wait for this load. */
+  async load(): Promise<void> {
+    const current = this.current;
+    if (this.closed || !current) return;
+    try { await current.load(); }
+    catch (error) { if (!this.closed && this.current === current) throw error; }
+  }
   available() { return !this.closed && Boolean(this.current); }
   get backend() { return this.current?.backend ?? 'unavailable'; }
   get modelPath() { return this.current?.modelPath ?? null; }

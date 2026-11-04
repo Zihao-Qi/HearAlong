@@ -100,6 +100,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     // Playwright does not await dialog listeners; accept beforeunload so closing a recording cannot get stuck.
     page.on('dialog', dialog => { dialog.accept().catch(error => { errors.push(`Dialog acceptance failed: ${String(error)}`); console.error(error); }); });
     page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => { if (message.type() === 'warning' || message.type() === 'error') console.error(`Rehearsal page: ${message.text()}`); });
     page.on('request', request => {
       if (request.method() !== 'POST') return;
       if (new URL(request.url()).pathname.endsWith('/pcm')) frames.push({ at: Date.now(), source: request.headers()['x-audio-source'], sequence: Number(request.headers()['x-sequence']), samples: (request.postDataBuffer()?.length ?? 0) / 4 });
@@ -115,8 +116,9 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
         timer = setTimeout(() => finish('audio ended'), Math.max(0, at + mic.seconds * 1000 - Date.now()));
       });
       if (them) await page.route('**/__rehearsal-them.wav', route => route.fulfill({ body: them.bytes, contentType: 'audio/wav' }));
+      if (benchmark) await page.route('**/__rehearsal-mic.wav', route => route.fulfill({ body: mic.bytes, contentType: 'audio/wav' }));
       // Only this page is modified. The real app's worklet, upload queues, recognition and Stop stay untouched.
-      await page.evaluate(async ({ online }) => {
+      await page.evaluate(async ({ online, fileMicrophone }) => {
         let startThem = async () => {};
         if (online) {
           const audio = new AudioContext();
@@ -140,10 +142,24 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
           };
         }
         const original = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        let microphone: MediaStream | undefined, startMicrophone = async () => {};
+        if (fileMicrophone) {
+          // A file-only clocked source also works on headless shells whose fake getUserMedia never resolves.
+          // There is deliberately no connection to audio.destination (no speaker playback).
+          const audio = new AudioContext({ sampleRate: 16000 });
+          const buffer = await audio.decodeAudioData(await (await fetch('/__rehearsal-mic.wav')).arrayBuffer());
+          const player = audio.createBufferSource(); player.buffer = buffer;
+          const dest = audio.createMediaStreamDestination(); player.connect(dest);
+          microphone = dest.stream;
+          startMicrophone = async () => { await audio.resume(); player.start(); };
+          const track = microphone.getAudioTracks()[0], stop = track.stop.bind(track);
+          track.stop = () => { stop(); try { player.stop(); } catch { /* not started */ } audio.close().catch(error => console.error('Rehearsal microphone close failed', error)); };
+        }
         navigator.mediaDevices.getUserMedia = async constraints => {
-          const stream = await original(constraints);
+          const stream = microphone ?? await original(constraints);
           try {
             await startThem(); startThem = async () => {};
+            await startMicrophone(); startMicrophone = async () => {};
             await (window as unknown as { __rehearsalStarted(at: number): Promise<void> }).__rehearsalStarted(Date.now());
             return stream;
           } catch (error) {
@@ -151,7 +167,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
             throw error;
           }
         };
-      }, { online: Boolean(them) });
+      }, { online: Boolean(them), fileMicrophone: Boolean(benchmark) });
       await page.locator('#meeting-button').click();
       await page.locator('#new-meeting').click();
       await page.locator('#meeting-name').fill(`Rehearsal: ${basename(args.mic!)} from ${clock(args.from)}`);
@@ -185,6 +201,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
       await Promise.race([settlement, new Promise<void>(resolve => { releaseSettlement = resolve; })]);
     }
   } catch (error) {
+    if (!cancelled && page && !page.isClosed()) console.error('Rehearsal failure:', await page.locator('#log').textContent().catch(() => 'page unavailable'));
     if (!cancelled && !page?.isClosed()) throw error;
     reason = cancelled ? 'interrupted' : 'window closed';
   } finally {

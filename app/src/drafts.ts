@@ -24,7 +24,7 @@ export function ownsDisplayInterval(chunk: DisplayChunk, rendered: Set<string>):
  * `sent`: when each feed not yet answered was sent, across windows (the worker answers every feed, in order, including feeds
  * for a window it has already replaced). `queued`: commands held until the model has loaded.
  */
-type Worker = { child: ChildProcess; modelPath: string; source: string; startedAt: number; ready: boolean; queued: { window: string; message: unknown }[]; sent: number[]; idle?: NodeJS.Timeout };
+type Worker = { child: ChildProcess; modelPath: string; source: string | null; startedAt: number; ready: boolean; queued: { window: string; message: unknown }[]; sent: number[]; idle?: NodeJS.Timeout };
 
 export type DraftOptions = {
   modelPath: string;
@@ -51,6 +51,8 @@ export type DraftOptions = {
 export class LiveDrafts {
   private options: Required<Omit<DraftOptions, 'log'>> & Pick<DraftOptions, 'log'>;
   private workers = new Map<string, Worker>();
+  /** One startup-only spare. Unassigned workers have no idle timer but still consume a source slot. */
+  private spare?: Worker;
   /** Workers being shut down: they still count against maxSources until they exit, and close() waits for them. */
   private retiring = new Set<Promise<void>>();
   private windows = new Map<string, Draft>();
@@ -68,9 +70,14 @@ export class LiveDrafts {
   setModel(path: string | null, streaming: boolean) {
     this.options.modelPath = path ?? '';
     this.options.streaming = streaming;
-    for (const worker of this.workers.values()) if (!this.covers(worker.source)) this.stop(worker);
+    if (this.spare) this.stop(this.spare);
+    for (const worker of this.workers.values()) if (!this.covers(worker.source!)) this.stop(worker);
   }
-  /** Whether the current model can produce live previews (workers load lazily per source). */
+  /** Start one worker ahead of the first source. Failure stays best-effort, like lazy source startup. */
+  warm() {
+    if (this.available() && !this.spare) this.spare = this.spawn(null);
+  }
+  /** Whether the current model can produce live previews. */
   available(): boolean { return !this.closing && Boolean(this.options.modelPath) && this.options.streaming; }
   /** Starts a window's stream. Returns false when no draft will be made (too many live sources, or shutting down). */
   begin(meetingId: string, source: string, window: string, windowStartMs: number): boolean {
@@ -152,6 +159,7 @@ export class LiveDrafts {
   async close() {
     this.closing = true;
     clearInterval(this.watchdog);
+    if (this.spare) this.stop(this.spare);
     for (const worker of [...this.workers.values()]) this.stop(worker);
     await Promise.allSettled([...this.retiring]);
   }
@@ -159,7 +167,7 @@ export class LiveDrafts {
   /** Kills workers that hang on a native call or never finish loading. Runs on a timer, so silence cannot hide a hang. */
   private check() {
     const now = Date.now();
-    for (const worker of [...this.workers.values()]) {
+    for (const worker of [...this.workers.values(), ...(this.spare ? [this.spare] : [])]) {
       const hung = worker.ready && worker.sent.length > 0 && now - worker.sent[0] > this.options.hangMs;
       const stuck = !worker.ready && now - worker.startedAt > this.options.loadMs;
       if (!hung && !stuck) continue;
@@ -170,7 +178,7 @@ export class LiveDrafts {
   }
   /** Its windows keep whatever text they had and show they are behind; finals are unaffected. */
   private fail(worker: Worker) {
-    if (this.workers.get(worker.source) === worker) this.workers.delete(worker.source);
+    this.unassign(worker);
     for (const w of this.windows.values()) if (w.source === worker.source) w.behind = true;
     this.track(worker);
   }
@@ -178,7 +186,17 @@ export class LiveDrafts {
     if (this.closing) return undefined;
     const existing = this.workers.get(source);
     if (existing) { clearTimeout(existing.idle); existing.idle = undefined; return existing; }
-    if (this.workers.size + this.retiring.size >= this.options.maxSources) return undefined;
+    if (this.spare) {
+      const worker = this.spare;
+      this.spare = undefined;
+      worker.source = source;
+      this.workers.set(source, worker);
+      return worker;
+    }
+    return this.spawn(source);
+  }
+  private spawn(source: string | null): Worker | undefined {
+    if (this.workers.size + Number(Boolean(this.spare)) + this.retiring.size >= this.options.maxSources) return undefined;
     const child = fork(this.options.workerScript, [this.options.modelPath], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], serialization: 'advanced' });
     const worker: Worker = { child, modelPath: this.options.modelPath, source, startedAt: Date.now(), ready: false, queued: [], sent: [] };
     let stderr = '';
@@ -191,7 +209,7 @@ export class LiveDrafts {
       }
       if ((message.kind === 'draft' && !message.final) || message.kind === 'ack') worker.sent.shift();
       const draft = message.window ? this.windows.get(message.window) : undefined;
-      if (message.kind === 'draft' && draft && draft.source === source) {
+      if (message.kind === 'draft' && draft && draft.source === worker.source) {
         draft.text = message.text;
         draft.words = timedWords(message.tokens ?? [], draft.windowStartMs);
         if (typeof message.committedMs === 'number') draft.committedUntilMs = Math.max(draft.committedUntilMs, draft.windowStartMs + message.committedMs);
@@ -205,11 +223,11 @@ export class LiveDrafts {
     });
     child.on('error', () => {});
     child.on('exit', code => {
-      if (this.workers.get(source) !== worker) return;
+      if (this.spare !== worker && (worker.source === null || this.workers.get(worker.source) !== worker)) return;
       if (!this.closing) this.options.log?.(`Live draft process exited (${code}). ${stderr.trim()}`.trim());
       this.fail(worker);
     });
-    this.workers.set(source, worker);
+    if (source !== null) this.workers.set(source, worker);
     return worker;
   }
   private send(worker: Worker, window: string, message: unknown) {
@@ -226,9 +244,13 @@ export class LiveDrafts {
     worker.idle = setTimeout(() => this.stop(worker), this.options.idleCloseMs);
     worker.idle.unref();
   }
+  private unassign(worker: Worker) {
+    if (this.spare === worker) this.spare = undefined;
+    if (worker.source !== null && this.workers.get(worker.source) === worker) this.workers.delete(worker.source);
+  }
   /** Asks the worker to exit (killed after 3 s); its slot is released only when it has exited. */
   private stop(worker: Worker) {
-    if (this.workers.get(worker.source) === worker) this.workers.delete(worker.source);
+    this.unassign(worker);
     clearTimeout(worker.idle);
     const child = worker.child;
     if (child.connected) { try { child.send({ kind: 'shutdown' }); } catch { child.kill('SIGKILL'); } } else child.kill('SIGKILL');

@@ -197,6 +197,7 @@ function launch() {
   process.on('SIGTERM', () => { void stop(); });
   process.on('SIGINT', () => { void stop(); });
   app.whenReady().then(async () => {
+    if (config.testing && process.env.HEARALONG_DESKTOP_TEST_HIDE_DOCK === '1') app.dock?.hide();
     app.dock?.setIcon(config.icon);
     app.setAboutPanelOptions({ applicationName: 'HearAlong', applicationVersion: app.getVersion() });
     const ses = session.defaultSession;

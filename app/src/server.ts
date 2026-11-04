@@ -244,6 +244,11 @@ export async function startServer(options: {
     await store.removeSealedFrameFiles();
     drafts = options.drafts !== undefined ? options.drafts
       : new LiveDrafts({ modelPath: config.available ? config.path ?? '' : '', streaming: Boolean(switchable && config.streaming), log: message => console.warn(message) });
+    // Never await startup preflights: the page, recording and model switches remain responsive.
+    if (config.available && switchable) {
+      void switchable.load().catch(error => console.warn(`Speech model warm-up failed; the first block will retry: ${(error as Error).message}`));
+      if (options.drafts === undefined && drafts?.available()) drafts.warm();
+    }
     const liveJobs = jobs;
     // Set once the board exists: a window sealed later (also one recovered after a restart) gets its tail scanned.
     let onLiveChunk = (_meetingId: string) => {};
