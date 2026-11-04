@@ -52,11 +52,17 @@ try {
       page.on('pageerror', error => errors.push(error.message));
       const cards = Array.from({ length: 22 }, (_, i) => card(1001 + i));
       let targetPolls = 0, next = 1023;
+      const pollWaiters = new Set<() => void>();
+      const nextTargetPoll = () => new Promise<void>((resolve, reject) => {
+        const done = () => { clearTimeout(timer); pollWaiters.delete(done); resolve(); };
+        const timer = setTimeout(() => { pollWaiters.delete(done); reject(new Error('A subsequent board poll did not complete within 15 seconds.')); }, 15000);
+        pollWaiters.add(done);
+      });
       await page.route('**/api/meetings/*/board', async route => {
         const response = await route.fetch(); const data = await response.json();
         const target = new URL(route.request().url()).pathname === `/api/meetings/${meeting.id}/board`;
-        if (target) targetPolls++;
         await route.fulfill({ json: { ...data, cards: target ? cards : [] } });
+        if (target) { targetPolls++; for (const done of pollWaiters) done(); }
       });
       await page.goto(`${app.url}/?plans-fixture=plans`);
       const prefix = width < 900 ? 'ctab' : 'tab';
@@ -72,7 +78,7 @@ try {
         await shot(page, `${name}-baseline`);
         assert.equal(await page.locator(`#${badge}`).isVisible(), false, `${name}: existing cards in the first snapshot are not arrivals`);
         const polled = targetPolls;
-        await page.waitForTimeout(3200);
+        await nextTargetPoll();
         assert.ok(targetPolls > polled, `${name}: a subsequent board poll completed`);
         assert.equal(await page.locator(`#${badge}`).isVisible(), false, `${name}: polling must not badge baseline cards`);
         cards.push(card(next++), card(next++));

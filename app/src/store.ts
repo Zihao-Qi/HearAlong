@@ -66,6 +66,9 @@ export class MeetingStore {
   db: DatabaseSync;
   directory: string;
   private deletionGuards = new Map<string, (id: string) => boolean>();
+  private transcriptVersion = 0;
+  /** Bounded to four meetings. Entries are private; callers receive fresh segment objects. */
+  private transcripts = new Map<string, { version: number; external: number; roles: string; all: Segment[]; echoes: Set<string> }>();
   /** Job owners supply their existing in-process busy records, including preparation before persistence. */
   registerDeletionGuard(name: string, busy: (id: string) => boolean) { this.deletionGuards.set(name, busy); }
   deletionBusy(id: string) { return [...this.deletionGuards].filter(([, busy]) => busy(id)).map(([name]) => name); }
@@ -138,6 +141,10 @@ export class MeetingStore {
     this.repairRecordingPaths();
     this.db.exec("UPDATE chunks SET status='queued', error='Recovered an interrupted transcription after restart.' WHERE status='running' AND meetingId NOT IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL)");
     this.backfillSegments();
+    // Connection-local only: no persisted schema/data change. A JS epoch also advances for rolled-back writes.
+    this.db.function('hearalong_transcript_changed', () => { this.transcriptVersion++; return null; });
+    for (const event of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TEMP TRIGGER transcript_${event}
+      AFTER ${event} ON main.segments BEGIN SELECT hearalong_transcript_changed(); END`);
   }
   /** Resolve a recording reference at the disk boundary; empty means removed, not the data folder. */
   resolvePath(path: string): string {
@@ -214,13 +221,28 @@ export class MeetingStore {
     });
   }
   private transcript(meetingId: string) {
-    const all = this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[];
-    return { all, echoes: echoesFor(all, this.speakers(meetingId)) };
+    const speakers = this.speakers(meetingId);
+    // TEMP triggers cover all writes through this connection, including direct SQL and metadata-only edits.
+    // data_version covers commits made by another SQLite connection. Never cache an uncommitted snapshot.
+    const external = (this.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
+    const cached = this.transcripts.get(meetingId);
+    if (!this.db.isTransaction && cached?.version === this.transcriptVersion && cached.external === external && cached.roles === speakers.cacheKey) {
+      this.transcripts.delete(meetingId); this.transcripts.set(meetingId, cached);
+      return cached;
+    }
+    // Normalize SQLite's row objects once; cloning ordinary records is much cheaper on every poll.
+    const all = (this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[]).map(s => ({ ...s }));
+    const result = { version: this.transcriptVersion, external, roles: speakers.cacheKey, all, echoes: echoesFor(all, speakers) };
+    if (!this.db.isTransaction) {
+      this.transcripts.delete(meetingId); this.transcripts.set(meetingId, result);
+      if (this.transcripts.size > 4) this.transcripts.delete(this.transcripts.keys().next().value!);
+    }
+    return result;
   }
   /** Shared transcript read boundary: echoes stay on disk and addressable by id, but no reader gets doubled lines. */
   segments(meetingId: string): Segment[] {
     const { all, echoes } = this.transcript(meetingId);
-    return all.filter(s => !echoes.has(s.id));
+    return all.filter(s => !echoes.has(s.id)).map(s => ({ ...s }));
   }
   /** Pinned evidence in an old action or notes file follows the same rule when used in a new prompt, without rewriting it. */
   withoutEchoes<T>(meetingId: string, lines: Record<string, T>): Record<string, T> {
@@ -611,5 +633,5 @@ export class MeetingStore {
     const who = labelled ? `Speaker labels are capture channels: "Them" is the ${call} (everyone on the call), "Me" is this microphone during the call.` : 'No speaker labels;';
     return `# ${meeting.title.replace(/[\r\n]/g, ' ')}\n\nTranscript — ${note} ${who}${labelled ? ' Not' : ' not'} verified meeting decisions.\n\n${paragraphs.join('\n\n')}\n`;
   }
-  close() { this.db.close(); }
+  close() { this.transcripts.clear(); this.db.close(); }
 }

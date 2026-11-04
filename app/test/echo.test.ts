@@ -8,6 +8,32 @@ import { MeetingStore } from '../src/store.ts';
 import { takeSnapshot, notesInput } from '../src/notes.ts';
 import { captureContext, actionInput } from '../src/actions.ts';
 import { scanWindow, scanInput } from '../src/board.ts';
+import { simpleEchoesFor } from './helpers/echo-reference.ts';
+
+test('interval-indexed echo detection equals the simple rule on 250 randomized fictional meetings', () => {
+  const vocabulary = ['paper', 'lantern', 'cedar', 'copper', 'ribbon', 'reef', 'shell', 'kelp', '12', "can't", 'sky-blue', 'café'];
+  for (let seed = 1; seed <= 250; seed++) {
+    let state = seed;
+    const random = (n: number) => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % n; };
+    const lines: { id: string; source: string; startMs: number; endMs: number; text: string; ord: number }[] = [];
+    for (let i = 0; i < 25; i++) {
+      const startMs = random(60001), endMs = startMs + random(i % 5 === 0 ? 120000 : 5000);
+      const text = Array.from({ length: random(15) }, () => vocabulary[random(vocabulary.length)]).join(' ');
+      lines.push({ id: `remote-${i}`, source: i % 2 ? 'tab:call' : 'app:call', startMs, endMs, text, ord: random(4) });
+    }
+    // A long interval before many short ones defeats a binary search that assumes sorted end times.
+    lines.push({ id: 'long', source: 'app:call', startMs: 0, endMs: 200000, text: 'folded amber workshop', ord: 0 });
+    for (let i = 0; i < 30; i++) {
+      const partner = lines[random(25)], startMs = partner.startMs + random(8001) - 4000;
+      const text = random(2) ? `${partner.text.toUpperCase()}! extra` : Array.from({ length: random(16) }, () => vocabulary[random(vocabulary.length)]).join(' ');
+      lines.push({ id: `mic-${i}`, source: i % 7 ? 'mic:room' : 'file:fixture', startMs, endMs: startMs + random(20000), text, ord: random(4) });
+    }
+    for (let i = lines.length - 1; i > 0; i--) { const j = random(i + 1); [lines[i], lines[j]] = [lines[j], lines[i]]; }
+    const before = structuredClone(lines), roles = rolesFor(lines);
+    assert.deepEqual(echoesFor(lines, roles), simpleEchoesFor(lines, roles), `seed ${seed}`);
+    assert.deepEqual(lines, before, `input mutation at seed ${seed}`);
+  }
+});
 
 const mic = (text: string, startMs = 10000, endMs = 12000) => ({ id: 'mic', source: 'mic:room', text, startMs, endMs });
 const them = (text: string, startMs = 10000, endMs = 12000, id = 'them') => ({ id, source: 'app:call', text, startMs, endMs });
