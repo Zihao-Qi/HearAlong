@@ -25,7 +25,7 @@ export class LocalRecognizer {
     this.modelPath = modelPath;
     this.workerScript = workerScript;
   }
-  /** Explicit preflight for switching; ordinary startup still loads lazily on the first chunk. */
+  /** Shared preflight for startup and switching; a failed load is retried by the first chunk. */
   load(): Promise<void> {
     if (this.closing) return Promise.reject(new Error('Recognizer has stopped.'));
     if (this.ready) return Promise.resolve();

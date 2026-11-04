@@ -657,6 +657,11 @@ export class NotesJobs {
   /** A job is claimed synchronously and released after publication, so this covers preparation too (moves, §8.2). */
   busy(meetingId: string) { return this.running.has(meetingId); }
   file(meetingId: string) { return new NotesFile(join(this.options.directory, 'notes', `${meetingId}.json`)); }
+  /** Saved citations stay inspectable, but new AI calls must not receive their now-hidden echo lines. */
+  async forPrompt(meetingId: string): Promise<NotesRecord | null> {
+    const record = await this.file(meetingId).load();
+    return record ? { ...record, sources: this.options.store.withoutEchoes(meetingId, record.sources) } : null;
+  }
   private jobPath(meetingId: string) { return join(this.options.directory, 'notes', `${meetingId}.job.json`); }
   private async writeJob(meetingId: string, job: JobState) {
     await mkdir(join(this.options.directory, 'notes'), { recursive: true });

@@ -244,6 +244,10 @@ export async function startServer(options: {
     await store.removeSealedFrameFiles();
     drafts = options.drafts !== undefined ? options.drafts
       : new LiveDrafts({ modelPath: config.available ? config.path ?? '' : '', streaming: Boolean(switchable && config.streaming), log: message => console.warn(message) });
+    // Never await the final-model preflight: the page, recording and model switches remain responsive.
+    if (config.available && switchable) {
+      void switchable.load().catch(error => console.warn(`Speech model warm-up failed; the first block will retry: ${(error as Error).message}`));
+    }
     const liveJobs = jobs;
     // Set once the board exists: a window sealed later (also one recovered after a restart) gets its tail scanned.
     let onLiveChunk = (_meetingId: string) => {};
@@ -331,7 +335,7 @@ export async function startServer(options: {
     const notesJobs = startup.notes = new NotesJobs({ store, directory, runner: notesRunner, clock, glossaryFor, onSaved: id => afterNotes(id), cooldowns });
     // Memory proposals use sol with no tools (as notes); "Tell the project…" uses the quick model for a sentence.
     const proposals = startup.proposals = new Proposals(store, memory, { runner: notesRunner, briefRunner: notesRunner, directory, clock,
-      notesFor: id => notesJobs.file(id).load(), projectOf: id => projects.projectOf(id), onChange: id => files.touch(id), cooldowns });
+      notesFor: id => notesJobs.forPrompt(id), projectOf: id => projects.projectOf(id), onChange: id => files.touch(id), cooldowns });
     const tellRunner: NotesRunner | null = cloud && options.heavy !== null ? piNotesRunner(() => ai.require('quick')) : options.notes ?? null;
     // The memory files in each project's repo (§3.3, §6); the quick model reads agents' notes and guesses sources.
     const files: MemoryFiles = startup.files = new MemoryFiles(store, memory, proposals, { directory, clock, project: id => projects.get(id), projects: () => projects.list(),
@@ -390,7 +394,7 @@ export async function startServer(options: {
           await writeFile(join(folder, file), content, { mode: 0o600 });
         }
         for (const other of appStoreRef.meetings().filter(m => m.id !== meetingId && projects.projectOf(m.id) === projectId)) {
-          const record = await notesJobs.file(other.id).load();
+          const record = await notesJobs.forPrompt(other.id);
           if (record) await writeFile(join(folder, 'past-notes', `${new Date(other.createdAt).toISOString().slice(0, 10)}-${other.id.slice(0, 8)}.md`), notesMarkdown(record, false), { mode: 0o600 });
         }
         // Keep every snapshot an action of this meeting still refers to (its citations stay checkable), plus the latest 30.
@@ -636,20 +640,23 @@ export async function startServer(options: {
     };
     /** Speaker-labelled visible lines in the transcript's order, as the snapshot gives them. */
     const labelledLines = (meetingId: string) => {
-      const { labelled, roleOf } = appStore.speakers(meetingId);
-      const visible = appStore.visibleSegments(meetingId, clock());
+      const { speakers: { labelled, roleOf }, segments: visible, heldChunks } = appStore.displaySegments(meetingId,
+        capture.liveSources(meetingId).map(s => s.source).filter(isRemote), clock());
       if (labelled) visible.sort(compareSegments);
       const speaker = (source: string, startMs: number, endMs: number) => { const role = roleOf(source, startMs, endMs); return role ? ROLE_LABEL[role] : null; };
-      return { labelled, roleOf, visible, speaker };
+      return { labelled, roleOf, visible, heldChunks, speaker };
     };
     /** Display-only previews, annotated once for both response shapes. Retirement sees the finals in the same reply. */
-    const displayPreviews = (meetingId: string, visible: ReturnType<typeof appStore.visibleSegments>, speaker: (source: string, startMs: number, endMs: number) => string | null) => {
+    const displayPreviews = (meetingId: string, visible: ReturnType<typeof appStore.visibleSegments>, heldChunks: Set<string>, speaker: (source: string, startMs: number, endMs: number) => string | null) => {
       const annotate = <T extends Draft>(draft: T) => {
         const { meetingId: _meetingId, ...display } = draft;
         return { ...display, speaker: speaker(draft.source, draft.windowStartMs, Math.max(draft.coveredUntilMs, draft.windowStartMs + 1)) };
       };
-      const chunks = drafts ? appStore.chunks(meetingId) : [];
-      const rendered = new Set(visible.map(s => s.chunkId));
+      // A held mic final is not a terminal display outcome yet: keep its sealed grey tail alive.
+      const chunks = drafts ? appStore.chunks(meetingId).map(c => heldChunks.has(c.id) ? { ...c, status: 'running' as const } : c) : [];
+      // Decided hidden echoes, unlike held finals, own their audio interval and retire the preview.
+      const rendered = new Set([...visible.map(s => s.chunkId),
+        ...(!appStore.replay(meetingId) ? chunks.filter(c => c.status === 'completed').map(c => c.id) : [])]);
       const terminal = chunks.filter(c => ownsDisplayInterval(c, rendered));
       return {
         // A final may win even while sealWindow is finishing asynchronous frame cleanup, before the old stream is frozen.
@@ -669,10 +676,10 @@ export async function startServer(options: {
       const now = recordingNow();
       if (!now) return { recording: null, mini: { native: liveView.native(), state: liveView.miniState() } };
       const { meetingId } = now;
-      const { labelled, roleOf, visible, speaker } = labelledLines(meetingId);
+      const { labelled, roleOf, visible, heldChunks, speaker } = labelledLines(meetingId);
       // The whole meeting's paragraphs, grouped as the transcript groups them; the mini view scrolls back through them.
       const lines = visible.map(s => ({ id: s.id, source: s.source, startMs: s.startMs, endMs: s.endMs, revision: s.revision, text: s.text, ...(labelled ? { speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
-      const previews = displayPreviews(meetingId, visible, speaker);
+      const previews = displayPreviews(meetingId, visible, heldChunks, speaker);
       const { paragraphs: meeting, placements } = miniLog(lines, previews.drafts, previews.pending);
       // Names the first n paragraphs as they are now, in this recording: any change among them (a correction, a line hidden)
       // changes it, and so does a new recording, even of the same meeting (a page that held the last one starts afresh).
@@ -1139,9 +1146,14 @@ export async function startServer(options: {
           try { locale = Intl.getCanonicalLocales(req.headers['accept-language']?.split(',')[0].split(';')[0] ?? [])[0]; } catch { /* use the Mac's locale */ }
           res.end(plain ? appStore.plainText(meetingId) : appStore.markdown(meetingId, raw ? 'raw' : 'corrected', locale)); return;
         }
+        if (req.method === 'GET' && action === 'segment-location') {
+          const id = appStore.citationSegment(meetingId, url.searchParams.get('id') ?? '');
+          if (!id) throw new HttpError(404, 'Line not found.');
+          send(res, 200, { id }); return;
+        }
         if (req.method === 'GET' && action === 'segments') {
           // Only the transcript list is a delta; all live state still travels on every poll.
-          const { labelled, visible, speaker } = labelledLines(meetingId);
+          const { labelled, visible, heldChunks, speaker } = labelledLines(meetingId);
           const segments = visible.map(s => ({ id: s.id, startMs: s.startMs, endMs: s.endMs, text: s.text, originalText: s.originalText, edits: JSON.parse(s.edits),
             revision: s.revision, timing: s.timing, ...(labelled ? { source: s.source, speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
           const delta = segmentsTag.delta(meetingId, segments, url.searchParams.get('have'));
@@ -1155,7 +1167,7 @@ export async function startServer(options: {
             captureGaps: appStore.captureGaps(meetingId),
             replay: replay ? { speed: replay.speed, positionMs: appStore.replayPositionMs(replay, now), durationMs: replay.durationMs, baseMs: replay.baseMs } : null,
             // Active recognizers and sealed display previews have separate lifetimes.
-            ...displayPreviews(meetingId, visible, speaker),
+            ...displayPreviews(meetingId, visible, heldChunks, speaker),
             draftsAvailable: drafts?.available() ?? false,
             // Sources recording now, and whether each has been quiet for a minute (problem notices in the app and the mini view).
             sources: capture.liveSources(meetingId),

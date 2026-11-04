@@ -233,6 +233,26 @@ test('action jobs: two at a time, merged duplicates, bounded queue, cancel, chec
   } finally { await f.close(); }
 });
 
+test('actions and retries retain selected microphone evidence even after a call partner makes it an echo', async () => {
+  const f = await fixture(), { runner, calls } = scripted();
+  const jobs = new ActionJobs({ store: f.store, directory: f.directory, runner, clock: Date.now, glossaryFor: async () => null, rootsFor: () => [] });
+  try {
+    const first = await jobs.submit(f.meeting.id, { action: 'explain', selection: { text: LINES[0], segmentIds: [f.segments[0].id] } });
+    await until(() => calls.length === 1);
+    const call = await f.store.addPcm(f.meeting.id, 'tab:call', 0, 0, 16000, Buffer.alloc(64000));
+    f.store.completeChunk(call.id, recognition(LINES[0]));
+    assert.equal(f.store.segments(f.meeting.id).some(s => s.id === f.segments[0].id), false);
+    const answer = () => result('The selected sentence asks about brass buttons [1].' + META([{ id: 1, type: 'transcript', time: '00:00', quote: LINES[0] }]));
+    calls[0].release(answer()); await until(() => jobs.get(first.job.id)!.state === 'done');
+    const retry = await jobs.submit(f.meeting.id, { retryOf: first.job.id });
+    await until(() => calls.length === 2);
+    assert.match(calls[1].input, />> \[00:00\] How many brass buttons/);
+    assert.deepEqual(retry.job.context.lines, first.job.context.lines);
+    calls[1].release(answer()); await until(() => jobs.get(retry.job.id)!.state === 'done');
+    assert.equal(jobs.get(retry.job.id)!.result!.checks[0].status, 'quote found');
+  } finally { await jobs.close(); await f.close(); }
+});
+
 test('retry makes a new job, follow-ups need a finished parent, restarts never rerun anything', async () => {
   const f = await fixture();
   try {

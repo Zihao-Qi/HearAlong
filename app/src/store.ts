@@ -7,9 +7,10 @@ import { CHUNK_SECONDS } from './audio.ts';
 import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
 import { buildSegments, type Timing } from './segments.ts';
 import type { Recognition } from './recognizer.ts';
-import { ROLE_LABEL, compareSegments, rolesFor, type Role, type Speakers } from './speakers.ts';
+import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Role, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
+import { heldMicrophoneFinals } from './live-finals.ts';
 import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/capture-gaps.js';
 
 export type Mode = 'periodic' | 'manual' | 'questions';
@@ -28,7 +29,7 @@ export type Chunk = {
   decodeStart: number; startMs: number; seconds: number; sampleRate: number | null;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   text: string; error: string | null; metrics: string | null; hash: string;
-  attempts: number; retryAt: number | null;
+  attempts: number; retryAt: number | null; completedAt?: number | null;
 };
 
 /** A saved 1 s piece of live audio (16 kHz mono f32). It belongs to no window until a seal groups it into a chunk. */
@@ -66,6 +67,9 @@ export class MeetingStore {
   db: DatabaseSync;
   directory: string;
   private deletionGuards = new Map<string, (id: string) => boolean>();
+  private transcriptVersion = 0;
+  /** Bounded to four meetings. Entries are private; callers receive fresh segment objects. */
+  private transcripts = new Map<string, { version: number; external: number; roles: string; all: Segment[]; echoes: Set<string> }>();
   /** Job owners supply their existing in-process busy records, including preparation before persistence. */
   registerDeletionGuard(name: string, busy: (id: string) => boolean) { this.deletionGuards.set(name, busy); }
   deletionBusy(id: string) { return [...this.deletionGuards].filter(([, busy]) => busy(id)).map(([name]) => name); }
@@ -138,6 +142,10 @@ export class MeetingStore {
     this.repairRecordingPaths();
     this.db.exec("UPDATE chunks SET status='queued', error='Recovered an interrupted transcription after restart.' WHERE status='running' AND meetingId NOT IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL)");
     this.backfillSegments();
+    // Connection-local only: no persisted schema/data change. A JS epoch also advances for rolled-back writes.
+    this.db.function('hearalong_transcript_changed', () => { this.transcriptVersion++; return null; });
+    for (const event of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TEMP TRIGGER transcript_${event}
+      AFTER ${event} ON main.segments BEGIN SELECT hearalong_transcript_changed(); END`);
   }
   /** Resolve a recording reference at the disk boundary; empty means removed, not the data folder. */
   resolvePath(path: string): string {
@@ -213,9 +221,55 @@ export class MeetingStore {
       if (!existing) this.publishSegments(chunk, result.text, result);
     });
   }
-  segments(meetingId: string): Segment[] {
-    return this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[];
+  private transcript(meetingId: string, speakers = this.speakers(meetingId)) {
+    // TEMP triggers cover all writes through this connection, including direct SQL and metadata-only edits.
+    // data_version covers commits made by another SQLite connection. Never cache an uncommitted snapshot.
+    const external = (this.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
+    const cached = this.transcripts.get(meetingId);
+    if (!this.db.isTransaction && cached?.version === this.transcriptVersion && cached.external === external && cached.roles === speakers.cacheKey) {
+      this.transcripts.delete(meetingId); this.transcripts.set(meetingId, cached);
+      return cached;
+    }
+    // Normalize SQLite's row objects once; cloning ordinary records is much cheaper on every poll.
+    const all = (this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[]).map(s => ({ ...s }));
+    const result = { version: this.transcriptVersion, external, roles: speakers.cacheKey, all, echoes: echoesFor(all, speakers) };
+    if (!this.db.isTransaction) {
+      this.transcripts.delete(meetingId); this.transcripts.set(meetingId, result);
+      if (this.transcripts.size > 4) this.transcripts.delete(this.transcripts.keys().next().value!);
+    }
+    return result;
   }
+  /** Shared transcript read boundary: echoes stay on disk and addressable by id, but no reader gets doubled lines. */
+  segments(meetingId: string): Segment[] {
+    const { all, echoes } = this.transcript(meetingId);
+    return all.filter(s => !echoes.has(s.id)).map(s => ({ ...s }));
+  }
+  /** Main transcript and mini share this display-only hold; exports/AI keep reading settled segments(). */
+  displaySegments(meetingId: string, callSources: string[], now: number) {
+    const speakers = this.speakers(meetingId);
+    if (this.replay(meetingId)) return { speakers, segments: this.visibleSegments(meetingId, now), heldChunks: new Set<string>() };
+    const { all, echoes } = this.transcript(meetingId, speakers);
+    const held = callSources.length ? heldMicrophoneFinals(all, this.chunks(meetingId), callSources, speakers, now) : new Set<string>();
+    return { speakers, segments: all.filter(s => !held.has(s.id) && !echoes.has(s.id)).map(s => ({ ...s })),
+      heldChunks: new Set(all.filter(s => held.has(s.id)).map(s => s.chunkId)) };
+  }
+  /** Resolve a hidden echo citation to an actual surviving span, never an unrelated nearby paragraph. */
+  citationSegment(meetingId: string, id: string): string | undefined {
+    const { all, echoes } = this.transcript(meetingId);
+    const cited = all.find(s => s.id === id);
+    if (!cited) return undefined;
+    if (!echoes.has(id)) return id;
+    const speakers = this.speakers(meetingId);
+    const overlap = (s: Segment) => Math.min(s.endMs, cited.endMs) - Math.max(s.startMs, cited.startMs);
+    return all.filter(s => !echoes.has(s.id) && speakers.roleOf(s.source, s.startMs, s.endMs) === 'them' && overlap(s) > 0)
+      .sort((a, b) => overlap(b) - overlap(a) || compareSegments(a, b))[0]?.id;
+  }
+  /** Pinned evidence in an old notes file follows the same rule when used in a new prompt, without rewriting it. */
+  withoutEchoes<T>(meetingId: string, lines: Record<string, T>): Record<string, T> {
+    const { echoes } = this.transcript(meetingId);
+    return Object.fromEntries(Object.entries(lines).filter(([id]) => !echoes.has(id)));
+  }
+  /** Raw id lookup preserves old citations, even when their line is now hidden. */
   segment(id: string): Segment | undefined {
     return this.db.prepare('SELECT * FROM segments WHERE id=?').get(id) as Segment | undefined;
   }
@@ -599,5 +653,5 @@ export class MeetingStore {
     const who = labelled ? `Speaker labels are capture channels: "Them" is the ${call} (everyone on the call), "Me" is this microphone during the call.` : 'No speaker labels;';
     return `# ${meeting.title.replace(/[\r\n]/g, ' ')}\n\nTranscript — ${note} ${who}${labelled ? ' Not' : ' not'} verified meeting decisions.\n\n${paragraphs.join('\n\n')}\n`;
   }
-  close() { this.db.close(); }
+  close() { this.transcripts.clear(); this.db.close(); }
 }

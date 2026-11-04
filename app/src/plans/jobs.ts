@@ -310,7 +310,7 @@ export class PlanJobs {
       const o = this.options;
       const view = join(ctx.cwd, 'pdf-text');
       try {
-        const notes = await o.notes.file(meetingId).load();
+        const notes = await o.notes.forPrompt(meetingId);
         if (!notes) throw new Error('The meeting has no notes to plan from.');
         const progress = planProgress(ctx.job.startedAt ?? o.clock(), notes.notes.openQuestions.length);
         this.progress.set(ctx.job.id, progress);

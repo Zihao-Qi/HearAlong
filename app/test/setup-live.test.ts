@@ -48,7 +48,7 @@ async function api(t: TestContext, setup: SetupOptions = {}, prepare?: (path: st
   return { app, drafts, path, request, get, post, use };
 }
 
-test('switch waits between chunks, reuses preflight worker, and startup does not preflight', async t => {
+test('switch waits between chunks and reuses preflight worker; construction alone stays lazy', async t => {
   const path = await directory(t), old = join(path, 'old.gguf'), next = join(path, 'next.gguf');
   const r = new SwitchableRecognizer(old, { workerScript }); t.after(() => r.close());
   assert.deepEqual(await pids(old), []);
@@ -63,6 +63,29 @@ test('switch waits between chunks, reuses preflight worker, and startup does not
   assert.equal(await change, true); assert.match((await second).text, /^next.gguf:/);
   assert.equal((await pids(next)).length, 1, 'test-loaded worker is reused');
   assert.ok((await pids(old)).every(gone));
+});
+
+test('startup load shares its worker with the first chunk and a failed load can retry', async t => {
+  const path = await directory(t), good = join(path, 'old.gguf'), bad = join(path, 'broken.gguf');
+  const ready = new SwitchableRecognizer(good, { workerScript }), broken = new SwitchableRecognizer(bad, { workerScript });
+  t.after(async () => { await ready.close(); await broken.close(); });
+  await ready.load();
+  await ready.transcribe(chunk());
+  assert.equal((await pids(good)).length, 1);
+  await assert.rejects(broken.load(), /STT process exited/);
+  await assert.rejects(broken.transcribe(chunk()), /STT process exited/);
+  assert.equal((await pids(bad)).length, 2, 'the first chunk retries after a failed warm-up');
+});
+
+test('switching and close do not wait for a stuck startup load', async t => {
+  const path = await directory(t), never = join(path, 'never.gguf'), next = join(path, 'next.gguf');
+  const r = new SwitchableRecognizer(never, { workerScript }); t.after(() => r.close());
+  const warming = r.load();
+  await until(async () => (await pids(never)).length === 1);
+  assert.equal(await r.switchTo(next), true);
+  await warming;
+  assert.equal(r.modelPath, next);
+  assert.ok((await pids(never)).every(gone));
 });
 
 for (const name of ['broken.gguf', 'never.gguf']) test(`failed preflight ${name} preserves old worker and kills test child`, async t => {
