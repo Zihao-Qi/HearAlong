@@ -31,6 +31,7 @@ import { LiveCapture } from './live.ts';
 import { captureDiscontinuities } from './capture-gaps.ts';
 import { LiveView, type MiniAction } from './live-view.ts';
 import { ROLE_LABEL, compareSegments, isRemote } from './speakers.ts';
+import { filterPreviewEchoes } from './preview-echo.ts';
 import { AppCaptureControl } from './app-capture.ts';
 import { SegmentsTag } from './segments-tag.ts';
 import { searchRoots } from './materials.ts';
@@ -658,7 +659,7 @@ export async function startServer(options: {
       const rendered = new Set([...visible.map(s => s.chunkId),
         ...(!appStore.replay(meetingId) ? chunks.filter(c => c.status === 'completed').map(c => c.id) : [])]);
       const terminal = chunks.filter(c => ownsDisplayInterval(c, rendered));
-      return {
+      const display = {
         // A final may win even while sealWindow is finishing asynchronous frame cleanup, before the old stream is frozen.
         drafts: (drafts?.drafts(meetingId) ?? []).map(d => {
           const words = d.words.filter(w => !terminal.some(c => c.source === d.source && midpoint(w) >= c.startMs && midpoint(w) < c.startMs + c.seconds * 1000));
@@ -666,6 +667,12 @@ export async function startServer(options: {
         }),
         pending: (drafts?.pending(meetingId, chunks, rendered) ?? []).map(annotate),
       };
+      const callSources = capture.liveSources(meetingId).map(s => s.source).filter(isRemote);
+      if (!callSources.length) return display;
+      const recording = capture.recordingNow();
+      const clockMs = recording?.meetingId === meetingId ? recording.clockMs : appStore.audioEndMs(meetingId);
+      return filterPreviewEchoes(display.drafts, display.pending, callSources,
+        appStore.recentCallWords(meetingId, new Set(callSources), clockMs - 10000), clockMs);
     };
     /**
      * The recording now, for the mini view. `have` is the `paragraphsTag` of the page's last reply: the paragraphs it already holds

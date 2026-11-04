@@ -5,7 +5,8 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { dataRelativeRecordingPath, repairedRecordingPath } from './recording-paths.ts';
 import { CHUNK_SECONDS } from './audio.ts';
 import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
-import { buildSegments, type Timing } from './segments.ts';
+import { buildSegments, wordSegments, type Timing } from './segments.ts';
+import { echoWords, type EchoWord } from './echo-words.ts';
 import type { Recognition } from './recognizer.ts';
 import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Role, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
@@ -69,7 +70,7 @@ export class MeetingStore {
   private deletionGuards = new Map<string, (id: string) => boolean>();
   private transcriptVersion = 0;
   /** Bounded to four meetings. Entries are private; callers receive fresh segment objects. */
-  private transcripts = new Map<string, { version: number; external: number; roles: string; all: Segment[]; echoes: Set<string> }>();
+  private transcripts = new Map<string, { version: number; external: number; roles: string; capture: string; all: Segment[]; echoes: Set<string>; wordsFor: (segment: Segment) => EchoWord[] | undefined }>();
   /** Job owners supply their existing in-process busy records, including preparation before persistence. */
   registerDeletionGuard(name: string, busy: (id: string) => boolean) { this.deletionGuards.set(name, busy); }
   deletionBusy(id: string) { return [...this.deletionGuards].filter(([, busy]) => busy(id)).map(([name]) => name); }
@@ -146,6 +147,8 @@ export class MeetingStore {
     this.db.function('hearalong_transcript_changed', () => { this.transcriptVersion++; return null; });
     for (const event of ['INSERT', 'UPDATE', 'DELETE']) this.db.exec(`CREATE TEMP TRIGGER transcript_${event}
       AFTER ${event} ON main.segments BEGIN SELECT hearalong_transcript_changed(); END`);
+    this.db.exec(`CREATE TEMP TRIGGER transcript_chunk_words AFTER UPDATE OF metrics,startMs,seconds,source ON main.chunks
+      BEGIN SELECT hearalong_transcript_changed(); END`);
   }
   /** Resolve a recording reference at the disk boundary; empty means removed, not the data folder. */
   resolvePath(path: string): string {
@@ -226,13 +229,41 @@ export class MeetingStore {
     // data_version covers commits made by another SQLite connection. Never cache an uncommitted snapshot.
     const external = (this.db.prepare('PRAGMA data_version').get() as { data_version: number }).data_version;
     const cached = this.transcripts.get(meetingId);
-    if (!this.db.isTransaction && cached?.version === this.transcriptVersion && cached.external === external && cached.roles === speakers.cacheKey) {
+    // Capture edges now affect matching. Clip advancing ends to known transcript bounds so ordinary new frames still hit.
+    const captureKey = (all: Segment[]) => {
+      let first = Infinity, last = -Infinity;
+      for (const s of all) { first = Math.min(first, s.startMs); last = Math.max(last, s.endMs); }
+      return JSON.stringify(speakers.tabs.map(t => [Math.max(first, t.startMs), Math.min(last, t.endMs)]));
+    };
+    if (!this.db.isTransaction && cached?.version === this.transcriptVersion && cached.external === external
+      && cached.roles === speakers.cacheKey && cached.capture === captureKey(cached.all)) {
       this.transcripts.delete(meetingId); this.transcripts.set(meetingId, cached);
       return cached;
     }
     // Normalize SQLite's row objects once; cloning ordinary records is much cheaper on every poll.
     const all = (this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[]).map(s => ({ ...s }));
-    const result = { version: this.transcriptVersion, external, roles: speakers.cacheKey, all, echoes: echoesFor(all, speakers) };
+    const byChunk = new Map<string, ReturnType<typeof wordSegments>>();
+    const wordsFor = (segment: Segment): EchoWord[] | undefined => {
+      if (segment.timing !== 'word') return undefined;
+      let parts = byChunk.get(segment.chunkId);
+      if (!parts) {
+        const chunk = this.chunk(segment.chunkId);
+        if (!chunk) return undefined;
+        let metrics: Partial<Recognition> = {};
+        try { metrics = chunk.metrics ? JSON.parse(chunk.metrics) : {}; } catch { /* Legacy malformed metrics: use whole text. */ }
+        try {
+          parts = wordSegments(chunk.seconds * 1000, Array.isArray(metrics.words) ? metrics.words : undefined).map(p => ({ ...p,
+            words: p.words?.map(w => ({ ...w, t0Ms: w.t0Ms + chunk.startMs, t1Ms: w.t1Ms + chunk.startMs })) }));
+        } catch { parts = []; } // Invalid legacy word records cannot make a transcript unreadable.
+        byChunk.set(chunk.id, parts);
+      }
+      const part = parts[segment.ord];
+      if (!part?.words || echoWords(part.text).join(' ') !== echoWords(segment.text).join(' ')
+        || Math.abs(part.words[0].t0Ms - segment.startMs) > 1 || Math.abs(part.words.at(-1)!.t1Ms - segment.endMs) > 1) return undefined;
+      return part.words.map(w => ({ text: w.text, startMs: w.t0Ms, endMs: w.t1Ms }));
+    };
+    const result = { version: this.transcriptVersion, external, roles: speakers.cacheKey, capture: captureKey(all), all,
+      echoes: echoesFor(all, speakers, s => wordsFor(s as Segment)), wordsFor };
     if (!this.db.isTransaction) {
       this.transcripts.delete(meetingId); this.transcripts.set(meetingId, result);
       if (this.transcripts.size > 4) this.transcripts.delete(this.transcripts.keys().next().value!);
@@ -243,6 +274,12 @@ export class MeetingStore {
   segments(meetingId: string): Segment[] {
     const { all, echoes } = this.transcript(meetingId);
     return all.filter(s => !echoes.has(s.id)).map(s => ({ ...s }));
+  }
+  /** Recent call finals for live preview comparison, using real word times where available. */
+  recentCallWords(meetingId: string, sources: Set<string>, afterMs: number): EchoWord[] {
+    const snapshot = this.transcript(meetingId);
+    return snapshot.all.filter(s => sources.has(s.source) && s.endMs >= afterMs).sort(compareSegments)
+      .flatMap(s => snapshot.wordsFor(s) ?? [{ text: s.text, startMs: s.startMs, endMs: s.endMs }]).filter(w => w.endMs >= afterMs);
   }
   /** Main transcript and mini share this display-only hold; exports/AI keep reading settled segments(). */
   displaySegments(meetingId: string, callSources: string[], now: number) {

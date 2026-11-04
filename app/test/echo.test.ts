@@ -15,7 +15,7 @@ test('interval-indexed echo detection equals the simple rule on 250 randomized f
   for (let seed = 1; seed <= 250; seed++) {
     let state = seed;
     const random = (n: number) => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state % n; };
-    const lines: { id: string; source: string; startMs: number; endMs: number; text: string; ord: number }[] = [];
+    const lines: { id: string; source: string; startMs: number; endMs: number; text: string; ord: number; words?: { text: string; startMs: number; endMs: number }[] }[] = [];
     for (let i = 0; i < 25; i++) {
       const startMs = random(60001), endMs = startMs + random(i % 5 === 0 ? 120000 : 5000);
       const text = Array.from({ length: random(15) }, () => vocabulary[random(vocabulary.length)]).join(' ');
@@ -29,7 +29,14 @@ test('interval-indexed echo detection equals the simple rule on 250 randomized f
       lines.push({ id: `mic-${i}`, source: i % 7 ? 'mic:room' : 'file:fixture', startMs, endMs: startMs + random(20000), text, ord: random(4) });
     }
     for (let i = lines.length - 1; i > 0; i--) { const j = random(i + 1); [lines[i], lines[j]] = [lines[j], lines[i]]; }
-    const before = structuredClone(lines), roles = rolesFor(lines);
+    for (const line of lines) if (line.source.startsWith('mic:') && random(2)) {
+      const pieces = line.text.split(/\s+/).filter(Boolean), step = (line.endMs - line.startMs) / Math.max(1, pieces.length);
+      line.words = pieces.map((text, i) => ({ text, startMs: line.startMs + i * step, endMs: line.startMs + (i + 1) * step }));
+    }
+    const before = structuredClone(lines), roles = seed % 2 ? rolesFor(lines) : rolesFor([
+      { source: 'mic:room', startMs: -10000, endMs: 240000 }, { source: 'app:call', startMs: 20000, endMs: 60000 },
+      { source: 'tab:call', startMs: 80000, endMs: 100000 },
+    ]);
     assert.deepEqual(echoesFor(lines, roles), simpleEchoesFor(lines, roles), `seed ${seed}`);
     assert.deepEqual(lines, before, `input mutation at seed ${seed}`);
   }

@@ -86,6 +86,23 @@ try {
   await page.screenshot({ path: join(out, 'main-held.png') });
   await mini.screenshot({ path: join(out, 'mini-held.png') });
   results.push('main and mini hold mic finals in the shared server path, retaining their grey pending tail');
+  // The same live endpoint must suppress duplicate grey words, without consuming the stored pending hypothesis.
+  for (const n of [2, 3, 4]) { const pcm = new Float32Array(16000); pcm[0] = n; drafts.feed(`${call}:0`, pcm); }
+  await until(() => drafts.drafts(meeting.id).some(d => d.source === call && d.text === 'w0 w2 w3 w4'));
+  now += 4000;
+  const suppressed = await (await fetch(`${app.url}/api/meetings/${meeting.id}/segments`, { headers })).json();
+  assert.equal(suppressed.pending.some((p: any) => p.source === mic), false);
+  assert.equal(suppressed.drafts.some((p: any) => p.source === mic && (p.text || p.words.length)), false);
+  // Active sources retain their metadata even when their words are suppressed; the page must not infer a stalled mic.
+  const miniSuppressed = (await (await fetch(`${app.url}/api/live`, { headers })).json()).recording;
+  assert.equal(miniSuppressed.drafts.find((d: any) => d.source === mic).text, '');
+  assert.match(miniSuppressed.drafts.find((d: any) => d.source === call).text, /w2 w3 w4/);
+  drafts.drop(`${call}:0`); drafts.begin(meeting.id, call, 'different-call-preview', 0);
+  drafts.feed('different-call-preview', new Float32Array(16000));
+  await until(() => drafts.drafts(meeting.id).some(d => d.source === call && d.text === 'w0'));
+  const restored = await (await fetch(`${app.url}/api/meetings/${meeting.id}/segments`, { headers })).json();
+  assert.ok(restored.pending.some((p: any) => p.source === mic && p.text === 'w2 w3 w4'));
+  results.push('echoed grey mic draft/pending words are suppressed for both endpoints, then restored unchanged when different call words arrive');
 
   const remote = await app.store.addPcm(meeting.id, call, 100, 0, 16000, Buffer.alloc(4 * 16000 * 26));
   app.store.completeChunk(remote.id, { text: `${text[0]} ${text[2]}`, words: [],

@@ -2,7 +2,7 @@
 import type { Word } from './recovery.ts';
 
 export type Timing = 'word' | 'segment' | 'chunk';
-export type DraftSegment = { startMs: number; endMs: number; text: string; timing: Timing };
+export type DraftSegment = { startMs: number; endMs: number; text: string; timing: Timing; words?: Timed[] };
 type Timed = { text: string; t0Ms: number; t1Ms: number };
 
 const PAUSE_MS = 700; // Maximum inter-word pause for a grouped sentence.
@@ -30,12 +30,12 @@ function usable(items: Timed[] | undefined, windowMs: number): Timed[] | null {
   return out;
 }
 
-function sentences(words: Timed[]): DraftSegment[] {
+function sentences(words: Timed[], keepWords = false): DraftSegment[] {
   const out: DraftSegment[] = [];
   let current: Timed[] = [];
   const flush = () => {
     if (!current.length) return;
-    out.push({ startMs: current[0].t0Ms, endMs: current.at(-1)!.t1Ms, text: current.map(w => w.text).join(' '), timing: 'word' });
+    out.push({ startMs: current[0].t0Ms, endMs: current.at(-1)!.t1Ms, text: current.map(w => w.text).join(' '), timing: 'word', ...(keepWords ? { words: current } : {}) });
     current = [];
   };
   words.forEach((word, index) => {
@@ -49,6 +49,12 @@ function sentences(words: Timed[]): DraftSegment[] {
   });
   flush(); // The chunk tail is always published, however short.
   return out;
+}
+
+/** Reconstruct the original per-segment words from chunk.metrics.words, with the same clamping/grouping as publication. */
+export function wordSegments(windowMs: number, words: Word[] | undefined): DraftSegment[] {
+  const valid = usable(words, windowMs);
+  return valid ? sentences(valid, true) : [];
 }
 
 /**
