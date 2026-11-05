@@ -1,0 +1,13 @@
+Abseil C++ (included in @ennuicastr/webrtcaec3.js 0.3.0)
+Copyright 2017-2023 The Abseil Authors.
+
+This product includes Abseil software, licensed under the Apache License,
+Version 2.0. See LICENSE-Abseil.txt for the complete license and
+LICENSE-webrtcaec3.txt for the compiled library's attribution notices.
+
+Upstream: https://github.com/abseil/abseil-cpp
+Source revision used by webrtcaec3.js:
+fb3621f4f897824c0dbe0615fa94543df6192f30
+
+This notice records the attribution supplied by the compiled package; it does
+not imply endorsement by the Abseil Authors.

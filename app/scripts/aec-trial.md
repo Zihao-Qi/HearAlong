@@ -1,6 +1,8 @@
 # Offline echo-cancellation trial
 
-No product integration. `aec-trial.ts` reads two **16 kHz mono little-endian
+This documents the original offline experiment. Live product integration now
+uses the same pinned package in a worker; see `../ECHO_CANCELLATION.md`. The trial
+tool itself remains standalone, with no product integration. `aec-trial.ts` reads two **16 kHz mono little-endian
 float32** recordings, writes a cleaned microphone file and diagnostics, and can
 run the existing isolated speech worker on both versions. No upload, playback,
 device access, server, or meeting database. Inputs are read-only.
@@ -118,7 +120,8 @@ the user's recording or real speaker/microphone paths.
 
 ## Dependency assessment
 
-Exact devDependency: `@ennuicastr/webrtcaec3.js` **0.3.0**, published 2024-01-02,
+Exact dependency (originally trial-only devDependency, now a production dependency
+for live AEC): `@ennuicastr/webrtcaec3.js` **0.3.0**, published 2024-01-02,
 well over two weeks before this trial. It loads packaged WASM directly in Node
 22.22.2; no native compilation or network fetch is needed at runtime. AEC runs
 synchronously in interleaved 10 ms render/capture frames, at 48 kHz internally
