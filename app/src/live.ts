@@ -151,7 +151,11 @@ export class LiveCapture {
   /** The browser stopped capture after `lastSequence`: everything held is sealed, and later frames are refused. Idempotent. */
   end(meetingId: string, source: string, lastSequence: number | null): Promise<{ sealed: number }> {
     const state = this.state(meetingId, source);
+    // A normal seal may ALREADY hold this source's queue waiting for AEC. Wake it now;
+    // validation and durable end-state mutations still run in order on the source chain.
+    const checkpoint = this.echo?.flush(source);
     return this.run(state, async () => {
+      await checkpoint;
       const saved = this.store.lastFrameSequence(meetingId, source);
       if (lastSequence !== null && (saved ?? -1) < lastSequence) throw new CaptureConflict(`Frames up to ${lastSequence} have not all arrived.`);
       state.ended = true;
@@ -168,7 +172,9 @@ export class LiveCapture {
   /** Loss detection may seal audio, but cannot end a source that became live while sealing or waiting in its queue. */
   endIfInactive(meetingId: string, source: string, inactive: () => boolean): Promise<boolean> {
     const state = this.state(meetingId, source);
+    const checkpoint = inactive() ? this.echo?.flush(source) : undefined;
     return this.run(state, async () => {
+      await checkpoint;
       if (!inactive()) return false;
       await this.sealIfDue(state, source, true);
       // Cross a full I/O turn, even when sealing resumes in a poll/check callback with nothing held.
@@ -189,7 +195,9 @@ export class LiveCapture {
   }
   private abandon(meetingId: string, source: string, recoveringOnly: boolean) {
     const state = this.state(meetingId, source);
+    const checkpoint = this.echo?.flush(source);
     return this.run(state, async () => {
+      await checkpoint;
       const eligible = () => this.store.openRecordings().some(s => s.meetingId === meetingId && s.source === source && (!recoveringOnly || s.state === 'recovering'));
       if (!eligible()) return;
       if (source.startsWith('app:')) state.ended = true;

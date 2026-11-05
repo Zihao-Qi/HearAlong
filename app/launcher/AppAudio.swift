@@ -87,22 +87,37 @@ func halString(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector)
     return value?.takeRetainedValue() as String? ?? ""
 }
 
-/** Host timestamps exclude sleep on this platform; continuous time includes it. Record both in
- * each callback, so a later drain neither bakes in queue delay nor loses a sleep interval.
+/** Framing-thread epoch history, never mutated in IO. A delayed pre-sleep input uses
+ * its capture epoch, not the sleep/UTC offset at delivery. Recalibration follows UTC changes.
  */
 struct TapHostClock {
-    let hostTime: UInt64
-    let continuousTime: UInt64
-    let wallMs: Double
+    private struct Epoch { let host: UInt64; let continuous: UInt64; let wall: Double }
+    private var epochs: [Epoch]
+    private var calibrated: UInt64
     private let msPerTick: Double
     init(hostTime: UInt64 = mach_absolute_time(), wallMs: Double = Date().timeIntervalSince1970 * 1000, continuousTime: UInt64 = mach_continuous_time()) {
         var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
-        self.hostTime = hostTime; self.wallMs = wallMs; self.continuousTime = continuousTime
         msPerTick = Double(info.numer) / Double(info.denom) / 1_000_000
+        epochs = [Epoch(host: hostTime, continuous: continuousTime, wall: wallMs)]; calibrated = continuousTime
     }
     private func difference(_ a: UInt64, _ b: UInt64) -> Double { a >= b ? Double(a - b) : -Double(b - a) }
-    func wall(at host: UInt64, observedHost: UInt64, continuous: UInt64) -> Double {
-        wallMs + (difference(continuous, continuousTime) + difference(host, observedHost)) * msPerTick
+    private func epoch(at host: UInt64) -> Epoch { epochs.last(where: { $0.host <= host }) ?? epochs[0] }
+    private mutating func remember(_ epoch: Epoch) {
+        epochs.removeAll { $0.host == epoch.host }; epochs.append(epoch); epochs.sort { $0.host < $1.host }
+        if epochs.count > 128 { epochs.removeFirst(epochs.count - 128) }
+    }
+    mutating func recalibrate(host: UInt64 = mach_absolute_time(), continuous: UInt64 = mach_continuous_time(), wallMs: Double = Date().timeIntervalSince1970 * 1000) {
+        guard difference(continuous, calibrated) * msPerTick >= 1000 else { return }
+        remember(Epoch(host: host, continuous: continuous, wall: wallMs)); calibrated = continuous
+    }
+    mutating func wall(at host: UInt64, observedHost: UInt64, continuous: UInt64) -> Double {
+        let observed = epoch(at: observedHost)
+        let sleep = (difference(continuous, observed.continuous) - difference(observedHost, observed.host)) * msPerTick
+        if abs(sleep) > 2 {
+            remember(Epoch(host: observedHost, continuous: continuous, wall: observed.wall + difference(continuous, observed.continuous) * msPerTick))
+        }
+        let capture = epoch(at: host)
+        return capture.wall + difference(host, capture.host) * msPerTick
     }
 }
 
@@ -357,6 +372,7 @@ final class CoreAudioInput: AppAudioInput {
     private func drainNow(final: Bool) {
         guard let storage, let converter else { return }
         let batch = queue.sync { storage.take() }
+        hostClock.recalibrate() // Date/UTC reads and epoch bookkeeping stay outside the IO callback.
         let bank = batch.bank, samples = bank.interleaved()
         do {
             for stamp in 0..<bank.stampCount {

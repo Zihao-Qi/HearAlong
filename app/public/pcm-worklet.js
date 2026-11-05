@@ -40,9 +40,9 @@ class PcmCapture extends AudioWorkletProcessor {
       const length = input ? input.length : 128;
       const observedWallMs = Date.now();
       const quantumWallMs = this.clock.at(currentFrame, sampleRate, observedWallMs, false);
-      // A sleep can be entirely inside the last, partial frame. Keep its sample offset without cutting or padding PCM.
-      // At a frame boundary, leave detection to the server's capture-time comparison instead.
-      if (this.used && this.lastCaptureEndWallMs !== null && quantumWallMs - this.lastCaptureEndWallMs > 5000) {
+      // Every origin step (short pause, sleep or UTC adjustment) needs its sample offset.
+      // The server alone decides which positive gaps exceed the visible >5 s threshold.
+      if (this.used && this.lastCaptureEndWallMs !== null && Math.abs(quantumWallMs - this.lastCaptureEndWallMs) > 2) {
         this.discontinuities.push({ offsetSamples: this.used, fromWallMs: this.lastCaptureEndWallMs, toWallMs: quantumWallMs });
       }
       for (let index = 0; index < length; index++) {

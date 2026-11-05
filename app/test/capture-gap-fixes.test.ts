@@ -82,12 +82,13 @@ test('fix 1 boundaries: interior sleeps are not rediscovered by the next frame, 
   }
 });
 
-test('fix 1 thresholds: in-frame pauses must exceed 5 s, and multiple in-frame sleeps retain separate offsets', async () => {
+test('fix 1 thresholds: only >5 s pauses become visible gaps; all in-frame steps retain alignment offsets', async () => {
   for (const pause of [4000, 5000, 6000]) {
     const w = await worklet(); w.capture(50); w.sleep(pause); w.capture(25); w.flush();
     const frame = w.messages[0];
-    assert.equal(frame.discontinuities.length, pause > 5000 ? 1 : 0);
-    if (pause > 5000) assert.deepEqual(frame.discontinuities, [{ offsetSamples: 6400, fromWallMs: 100400, toWallMs: 106400 }]);
+    assert.deepEqual(frame.discontinuities, [{ offsetSamples: 6400, fromWallMs: 100400, toWallMs: 100400 + pause }]);
+    const evidence = detectFrameCaptureGaps(undefined, frame, 0, frame.buffer.byteLength / 4, FRAME_RATE);
+    assert.equal(evidence.gaps.length, pause > 5000 ? 1 : 0, 'user-visible >5 s threshold unchanged');
   }
   const w = await worklet(); w.capture(25); w.sleep(6000); w.capture(25); w.sleep(7000); w.capture(25); w.flush();
   assert.deepEqual(w.messages[0].discontinuities.map((d: any) => d.offsetSamples), [3200, 6400]);

@@ -23,7 +23,6 @@ class EchoSession {
   private onFailure: (resumable: boolean) => void;
   private onAudio: (message: AudioReply, delay: number) => void;
   private finishing: Promise<void> | null = null;
-  private lastDelta = 0;
   failed = false;
   constructor(options: EchoOptions, fail: (resumable: boolean) => void, audio: EchoSession['onAudio']) {
     this.options = options; this.onFailure = fail; this.onAudio = audio;
@@ -40,7 +39,6 @@ class EchoSession {
           if (!job) return;
           if (!(message.pcm instanceof Float32Array) || message.pcm.byteLength !== job.raw.length || !message.pcm.every(Number.isFinite)) { this.failure(); return; }
           this.jobs.delete(message.id); clearTimeout(job.timer);
-          this.lastDelta = message.pcm.at(-1)! - job.raw.readFloatLE(job.raw.length - 4);
           this.onAudio(message, performance.now() - job.at);
           job.resolve(Buffer.from(message.pcm.buffer, message.pcm.byteOffset, message.pcm.byteLength));
         }
@@ -48,16 +46,6 @@ class EchoSession {
       worker.on('error', () => this.failure());
       worker.on('exit', () => { if (this.worker === worker) this.failure(); });
     } catch { this.failure(); }
-  }
-  /** A crashed worker cannot supply new clean samples. Decay only its last same-position correction,
-   * over <=5 ms of current raw input (never replay/hold earlier microphone samples).
-   */
-  fallback(raw: Buffer): Buffer {
-    const delta = this.lastDelta; this.lastDelta = 0;
-    if (!delta) return raw;
-    const pcm = floats(raw), count = Math.min(80, pcm.length);
-    for (let i = 0; i < count; i++) pcm[i] += delta * (1 - (i + 1) / count);
-    return Buffer.from(pcm.buffer);
   }
   private watchdog() {
     const budget = this.options.deadlineMs ?? ECHO_DEADLINE_MS;
@@ -76,7 +64,7 @@ class EchoSession {
     for (const [id, job] of this.jobs) {
       clearTimeout(job.timer);
       this.onAudio({ kind: 'audio', id, pcm: floats(job.raw), missingSamples: job.raw.length / 4, computeMs: 0 }, performance.now() - job.at);
-      job.resolve(this.fallback(job.raw));
+      job.resolve(job.raw); // Unemitted samples are literal raw; never apply a prior frame's correction.
     }
     this.jobs.clear();
     for (const control of this.controls.values()) { clearTimeout(control.timer); control.resolve(); }
@@ -92,8 +80,8 @@ class EchoSession {
   referenceEnded() { this.post({ kind: 'reference-ended' }); }
   switchReference(audio: TimedAudio[]) { this.post({ kind: 'switch', audio }); }
   microphone(id: string, raw: Buffer, timing: CaptureTiming): Promise<Buffer> {
-    if (this.failed || this.finishing) return Promise.resolve(this.fallback(raw));
-    if (this.jobs.size >= 32) { this.failure(); return Promise.resolve(this.fallback(raw)); }
+    if (this.failed || this.finishing) return Promise.resolve(raw);
+    if (this.jobs.size >= 32) { this.failure(); return Promise.resolve(raw); }
     return new Promise(resolve => {
       const timer = this.watchdog();
       this.jobs.set(id, { raw, resolve, timer, at: performance.now() });
@@ -120,14 +108,15 @@ class EchoSession {
 
 type Reference = { source: string; audio: TimedAudio[]; lastAt: number; endMs: number; ended: boolean; timed: boolean };
 type MeetingReference = { pinned: string | null; sources: Map<string, Reference> };
-type MicRecord = { meetingId: string; logged: boolean; disabled: boolean; missing: number; retiring: Promise<EchoSession> | null };
+type MicRecord = { meetingId: string; logged: boolean; disabled: boolean; missing: number };
 type Entry = { meetingId: string; source: string; session: EchoSession; record: MicRecord };
 
 export class LiveEcho {
   private references = new Map<string, MeetingReference>();
   private sessions = new Map<string, Entry>();
   private records = new Map<string, MicRecord>();
-  private retiring = new Set<Promise<EchoSession>>();
+  private retiring = new Set<Promise<void>>();
+  private expiry: NodeJS.Timeout | undefined;
   private totals: EchoStats = { frames: 0, samples: 0, missingSamples: 0, computeMs: 0, delayMs: 0, maxDelayMs: 0, failures: 0 };
   private options: EchoOptions;
   constructor(options: EchoOptions = {}) {
@@ -154,13 +143,33 @@ export class LiveEcho {
     meeting.pinned = next?.source ?? null;
     return next;
   }
+  private collect() {
+    clearTimeout(this.expiry);
+    let next = Infinity;
+    for (const [id, meeting] of this.references) {
+      for (const [source, reference] of meeting.sources) if (reference.ended) {
+        if (this.now() - reference.lastAt >= 10000) meeting.sources.delete(source);
+        else next = Math.min(next, reference.lastAt + 10000);
+      }
+      if (!meeting.sources.size) this.references.delete(id);
+    }
+    if (Number.isFinite(next)) this.expiry = setTimeout(() => this.collect(), Math.max(1, next - this.now())).unref();
+  }
   private retire(mic: string, entry: Entry): void {
-    if (this.sessions.get(mic) === entry) this.sessions.delete(mic);
-    const pending = entry.session.finish(true).catch(() => this.warn(entry.record, 'worker retirement failed; unprocessed samples pass raw')).then(() => entry.session);
-    entry.record.retiring = pending; this.retiring.add(pending);
-    pending.finally(() => { this.retiring.delete(pending); }).catch(() => {});
+    this.sessions.delete(mic);
+    const pending = entry.session.finish(true).catch(() => this.warn(entry.record, 'worker retirement failed; unprocessed samples pass raw')).then(() => {
+      this.retiring.delete(pending);
+      // Once a mic has crossed the reference end, no ended history for that meeting is useful.
+      const meeting = this.references.get(entry.meetingId);
+      if (meeting && ![...this.sessions.values()].some(item => item.meetingId === entry.meetingId)) {
+        for (const [source, reference] of meeting.sources) if (reference.ended) meeting.sources.delete(source);
+      }
+      this.collect();
+    });
+    this.retiring.add(pending);
   }
   reference(meetingId: string, source: string, pcm: Buffer, timing?: CaptureTiming) {
+    this.collect();
     let meeting = this.references.get(meetingId);
     if (!meeting) { meeting = { pinned: null, sources: new Map() }; this.references.set(meetingId, meeting); }
     let reference = meeting.sources.get(source);
@@ -176,10 +185,11 @@ export class LiveEcho {
     reference.lastAt = this.now(); reference.ended = false; reference.timed = Boolean(timing);
     if (!timing) {
       reference.audio = []; reference.endMs = -Infinity;
+      const standby = this.select(meeting);
       for (const [mic, entry] of this.sessions) if (entry.meetingId === meetingId && entry.source === source) {
-        this.warn(entry.record, 'reference lost its capture wall clock'); this.retire(mic, entry);
+        if (standby) { entry.session.switchReference(standby.audio); entry.source = standby.source; }
+        else { this.warn(entry.record, 'reference lost its capture wall clock'); this.retire(mic, entry); }
       }
-      if (meeting.pinned === source) meeting.pinned = null;
       return;
     }
     const audio = { pcm: floats(pcm), timing };
@@ -190,22 +200,23 @@ export class LiveEcho {
     for (const entry of this.sessions.values()) if (entry.meetingId === meetingId && entry.source === source) entry.session.reference(audio);
   }
   microphone(meetingId: string, source: string, id: string, pcm: Buffer, timing?: CaptureTiming): Promise<Buffer> | null {
+    this.collect();
     const meeting = this.references.get(meetingId);
     let entry = this.sessions.get(source), record = this.records.get(source);
     if (!meeting && !entry && !record) return null;
-    if (!record) { record = { meetingId, logged: false, disabled: false, missing: 0, retiring: null }; this.records.set(source, record); }
+    if (!record) { record = { meetingId, logged: false, disabled: false, missing: 0 }; this.records.set(source, record); }
     const micEnd = timing ? audioEnd({ pcm: floats(pcm), timing }) : Infinity;
     const micStart = timing ? audioSpans({ pcm: floats(pcm), timing })[0]?.wallMs ?? Infinity : Infinity;
-    const selected = meeting ? this.select(meeting, micEnd) : undefined;
+    const current = entry && meeting?.sources.get(entry.source);
+    const overlaps = (reference: Reference) => reference.ended && reference.timed && micStart < reference.endMs - this.options.leadMs!;
+    // Preserve overlapping final render; otherwise prefer a live standby BEFORE considering retirement.
+    const selected = timing && !record.disabled && meeting ? (current && overlaps(current) ? current
+      : this.select(meeting, micEnd) ?? [...meeting.sources.values()].find(overlaps)) : undefined;
     if (entry) {
-      const current = meeting?.sources.get(entry.source);
-      // A call's buffered final second is still useful after its /end, including when a standby exists.
-      const finalReference = current?.ended && micStart < current.endMs - this.options.leadMs!;
-      if (!timing || record.disabled || entry.session.failed || !current || (!finalReference && !this.active(current, micEnd))) {
-        if (current && !current.ended && timing) this.warn(record, current.timed ? 'reference is stale (>3 s without frames or >5 s behind microphone)' : 'reference has no capture wall clock');
-        this.retire(source, entry); entry = undefined;
-      } else if (!finalReference && selected && selected.source !== entry.source) {
+      if (!selected || entry.session.failed) { this.retire(source, entry); entry = undefined; }
+      else if (selected.source !== entry.source) {
         entry.session.switchReference(selected.audio); entry.source = selected.source;
+        if (selected.ended) entry.session.referenceEnded();
       }
     }
     if (!entry && selected && timing && !record.disabled) {
@@ -221,6 +232,7 @@ export class LiveEcho {
       });
       entry = { meetingId, source: selected.source, session, record }; this.sessions.set(source, entry);
       for (const audio of selected.audio) session.reference(audio);
+      if (selected.ended) session.referenceEnded();
     }
     if (entry && timing) return entry.session.microphone(id, pcm, timing);
     const liveCall = meeting && [...meeting.sources.values()].some(item => !item.ended);
@@ -230,26 +242,25 @@ export class LiveEcho {
       if (known && (!known.timed || !this.active(known, micEnd))) this.warn(record, known.timed ? 'reference is stale (>3 s without frames or >5 s behind microphone)' : 'reference has no capture wall clock');
       this.missing(record, pcm.length / 4, 'inactive reference or missing microphone clock');
     }
-    return record.retiring ? record.retiring.then(session => session.fallback(pcm)) : null;
+    return null; // Raw fallback is immediate; it must not depend on a retired worker.
   }
   async flush(source?: string) {
     const entries = source ? [this.sessions.get(source)].filter((entry): entry is Entry => Boolean(entry)) : [...this.sessions.values()];
     await Promise.all(entries.map(entry => entry.session.flush()));
-    if (source) await this.records.get(source)?.retiring;
+    await Promise.all([...this.retiring]);
   }
   async end(meetingId: string, source: string) {
     const meeting = this.references.get(meetingId), reference = meeting?.sources.get(source);
     if (reference) {
-      reference.ended = true;
+      reference.ended = true; reference.lastAt = this.now();
       if (meeting) this.select(meeting);
       for (const entry of this.sessions.values()) if (entry.meetingId === meetingId && entry.source === source) entry.session.referenceEnded();
-      if (meeting && [...meeting.sources.values()].every(item => item.ended) && ![...this.sessions.values()].some(entry => entry.meetingId === meetingId)) this.references.delete(meetingId);
+      this.collect(); // Retain up to 10 s for a call-overlapping FIRST microphone frame.
       return;
     }
     const entry = this.sessions.get(source);
-    if (entry) { this.sessions.delete(source); await entry.session.finish(); }
-    await this.records.get(source)?.retiring; this.records.delete(source);
-    if (meeting && [...meeting.sources.values()].every(item => item.ended) && ![...this.sessions.values()].some(item => item.meetingId === meetingId)) this.references.delete(meetingId);
+    if (entry) this.retire(source, entry);
+    await Promise.all([...this.retiring]); this.records.delete(source);
   }
   stats(): EchoStats { return { ...this.totals }; }
   buffered() { return { meetings: this.references.size, sessions: this.sessions.size, records: this.records.size, retiring: this.retiring.size,
@@ -262,8 +273,7 @@ export class LiveEcho {
   async close() {
     await this.flush();
     await Promise.all([...this.sessions.values()].map(entry => entry.session.finish()));
-    await Promise.all([...this.retiring]);
-    this.sessions.clear(); this.references.clear(); this.records.clear();
+    this.sessions.clear(); this.references.clear(); this.records.clear(); clearTimeout(this.expiry);
   }
 }
 

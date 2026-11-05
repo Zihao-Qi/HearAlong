@@ -45,7 +45,7 @@ struct TimedMonoFrame {
 }
 
 /// Framing preserves the sample clock, but capture wall time follows each input span after sleep/pauses.
-/// Like the page worklet, a >5 s gap inside a frame is metadata, never padding or a cut in the PCM.
+/// Every >2 ms wall step needs an offset; only >5 s positive gaps become visible notices on the server.
 final class TimedMonoFramer {
     private var pending: [Float] = []
     private var firstWallMs = 0.0
@@ -55,7 +55,7 @@ final class TimedMonoFramer {
     init(onFrame: @escaping (TimedMonoFrame) -> Void) { self.onFrame = onFrame; pending.reserveCapacity(16000) }
     func append(_ samples: [Float], wallMs: Double) {
         guard !samples.isEmpty else { return }
-        if !pending.isEmpty, let end = lastEndMs, wallMs - end > 5000 {
+        if !pending.isEmpty, let end = lastEndMs, abs(wallMs - end) > 2 {
             gaps.append(CaptureWallGap(offsetSamples: pending.count, fromWallMs: end, toWallMs: wallMs))
         }
         var index = 0

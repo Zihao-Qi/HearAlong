@@ -3,9 +3,9 @@ export class SampleCaptureClock {
   at(sample, rate, wallMs, frameBoundary = true) {
     const audioMs = sample * 1000 / rate;
     // Only a pause between CONSECUTIVE quanta can step the clock. Accumulated oscillator
-    // drift crossing 100 ms is not a pause; negative wall-clock adjustments are not pauses either.
+    // drift crossing 100 ms is not a pause. UTC adjustments can step in either direction.
     const excess = this.lastWall === undefined ? 0 : wallMs - this.lastWall - (sample - this.lastSample) * 1000 / rate;
-    if (this.origin === undefined || excess > 100) {
+    if (this.origin === undefined || Math.abs(excess) >= 100) {
       this.origin = wallMs - audioMs;
       this.lastSlewSample = sample;
     }

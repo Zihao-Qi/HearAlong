@@ -5,7 +5,7 @@ server uses the call audio as WebRTC AEC3's far-end reference. The microphone's
 cleaned stream feeds **both grey previews and sealed recognition chunks**.
 Microphone playback after sealing intentionally plays that cleaned audio. The
 text echo rules remain a backup; AEC is not a guarantee of perfect recognition.
-No UI preference and no capture-helper change are involved.
+No UI preference is involved. Native capture changes only improve timestamp metadata.
 
 ## Ownership and durability
 
@@ -58,10 +58,15 @@ introduce an edge after the previous frame has already escaped. The split/merge 
 the waveform; phase coloration is not a missing/repeated frame or sample shift.
 
 A main-thread **2000 ms watchdog** covers worker startup, crashes, invalid output,
-backlog and hangs. It resolves pending frames raw, disables a genuinely failed
+backlog and hangs. All fallback is **literal raw PCM** for every unemitted sample:
+no prior correction, held sample, delta ramp or synthesized transition is added.
+A failure-point discontinuity is preferable to injected audio. It disables a genuinely failed
 worker for the recording, and logs once. A watchdog serviced over 3 s late after
 whole-process sleep instead permits a fresh worker on resumed capture. A forced
-seal signals flush BEFORE waiting for its pending frame results. Recording never
+seal signals flush BEFORE waiting for its pending frame results. Stop sends an
+immediate checkpoint outside the per-source queue, so a normal seal already
+waiting on that queue cannot delay the signal. Validation/end-state changes stay
+serialized on the source chain. Recording never
 depends on AEC succeeding.
 
 A reference with no new frame for more than 3 s or an end more than 5 s behind the
@@ -74,7 +79,13 @@ The first live remote is pinned; other remotes are bounded standby histories,
 not render input. Ending a non-pinned remote never retires the mic. When the pin
 ends, its spans remain available for the mic's final second without waiting for
 future render; after the mic crosses that end, a live standby can take over with
-a reset. Mic Stop, close, abandonment and inactive-end flush before sealing.
+a reset **in the existing worker**, before retirement is considered. A fully
+covered last frame flushes its latency tail as soon as reference is ended. Ended
+render history is retained for up to 10 s even before the first mic upload, to
+support a delayed overlapping mic frame; crossing its end and retiring the final
+session frees it immediately. Raw frames never await retirement, and no per-mic
+retirement promise is retained. Global flush/close awaits the bounded retirement
+set. Mic Stop, close, abandonment and inactive-end flush before sealing.
 Microphone end, meeting pruning and server close stop owned workers. References/history do not survive a server restart:
 **recovered frames seal raw**, even if a newly resumed part of that recording
 later has a fresh live canceller. A first mic frame arriving before any call
@@ -84,15 +95,21 @@ at these edges.
 ## Native and page clocks
 
 The page clock slews accumulated drift only at frame boundaries, at <=2 ms per
-second of captured audio. Only a pause between consecutive render quanta causes
-a step; crossing 100 ms of cumulative drift does not. Existing >5 s capture-gap
-semantics are unchanged.
+second of captured audio. A pause or UTC adjustment between consecutive render
+quanta can step in either direction; crossing 100 ms of cumulative drift does not.
+Every in-frame step exceeding the 2 ms slew bound records its sample offset,
+including 100 ms–5 s pauses. Post-cut spans anchor at the cut's absolute `toWallMs`,
+not an approximate sum. Only positive gaps **>5 s** are user-visible; short/signed
+steps only correct alignment and effective frame ends.
 
 The native tap retains each callback's host timestamp plus absolute/continuous
-clock observations in its preallocated banks. Continuous time includes sleep;
-callback/drain latency is subtracted rather than baked into audio placement.
-Timestamp spans survive converter priming and framing. `X-Capture-Wall-Ms` is the
-actual frame placement, long interior gaps use `X-Capture-Discontinuities`, and
+clock observations in its preallocated banks. On the framing thread, a bounded
+epoch history is recalibrated against UTC once per second. Timestamp lookup uses
+the input's capture epoch, so a pre-sleep callback delivered after wake does not
+inherit wake's sleep offset or a newer wall-clock correction. Clock bookkeeping
+and UTC reads never run in IO. Timestamp spans survive converter priming and
+framing. `X-Capture-Wall-Ms` is the actual frame placement, all interior clock
+steps exceeding the slew bound use `X-Capture-Discontinuities`, and
 `X-Start-Ms` remains the original compact sample clock. Fake-only Swift checks
 exercise this without a real process tap.
 
@@ -141,7 +158,11 @@ hallucination guarantee.
 a measured-delay identity kernel, actual WASM tail/peak checks and worker/Stop
 ordering. `test/echo-long-call.test.ts` runs two-hour simulations in both +/-200 ppm
 directions through the production scheduler, requiring bit-exact sample identity,
-bounded waiting/storage, a 10 s sleep and call leave/rejoin. The separate
+bounded waiting/storage, a 10 s sleep, a +30 s wall-clock step, a pre-sleep reference
+callback delivered after wake, and call leave/rejoin. `test/echo-review2.test.ts`
+covers literal-raw failure, no-wait ended reference (including the first mic
+frame), standby handoff, retirement collection, Stop behind a waiting seal and
+short/signed clock-cut placement. The separate
 `scripts/aec-long-check.ts --out NEW_DIR` runs 7200 synthetic seconds through
 actual WASM, checking marker survival, alignment, waiting and memory without any
 speech model, devices or network.

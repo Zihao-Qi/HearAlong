@@ -6,12 +6,12 @@ type PreviousCapture = { captureWallMs?: number | null; captureEndWallMs?: numbe
 /** Optional metadata is bounded and ignored if malformed; it must never cause an otherwise valid audio upload to fail. */
 export function captureDiscontinuities(value: unknown, samples: number): CaptureDiscontinuity[] {
   if (!Array.isArray(value) || value.length > 128) return [];
-  let offset = 0, end = -Infinity;
+  let offset = 0;
   for (const d of value) {
     if (!d || !Number.isInteger(d.offsetSamples) || d.offsetSamples <= offset || d.offsetSamples >= samples
-      || !Number.isFinite(d.fromWallMs) || !Number.isFinite(d.toWallMs) || d.fromWallMs < 0 || d.toWallMs >= 8.64e15
-      || d.toWallMs - d.fromWallMs <= 5000 || d.fromWallMs < end) return [];
-    offset = d.offsetSamples; end = d.toWallMs;
+      || !Number.isFinite(d.fromWallMs) || !Number.isFinite(d.toWallMs) || d.fromWallMs < 0 || d.toWallMs < 0
+      || d.fromWallMs >= 8.64e15 || d.toWallMs >= 8.64e15 || Math.abs(d.toWallMs - d.fromWallMs) <= 2) return [];
+    offset = d.offsetSamples;
   }
   return value;
 }
@@ -38,7 +38,9 @@ export function detectFrameCaptureGaps(previous: PreviousCapture | undefined, ti
   const boundary = detectCaptureGap(previous, timing, atMs, rate);
   const inside = timing ? captureDiscontinuities(timing.discontinuities, samples) : [];
   const gaps = boundary ? [boundary] : [];
-  for (const d of inside) gaps.push(gapAt(d.fromWallMs, d.toWallMs, atMs + d.offsetSamples * 1000 / rate, timing!));
-  const endWallMs = timing ? timing.captureWallMs + samples * 1000 / rate + inside.reduce((sum, d) => sum + d.toWallMs - d.fromWallMs, 0) : null;
+  // Short/signed clock steps are alignment evidence, NOT user-visible missing-audio gaps.
+  for (const d of inside) if (d.toWallMs - d.fromWallMs > 5000) gaps.push(gapAt(d.fromWallMs, d.toWallMs, atMs + d.offsetSamples * 1000 / rate, timing!));
+  const last = inside.at(-1);
+  const endWallMs = timing ? (last?.toWallMs ?? timing.captureWallMs) + (samples - (last?.offsetSamples ?? 0)) * 1000 / rate : null;
   return { gaps, endWallMs };
 }

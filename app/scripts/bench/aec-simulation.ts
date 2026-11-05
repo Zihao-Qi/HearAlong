@@ -8,8 +8,10 @@ import { EchoScheduler } from '../../src/echo-scheduler.ts';
 export async function simulateEchoCall(module: EchoModule, options: { frames?: number; exact: boolean; ppm?: number }) {
   const frames = options.frames ?? 7200, ppm = options.ppm ?? 200;
   const processor = new EchoProcessor(module, 100), scheduler = new EchoScheduler(processor, 1500);
-  const base = 100000, sleepAt = frames * 1000 / 2, leaveAt = frames * 1000 * 2 / 3 + 10000, rejoinAt = leaveAt + 5000;
-  const wall = (time: number) => base + time + (time >= sleepAt ? 10000 : 0);
+  const base = 100000, sleepAt = frames * 1000 / 2, stepAt = frames * 1000 / 3;
+  const delivery = (time: number) => base + time + (time >= sleepAt ? 10000 : 0);
+  const wall = (time: number) => delivery(time) + (time >= stepAt ? 30000 : 0);
+  const leaveAt = delivery(frames * 1000 * 2 / 3), rejoinAt = leaveAt + 5000;
   const duration = (drift: number) => 1000 * (1 + drift / 1e6);
   const micStep = duration(ppm), refStep = duration(-ppm);
   const expected = new Map<string, { pcm: Float32Array; at: number }>();
@@ -17,17 +19,19 @@ export async function simulateEchoCall(module: EchoModule, options: { frames?: n
   let nMic = 0, nRef = 0, nextOutput = 0, now = base, left = false, rejoined = false, active = true;
   let samples = 0, missing = 0, maxWaitMs = 0, maxFrames = 0, maxTargets = 0, maxPending = 0, maxExpected = 0;
   let maxArrayBuffers = 0, maxHeap = 0, minCorrelation = 1, seed = 17;
+  let delayed: TimedAudio | null = null, deliveredPreSleepAfterWake = false;
   const timing = (index: number, step: number): TimedAudio['timing'] => {
     const first = index * step, last = first + step;
     const captureWallMs = wall(first);
-    if (first < sleepAt && last > sleepAt) {
-      const offsetSamples = Math.round((sleepAt - first) / step * 16000);
+    const discontinuities = [];
+    for (const [at, delta] of [[stepAt, 30000], [sleepAt, 10000]]) if (first < at && last > at) {
+      const offsetSamples = Math.round((at - first) / step * 16000);
       if (offsetSamples > 0 && offsetSamples < 16000) {
-        const fromWallMs = captureWallMs + offsetSamples / 16;
-        return { captureWallMs, discontinuities: [{ offsetSamples, fromWallMs, toWallMs: fromWallMs + 10000 }] };
+        const toWallMs = wall(at), fromWallMs = toWallMs - delta;
+        discontinuities.push({ offsetSamples, fromWallMs, toWallMs });
       }
     }
-    return { captureWallMs };
+    return { captureWallMs, discontinuities };
   };
   const emit = (results: EchoOutput[]) => {
     for (const result of results) {
@@ -59,8 +63,8 @@ export async function simulateEchoCall(module: EchoModule, options: { frames?: n
   };
   try {
     while (nMic < frames) {
-      const nextMic = wall((nMic + 1) * micStep), nextRef = wall((nRef + 1) * refStep);
-      const transition = !left ? base + leaveAt : !rejoined ? base + rejoinAt : Infinity;
+      const nextMic = delivery((nMic + 1) * micStep), nextRef = delivery((nRef + 1) * refStep);
+      const transition = !left ? leaveAt : !rejoined ? rejoinAt : Infinity;
       now = Math.min(nextMic, nextRef, transition, scheduler.deadline);
       if (now === transition) {
         if (!left) {
@@ -68,8 +72,14 @@ export async function simulateEchoCall(module: EchoModule, options: { frames?: n
         } else { emit(scheduler.switchReference([], now)); rejoined = true; active = true; }
       }
       if (now === nextRef) {
-        const start = wall(nRef * refStep);
-        if (active && !(start < base + rejoinAt && nextRef > base + leaveAt)) scheduler.reference({ pcm: new Float32Array(16000), timing: timing(nRef, refStep) });
+        const start = delivery(nRef * refStep);
+        const audio = { pcm: new Float32Array(16000), timing: timing(nRef, refStep) };
+        // A pre-sleep callback can be queued until wake; its timestamp is its old capture epoch.
+        if (nRef === Math.floor(sleepAt / refStep) - 1) delayed = audio;
+        else if (active && !(start < rejoinAt && nextRef > leaveAt)) scheduler.reference(audio);
+        if (delayed && nRef * refStep >= sleepAt) {
+          scheduler.reference(delayed); delayed = null; deliveredPreSleepAfterWake = true;
+        }
         nRef++;
       }
       if (now === nextMic) {
@@ -91,11 +101,12 @@ export async function simulateEchoCall(module: EchoModule, options: { frames?: n
     }
     emit(scheduler.drain(now, true));
     assert.equal(nextOutput, frames); assert.equal(samples, frames * 16000); assert.equal(expected.size, 0);
+    assert.ok(deliveredPreSleepAfterWake, 'pre-sleep reference callback was delivered after wake on its original epoch');
     assert.ok(1 - missing / samples > 0.99, 'AEC must remain active most of the call');
     const inputSha256 = inputHash.digest('hex'), outputSha256 = outputHash.digest('hex');
     if (options.exact) assert.equal(inputSha256, outputSha256);
     assert.ok(maxArrayBuffers < 128 * 1024 * 1024 && maxHeap < 128 * 1024 * 1024, 'no long-call heap/PCM growth');
-    return { frames, audioSeconds: frames, samples, ppm: { mic: ppm, call: -ppm }, sleepSeconds: 10, callLeaveSeconds: 5,
+    return { frames, audioSeconds: frames, samples, ppm: { mic: ppm, call: -ppm }, sleepSeconds: 10, callLeaveSeconds: 5, wallClockStepSeconds: 30, deliveredPreSleepAfterWake,
       identityKernel: options.exact, inputSha256, outputSha256, processingDelaySamples: processor.delaySamples,
       activeFraction: 1 - missing / samples, maxWaitMs, maxFrames, maxTargets, maxPending, maxExpected, maxArrayBuffers, maxHeap, minCorrelation };
   } finally { processor.close(); }

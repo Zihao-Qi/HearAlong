@@ -81,10 +81,50 @@ private final class TimedTestInput: AppAudioInput {
         } else if which == "sleep-clock" {
             var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
             let second = UInt64(1_000_000_000.0 * Double(info.denom) / Double(info.numer))
-            let clock = TapHostClock(hostTime: second * 100, wallMs: 100000, continuousTime: second * 200)
-            let wake = clock.wall(at: second * 101, observedHost: second * 103, continuous: second * 213)
-            try require(abs(wake - 111000) < 0.001, "continuous/absolute mapping includes 10 s sleep and excludes 2 s callback/drain delay")
-            print("PASS native host clock: sleep included, callback delay excluded")
+            var clock = TapHostClock(hostTime: second * 100, wallMs: 100000, continuousTime: second * 200)
+            let queued = clock.wall(at: second * 101, observedHost: second * 103, continuous: second * 213)
+            let wake = clock.wall(at: second * 103, observedHost: second * 103, continuous: second * 213)
+            try require(abs(queued - 101000) < 0.001, "pre-sleep input delivered after wake uses its capture epoch, not +10 s delivery offset")
+            try require(abs(wake - 113000) < 0.001, "post-wake capture includes the 10 s sleep")
+            clock.recalibrate(host: second * 104, continuous: second * 214, wallMs: 144000)
+            let stepped = clock.wall(at: second * 104, observedHost: second * 104, continuous: second * 214)
+            try require(abs(stepped - 144000) < 0.001, "periodic framing-thread recalibration follows a +30 s UTC step")
+            let old = clock.wall(at: second * 101, observedHost: second * 104, continuous: second * 214)
+            try require(abs(old - 101000) < 0.001, "old capture remains on old epoch even after UTC recalibration")
+            print("PASS native epoch clock: queued pre-sleep sample unshifted; post-wake sleep and +30 s UTC adjustment mapped independently")
+        } else if which == "short-pauses" {
+            for pause in [150.0, 2000, 3000, 5000, 10000, -30000] {
+                var frames: [TimedMonoFrame] = []; let framer = TimedMonoFramer { frames.append($0) }
+                framer.append([Float](repeating: 0.1, count: 3200), wallMs: 100000)
+                framer.append([Float](repeating: 0.2, count: 12800), wallMs: 100200 + pause)
+                framer.append([Float](repeating: 0.3, count: 16000), wallMs: 101000 + pause + 2500)
+                try require(frames.count == 2 && frames[0].discontinuities.count == 1, "all in-frame steps over slew bound need metadata")
+                let cut = frames[0].discontinuities[0]
+                try require(cut.offsetSamples == 3200 && cut.fromWallMs == 100200 && cut.toWallMs == 100200 + pause, "short/signed pause retains exact sample-offset wall placement")
+                try require(frames[1].wallMs == 103500 + pause, "next frame placement reflects both short pauses without a false 5500 ms hole")
+            }
+            var frames: [TimedMonoFrame] = []; let framer = TimedMonoFramer { frames.append($0) }
+            framer.append([Float](repeating: 0.1, count: 4000), wallMs: 100000)
+            framer.append([Float](repeating: 0.2, count: 4000), wallMs: 102250)
+            framer.append([Float](repeating: 0.3, count: 8000), wallMs: 112500)
+            try require(frames[0].discontinuities.map(\.toWallMs) == [102250, 112500], "2 s pause before 10 s sleep records both cuts, not a span 2000 ms early")
+            print("PASS native short/signed steps: 150 ms..5 s metadata, exact 112500 post-sleep anchor, no PCM padding")
+        } else if which == "utc-clock" {
+            var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
+            let second = UInt64(1_000_000_000.0 * Double(info.denom) / Double(info.numer))
+            var clock = TapHostClock(hostTime: second * 100, wallMs: 100000, continuousTime: second * 200)
+            var frames: [TimedMonoFrame] = []; let framer = TimedMonoFramer { frames.append($0) }
+            framer.append([Float](repeating: 0.1, count: 8000), wallMs: clock.wall(at: second * 100 + second / 2, observedHost: second * 100 + second / 2, continuous: second * 200 + second / 2))
+            clock.recalibrate(host: second * 101, continuous: second * 201, wallMs: 131000)
+            framer.append([Float](repeating: 0.2, count: 8000), wallMs: clock.wall(at: second * 101, observedHost: second * 101, continuous: second * 201))
+            try require(frames.count == 1 && frames[0].discontinuities.count == 1, "wall-clock adjustment inside a frame is explicit")
+            try require(frames[0].discontinuities[0].fromWallMs == 101000 && frames[0].discontinuities[0].toWallMs == 131000, "+30 s UTC step creates exact metadata, not a permanently offset call")
+            for n in 2...200 {
+                clock.recalibrate(host: second * UInt64(100 + n), continuous: second * UInt64(200 + n), wallMs: 130000 + Double(n) * 1000)
+                let placed = clock.wall(at: second * UInt64(100 + n), observedHost: second * UInt64(100 + n), continuous: second * UInt64(200 + n))
+                try require(abs(placed - (130000 + Double(n) * 1000)) < 0.001, "bounded epoch history tracks current wall for long capture")
+            }
+            print("PASS periodic native UTC recalibration: +30 s mid-frame discontinuity, bounded history stays current")
         } else if which == "backlog" {
             let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [StuckUpload.self]
             let session = URLSession(configuration: configuration)

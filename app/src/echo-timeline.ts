@@ -14,10 +14,10 @@ export function audioSpans(audio: TimedAudio, leadMs = 0): AudioSpan[] {
   if (!audio.timing || !Number.isFinite(audio.timing.captureWallMs)) return [];
   const cuts = captureDiscontinuities(audio.timing.discontinuities, audio.pcm.length);
   const spans: AudioSpan[] = [];
-  let first = 0, jumpMs = 0;
-  for (const cut of [...cuts, { offsetSamples: audio.pcm.length, fromWallMs: 0, toWallMs: 0 }]) {
-    spans.push({ wallMs: audio.timing.captureWallMs + first / 16 + jumpMs - leadMs, pcm: audio.pcm.subarray(first, cut.offsetSamples) });
-    jumpMs += cut.toWallMs - cut.fromWallMs; first = cut.offsetSamples;
+  let first = 0, wallMs = audio.timing.captureWallMs;
+  for (const cut of [...cuts, { offsetSamples: audio.pcm.length, toWallMs: 0 }]) {
+    spans.push({ wallMs: wallMs - leadMs, pcm: audio.pcm.subarray(first, cut.offsetSamples) });
+    first = cut.offsetSamples; wallMs = cut.toWallMs;
   }
   return spans;
 }
