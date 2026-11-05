@@ -94,11 +94,12 @@ struct TapHostClock {
     private struct Epoch { let host: UInt64; let continuous: UInt64; let wall: Double }
     private var epochs: [Epoch]
     private var calibrated: UInt64
+    private var lastObservedHost: UInt64
     private let msPerTick: Double
     init(hostTime: UInt64 = mach_absolute_time(), wallMs: Double = Date().timeIntervalSince1970 * 1000, continuousTime: UInt64 = mach_continuous_time()) {
         var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
         msPerTick = Double(info.numer) / Double(info.denom) / 1_000_000
-        epochs = [Epoch(host: hostTime, continuous: continuousTime, wall: wallMs)]; calibrated = continuousTime
+        epochs = [Epoch(host: hostTime, continuous: continuousTime, wall: wallMs)]; calibrated = continuousTime; lastObservedHost = hostTime
     }
     private func difference(_ a: UInt64, _ b: UInt64) -> Double { a >= b ? Double(a - b) : -Double(b - a) }
     private func epoch(at host: UInt64) -> Epoch { epochs.last(where: { $0.host <= host }) ?? epochs[0] }
@@ -111,10 +112,11 @@ struct TapHostClock {
         remember(Epoch(host: host, continuous: continuous, wall: wallMs)); calibrated = continuous
     }
     mutating func wall(at host: UInt64, observedHost: UInt64, continuous: UInt64) -> Double {
+        defer { lastObservedHost = observedHost }
         let observed = epoch(at: observedHost)
         let sleep = (difference(continuous, observed.continuous) - difference(observedHost, observed.host)) * msPerTick
         if abs(sleep) > 2 {
-            let first = min(host, observedHost), offset = difference(first, observedHost)
+            let first = max(min(host, observedHost), lastObservedHost), offset = difference(first, observedHost)
             remember(Epoch(host: first, continuous: continuous - (observedHost - first), wall: observed.wall + (difference(continuous, observed.continuous) + offset) * msPerTick))
         }
         let capture = epoch(at: host)

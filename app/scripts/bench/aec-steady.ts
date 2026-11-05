@@ -35,7 +35,7 @@ for (const phaseMs of [0, 300, 800]) {
       for (const result of scheduler.drain(now)) {
         samples += result.pcm.length; missing += result.missingSamples;
         const first = Number(result.id) * 16000;
-        if (first < 5 * 16000) continue; // Give both variants the same five-second convergence allowance.
+        if (first < 5 * 16000) continue; // Exclude the five-second convergence warm-up.
         for (let pos = 0; pos < result.pcm.length; pos += 160) {
           let before = 0, after = 0;
           for (let i = pos; i < pos + 160; i++) { before += mic[first + i] ** 2; after += result.pcm[i] ** 2; }

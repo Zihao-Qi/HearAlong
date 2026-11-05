@@ -94,6 +94,15 @@ private final class TimedTestInput: AppAudioInput {
             let old = clock.wall(at: second * 100 + second / 2, observedHost: second * 104, continuous: second * 214)
             try require(abs(old - 100500) < 0.001, "old capture remains on old epoch even after UTC recalibration")
             print("PASS native epoch clock: queued pre-sleep sample unshifted; post-wake sleep and +30 s UTC adjustment mapped independently")
+
+            // Separate case: the first delivered callback after wake contains OLDER pre-sleep audio.
+            var delayedClock = TapHostClock(hostTime: second * 100, wallMs: 100000, continuousTime: second * 200)
+            _ = delayedClock.wall(at: second * 102 - second / 100, observedHost: second * 102, continuous: second * 202)
+            let delayedBeforeSleep = delayedClock.wall(at: second * 101, observedHost: second * 103, continuous: second * 213)
+            try require(abs(delayedBeforeSleep - 101000) < 0.001, "capture before the last pre-sleep observation must stay at 101000, not 111000")
+            let delayedWake = delayedClock.wall(at: second * 103, observedHost: second * 103 + second / 100, continuous: second * 213 + second / 100)
+            try require(abs(delayedWake - 113000) < 0.001, "post-wake audio still uses the new sleep epoch after a delayed pre-sleep buffer")
+            print("PASS first delivered pre-sleep buffer after wake: last pre-sleep observation protects 101000 ms capture placement")
         } else if which == "short-pauses" {
             for pause in [150.0, 2000, 3000, 5000, 10000, -30000] {
                 var frames: [TimedMonoFrame] = []; let framer = TimedMonoFramer { frames.append($0) }
