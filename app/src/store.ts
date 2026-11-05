@@ -535,15 +535,17 @@ export class MeetingStore {
    * and the frames' link to it are committed together, so a crash either leaves the frames held (the seal runs again) or
    * fully sealed. The window's identity is its first frame's sequence, so a repeated seal cannot make a second window.
    */
-  async sealWindow(meetingId: string, frames: Frame[]): Promise<Chunk> {
+  async sealWindow(meetingId: string, frames: Frame[], processedPcm?: Buffer): Promise<Chunk> {
     if (frames.some(f => !(this.db.prepare('SELECT path FROM frames WHERE id=?').get(f.id) as { path: string } | undefined)?.path)) {
       throw new Error('Audio removed; transcription cannot be retried.');
     }
     if (!frames.length) throw new Error('Nothing to seal.');
     const source = frames[0].source;
     frames.forEach((f, i) => { if (f.source !== source || (i && f.sequence !== frames[i - 1].sequence + 1)) throw new Error('A window needs consecutive frames of one source.'); });
-    const parts = await Promise.all(frames.map(f => readFile(this.resolvePath(f.path))));
-    const pcm = Buffer.concat(parts);
+    // Live AEC may replace window samples only, never durable raw frames or admission hashes.
+    // Recovery/direct callers omit this argument and retain the original raw sealing path.
+    if (processedPcm && processedPcm.length !== frames.reduce((sum, frame) => sum + frame.samples * 4, 0)) throw new Error('Processed window must preserve every frame sample.');
+    const pcm = processedPcm ?? Buffer.concat(await Promise.all(frames.map(f => readFile(this.resolvePath(f.path)))));
     const hash = createHash('sha256').update(pcm).digest('hex');
     const id = randomUUID();
     const path = join(this.directory, 'audio', meetingId, this.audioName(meetingId, `${id}.f32`));

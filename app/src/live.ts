@@ -4,6 +4,7 @@ import { FRAME_RATE, type Frame, type MeetingStore } from './store.ts';
 import type { LiveDrafts } from './drafts.ts';
 import type { CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
+import { LiveEcho, type EchoOptions } from './echo-audio.ts';
 
 /** A window is sealed once this much is held, cut at the quietest frame boundary between MIN and MAX. */
 export const WINDOW_MIN_SECONDS = 16;
@@ -41,7 +42,9 @@ export function chooseCut(frames: Pick<Frame, 'samples'>[], loudness: (index: nu
 
 type SourceState = { meetingId: string; chain: Promise<unknown>; busy: number; lastFrameAt: number; window: string | null; ended: boolean; firstFrameAt: number | null; lastSoundAt: number | null;
   /** Meeting time at the end of the newest frame saved (the recording's clock). */
-  endMs: number };
+  endMs: number;
+  /** Ephemeral only. Recovered frames have no entry and are sealed raw. */
+  audio: Map<string, { pcm?: Buffer; ready: Promise<Buffer> }>; preview: Frame[] };
 
 /**
  * Owns live capture per source: admits frames in order, seals 16–24 s windows into chunks for the batch recognizer, and feeds
@@ -55,9 +58,13 @@ export class LiveCapture {
   private sweeping: Promise<void> | null = null;
   private store: MeetingStore;
   private reconnectUntil: number;
-  private options: { drafts?: LiveDrafts | null; clock?: () => number; onChunk?: (meetingId: string) => void; log?: (message: string) => void };
+  private echo: LiveEcho | null;
+  private options: { drafts?: LiveDrafts | null; clock?: () => number; onChunk?: (meetingId: string) => void; log?: (message: string) => void;
+    /** null is a test/reference baseline, never a UI preference. */
+    echo?: EchoOptions | null };
   constructor(store: MeetingStore, options: LiveCapture['options'] = {}) {
     this.store = store; this.options = options;
+    this.echo = options.echo === null ? null : new LiveEcho({ log: options.log, ...options.echo });
     this.store.recoverRecordings();
     this.reconnectUntil = this.clock() + RECORDING_RECONNECT_MS;
   }
@@ -65,7 +72,7 @@ export class LiveCapture {
   sourceEnded(source: string): boolean { return this.sources.get(source)?.ended === true; }
   private state(meetingId: string, source: string): SourceState {
     let state = this.sources.get(source);
-    if (!state) { state = { meetingId, chain: Promise.resolve(), busy: 0, lastFrameAt: this.clock(), window: null, ended: false, firstFrameAt: null, lastSoundAt: null, endMs: 0 }; this.sources.set(source, state); }
+    if (!state) { state = { meetingId, chain: Promise.resolve(), busy: 0, lastFrameAt: this.clock(), window: null, ended: false, firstFrameAt: null, lastSoundAt: null, endMs: 0, audio: new Map(), preview: [] }; this.sources.set(source, state); }
     if (state.meetingId !== meetingId) throw new CaptureConflict('This audio source belongs to another meeting.');
     return state;
   }
@@ -78,6 +85,7 @@ export class LiveCapture {
   }
   /** Deleted meetings must not remain candidates for the global live/recording readers. Never detach queued work. */
   pruneMeetings(existing: ReadonlySet<string>) {
+    this.echo?.prune(existing);
     for (const [source, state] of this.sources) if (!existing.has(state.meetingId) && !state.busy) this.sources.delete(source);
   }
   /**
@@ -98,6 +106,7 @@ export class LiveCapture {
    */
   async close() {
     this.closing = true;
+    await this.echo?.flush(); // Stop reference waits and drain latency BEFORE queued seals wait for results.
     await this.sweeping;
     await Promise.allSettled([...this.sources.values()].map(s => s.chain));
     for (const { meetingId, source } of this.store.heldSources()) {
@@ -106,6 +115,7 @@ export class LiveCapture {
       await this.run(state, () => this.sealIfDue(state, source, true)).catch(error => this.options.log?.(`Sealing held audio at close failed: ${(error as Error).message}`));
     }
     for (const s of this.sources.values()) s.ended = true;
+    await this.echo?.close();
     this.closed = true;
     await Promise.allSettled([...this.sources.values()].map(s => s.chain));
   }
@@ -124,11 +134,14 @@ export class LiveCapture {
       state.firstFrameAt ??= state.lastFrameAt;
       state.endMs = Math.max(state.endMs, frame.startMs + frame.samples * 1000 / FRAME_RATE);
       if (rms(asFloats(pcm)) >= (isRemote(source) ? SOUND_LEVEL.tab : SOUND_LEVEL.mic)) state.lastSoundAt = state.lastFrameAt;
-      const drafts = this.options.drafts;
-      // A repeated frame (lost reply, retry) was already fed: feeding it again would repeat its words in the draft.
-      if (drafts && added) {
-        if (!state.window) state.window = drafts.begin(meetingId, source, `${source}:${frame.sequence}`, frame.startMs) ? `${source}:${frame.sequence}` : null;
-        if (state.window) drafts.feed(state.window, asFloats(pcm));
+      // Durable admission/dedup precedes AEC, so a retried upload is never processed or fed twice.
+      if (added) {
+        if (isRemote(source)) this.echo?.reference(meetingId, source, pcm, timing);
+        const cleaning = isRemote(source) ? null : this.echo?.microphone(meetingId, source, frame.id, pcm, timing);
+        const audio = { pcm: cleaning ? undefined : pcm, ready: cleaning ?? Promise.resolve(pcm) };
+        state.audio.set(frame.id, audio); state.preview.push(frame);
+        if (cleaning) cleaning.then(cleaned => { audio.pcm = cleaned; this.feedReady(state, source); }).catch(error => this.options.log?.(`AEC preview failed: ${(error as Error).message}`));
+        this.feedReady(state, source);
       }
       // Saving is the acknowledgement boundary. A failed seal leaves durable held frames for the next frame/sweep.
       await this.sealIfDue(state, source, false).catch(error => this.options.log?.(`Sealing saved audio failed: ${(error as Error).message}`));
@@ -138,23 +151,30 @@ export class LiveCapture {
   /** The browser stopped capture after `lastSequence`: everything held is sealed, and later frames are refused. Idempotent. */
   end(meetingId: string, source: string, lastSequence: number | null): Promise<{ sealed: number }> {
     const state = this.state(meetingId, source);
+    // A normal seal may ALREADY hold this source's queue waiting for AEC. Wake it now;
+    // validation and durable end-state mutations still run in order on the source chain.
+    const checkpoint = this.echo?.flush(source);
     return this.run(state, async () => {
+      await checkpoint;
       const saved = this.store.lastFrameSequence(meetingId, source);
       if (lastSequence !== null && (saved ?? -1) < lastSequence) throw new CaptureConflict(`Frames up to ${lastSequence} have not all arrived.`);
       state.ended = true;
+      if (isRemote(source)) await this.echo?.end(meetingId, source); // Keep its buffered final reference, but stop waiting beyond it.
       // Recognizers release at Stop; sealed display previews remain until their chunks complete.
       try {
         const sealed = await this.sealIfDue(state, source, true);
         this.store.finishRecordingSource(meetingId, source, 'ended', this.clock());
         return { sealed };
       }
-      finally { this.options.drafts?.release(source); }
+      finally { if (!isRemote(source)) await this.echo?.end(meetingId, source); this.options.drafts?.release(source); }
     });
   }
   /** Loss detection may seal audio, but cannot end a source that became live while sealing or waiting in its queue. */
   endIfInactive(meetingId: string, source: string, inactive: () => boolean): Promise<boolean> {
     const state = this.state(meetingId, source);
+    const checkpoint = inactive() ? this.echo?.flush(source) : undefined;
     return this.run(state, async () => {
+      await checkpoint;
       if (!inactive()) return false;
       await this.sealIfDue(state, source, true);
       // Cross a full I/O turn, even when sealing resumes in a poll/check callback with nothing held.
@@ -162,6 +182,7 @@ export class LiveCapture {
       if (!inactive()) return false;
       state.ended = true;
       this.store.finishRecordingSource(meetingId, source, 'ended', this.clock());
+      await this.echo?.end(meetingId, source);
       this.options.drafts?.release(source);
       return true;
     });
@@ -174,7 +195,9 @@ export class LiveCapture {
   }
   private abandon(meetingId: string, source: string, recoveringOnly: boolean) {
     const state = this.state(meetingId, source);
+    const checkpoint = this.echo?.flush(source);
     return this.run(state, async () => {
+      await checkpoint;
       const eligible = () => this.store.openRecordings().some(s => s.meetingId === meetingId && s.source === source && (!recoveringOnly || s.state === 'recovering'));
       if (!eligible()) return;
       if (source.startsWith('app:')) state.ended = true;
@@ -182,6 +205,7 @@ export class LiveCapture {
       // A reconnect can arrive during sealing. It wins over startup abandonment.
       if (!eligible()) return;
       // Microphones/tabs can resume after abandonment; helper-owned app sources never do.
+      await this.echo?.end(meetingId, source);
       this.options.drafts?.release(source);
       this.store.finishRecordingSource(meetingId, source, 'abandoned', this.clock());
     });
@@ -209,7 +233,11 @@ export class LiveCapture {
     // Forget sources that are finished and fully sealed.
     for (const [source, state] of this.sources) {
       // Never while work is queued or running on it: a later request would get a second owner.
-      if (!state.busy && this.clock() - state.lastFrameAt > 10 * 60_000 && !this.store.heldFrames(state.meetingId, source).length) this.sources.delete(source);
+      if (!state.busy && this.clock() - state.lastFrameAt > 10 * 60_000 && !this.store.heldFrames(state.meetingId, source).length) {
+        // Do not cross an await between checking busy and forgetting the owner: a reconnect may arrive then.
+        this.sources.delete(source);
+        this.echo?.end(state.meetingId, source).catch(error => this.options.log?.(`AEC retirement failed: ${(error as Error).message}`));
+      }
     }
   }
   /**
@@ -245,7 +273,23 @@ export class LiveCapture {
     return this.store.heldFrames(meetingId).reduce((sum, f) => sum + f.samples / FRAME_RATE, 0);
   }
 
+  echoStats() { return this.echo?.stats() ?? null; }
+
+  /** All ready frames in capture order, never a newer raw frame ahead of pending cleaned audio. */
+  private feedReady(state: SourceState, source: string) {
+    const drafts = this.options.drafts;
+    while (state.preview.length) {
+      const frame = state.preview[0], audio = state.audio.get(frame.id);
+      if (!audio?.pcm) break;
+      state.preview.shift();
+      if (!drafts) continue;
+      if (!state.window) state.window = drafts.begin(state.meetingId, source, `${source}:${frame.sequence}`, frame.startMs) ? `${source}:${frame.sequence}` : null;
+      if (state.window) drafts.feed(state.window, asFloats(audio.pcm));
+    }
+  }
+
   private async sealIfDue(state: SourceState, source: string, force: boolean): Promise<number> {
+    if (force || this.closing) await this.echo?.flush(source);
     let sealed = 0;
     for (;;) {
       const held = this.store.heldFrames(state.meetingId, source);
@@ -254,7 +298,13 @@ export class LiveCapture {
       if (!force && seconds < WINDOW_MAX_SECONDS) break;
       // A forced seal (end, idle) takes everything once it fits in one window; otherwise cut at a pause.
       const cut = force && seconds <= WINDOW_MAX_SECONDS ? held.length : chooseCut(held, await this.loudness(held));
-      const chunk = await this.store.sealWindow(state.meetingId, held.slice(0, cut));
+      const frames = held.slice(0, cut);
+      // Each in-memory AEC promise has a main-thread deadline and resolves raw on failure.
+      // Restart recovery has no ephemeral entries: always read the durable raw frame instead.
+      const parts = await Promise.all(frames.map(frame => state.audio.get(frame.id)?.ready ?? readFile(this.store.resolvePath(frame.path))));
+      this.feedReady(state, source);
+      const chunk = await this.store.sealWindow(state.meetingId, frames, Buffer.concat(parts));
+      for (const frame of frames) state.audio.delete(frame.id);
       if (state.window) this.options.drafts?.seal(state.window, chunk);
       sealed++;
       this.options.onChunk?.(state.meetingId);
@@ -266,15 +316,20 @@ export class LiveCapture {
   private async restartDraft(state: SourceState, source: string, rest: Frame[]) {
     const drafts = this.options.drafts;
     if (!drafts) return;
-    state.window = null;
+    state.window = null; state.preview = [];
     if (!rest.length || state.ended) return;
     const window = `${source}:${rest[0].sequence}`;
     if (!drafts.begin(state.meetingId, source, window, rest[0].startMs)) return;
     state.window = window;
     // On the source's chain, so these are fed before any newer frame. A missing file only costs the draft.
-    const parts = await Promise.all(rest.map(f => readFile(this.store.resolvePath(f.path)))).catch(() => null);
-    if (!parts) { drafts.drop(window); state.window = null; return; }
-    for (const part of parts) drafts.feed(window, asFloats(part));
+    try {
+      for (const frame of rest) if (!state.audio.has(frame.id)) {
+        const pcm = await readFile(this.store.resolvePath(frame.path));
+        state.audio.set(frame.id, { pcm, ready: Promise.resolve(pcm) });
+      }
+    } catch { drafts.drop(window); state.window = null; return; }
+    state.preview = rest.slice();
+    this.feedReady(state, source);
   }
   private async loudness(frames: Frame[]): Promise<(index: number) => number> {
     if (frames.some(f => this.store.meeting(f.meetingId).audioRemovedAt !== null)) return () => 0;

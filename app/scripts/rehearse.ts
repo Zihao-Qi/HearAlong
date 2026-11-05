@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { startServer } from '../src/server.ts';
+import type { EchoOptions } from '../src/echo-audio.ts';
 import { clock, loadWav, parseArgs, validateRunFiles, writeTrimmed } from './rehearsal-input.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -13,7 +14,7 @@ const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The optional observer drives lifecycle/UI checks; the command itself always uses the real UI unmodified. */
-export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>, benchmark?: { modelPath: string; terminalTimeoutMs: number }) {
+export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>, benchmark?: { modelPath: string; terminalTimeoutMs: number; directory?: string; echo?: EchoOptions | null; callDelayMs?: number }) {
   const args = parseArgs(argv);
   // All input validation precedes starting a server or Chrome (or creating a run).
   const mic = args.mic ? await loadWav(resolve(args.mic), args.from, args.minutes) : undefined;
@@ -34,16 +35,21 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     const speech = await discoverModel(benchmark?.modelPath);
     if (!speech.available || !speech.path) throw new Error(speech.error ?? 'No speech model is available.');
     speechModelPath = speech.path;
-    await mkdir(RUNS, { recursive: true, mode: 0o700 });
-    if (await realpath(RUNS) !== RUNS) throw new Error('The rehearsal runs folder must not be a symlink.');
-    const date = new Date();
-    const stamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}-${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
-    directory = join(RUNS, stamp);
-    // Preserve earlier runs in the same minute, rather than reusing their data.
-    for (let suffix = 0;; suffix++) {
-      directory = join(RUNS, `${stamp}${suffix ? `-${suffix + 1}` : ''}`);
-      try { await mkdir(directory, { mode: 0o700 }); break; }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (benchmark?.directory) {
+      directory = resolve(benchmark.directory);
+      await mkdir(directory, { mode: 0o700 }); // Explicit benchmark output is always a fresh directory.
+    } else {
+      await mkdir(RUNS, { recursive: true, mode: 0o700 });
+      if (await realpath(RUNS) !== RUNS) throw new Error('The rehearsal runs folder must not be a symlink.');
+      const date = new Date();
+      const stamp = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}-${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
+      directory = join(RUNS, stamp);
+      // Preserve earlier runs in the same minute, rather than reusing their data.
+      for (let suffix = 0;; suffix++) {
+        directory = join(RUNS, `${stamp}${suffix ? `-${suffix + 1}` : ''}`);
+        try { await mkdir(directory, { mode: 0o700 }); break; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      }
     }
     await writeFile(join(directory, 'settings.json'), JSON.stringify({ setupSeen: true, speechModelPath }));
   }
@@ -82,7 +88,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     if (them) await writeTrimmed(join(temporary, 'them.wav'), them);
     checkpoint();
     const { startServer } = await import('../src/server.ts');
-    app = await startServer({ directory, port: 0 });
+    app = await startServer({ directory, port: 0, echo: benchmark?.echo });
     checkpoint();
     context = await chromium.launchPersistentContext(join(temporary, 'chrome-profile'), {
       executablePath: executable, headless: args.headless, viewport: null,
@@ -176,8 +182,12 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
       meetingId = app.store.meetings().find(m => m.title === `Rehearsal: ${basename(args.mic!)} from ${clock(args.from)}`)?.id;
       checkpoint();
       await page.locator('#start').click();
-      await page.locator(them ? '#start-online' : '#start-mic').click();
+      await page.locator(them && !benchmark?.callDelayMs ? '#start-online' : '#start-mic').click();
       await page.locator('#stop').waitFor({ state: 'visible', timeout: 15_000 });
+      if (them && benchmark?.callDelayMs) {
+        await new Promise<void>(resolve => setTimeout(resolve, benchmark.callDelayMs));
+        await page.locator('#add-tab').click(); // Real add-call path; file source has kept its microphone-synchronized clock.
+      }
       poll = setInterval(() => {
         if (page!.isClosed()) return;
         if (meetingId) finalsWhileRecording = Math.max(finalsWhileRecording, app!.store.segments(meetingId).length);
@@ -217,7 +227,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
           finals: meetingId ? app.store.segments(meetingId).length : 0,
           failedChunks: meetingId ? app.store.chunks(meetingId).filter(chunk => chunk.status === 'failed' || chunk.status === 'cancelled').length : 0,
           unfinishedChunks: meetingId ? app.store.chunks(meetingId).filter(chunk => chunk.status === 'queued' || chunk.status === 'running').length : 0,
-          frames, ends, errors,
+          frames, ends, errors, echo: app.capture.echoStats(),
         }, null, 2));
       }
     } finally {

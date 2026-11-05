@@ -40,7 +40,7 @@ const processGroupBoundary = {
 };
 const processOwners = [
   'audio.ts', 'drafts.ts', 'recognizer.ts', 'pdf-text.ts', 'pi-rpc.ts', 'pi-task.ts', 'server.ts',
-  'memory-files.ts', 'setup/api-keys.ts', 'setup/service.ts', 'setup/pi-models.ts',
+  'memory-files.ts', 'setup/api-keys.ts', 'setup/service.ts', 'setup/pi-models.ts', 'echo-audio.ts', 'echo-worker.ts',
 ].map(file => `src/${file}`);
 
 // Only module-level node:test registrations are runner-owned. A name-only safe-call exception would

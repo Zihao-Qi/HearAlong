@@ -100,6 +100,13 @@ function macho(path) {
   assertUnquarantined(app, join(out, 'quarantine-attributes.txt'));
   // Both Koffi's arm64 addon and the actual Metal speech dylib must load on the shipped Node, not the build host's Node.
   run(node, ['--input-type=module', '-e', "import { version, libraryPath, getAvailableBackends } from 'transcribe-cpp'; console.log(JSON.stringify({version:version(), library:libraryPath(), backends:getAvailableBackends()}));"], { cwd: join(bundled, 'server') });
+  // Test-only headless worker switch: prove packaged JS resolves/loads its adjacent WASM inside the signed bundle.
+  // No Electron/UI launch, audio device, process tap, network or writes into the app are involved.
+  const aec = JSON.parse(run(node, ['--experimental-strip-types', 'src/echo-audio.ts', '--self-test'],
+    { cwd: join(bundled, 'server'), stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8' }));
+  if (aec.samples !== 160 || !aec.finite || !(aec.tail > 0.1) || !(aec.delaySamples >= 80 && aec.delaySamples <= 640) || !aec.wasmPath.startsWith(join(bundled, 'server/node_modules/') )) throw new Error('Bundled AEC WASM smoke failed.');
+  writeFileSync(join(out, 'aec-smoke.json'), JSON.stringify(aec, null, 2));
+  run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]); // Loading must not mutate the sealed app.
   const zip = join(out, 'HearAlong-mac-arm64.zip');
   run('/usr/bin/ditto', ['-c', '-k', '--keepParent', app, zip]);
   writeFileSync(`${zip}.sha256`, `${createHash('sha256').update(readFileSync(zip)).digest('hex')}  HearAlong-mac-arm64.zip\n`);

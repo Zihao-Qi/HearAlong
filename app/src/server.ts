@@ -28,6 +28,7 @@ import { JobManager, type Recognizer } from './jobs.ts';
 import { LiveDrafts, ownsDisplayInterval, type Draft } from './drafts.ts';
 import { miniPreviewWords, miniLog, midpoint } from '../public/preview-composition.js';
 import { LiveCapture } from './live.ts';
+import type { EchoOptions } from './echo-audio.ts';
 import { captureDiscontinuities } from './capture-gaps.ts';
 import { LiveView, type MiniAction } from './live-view.ts';
 import { ROLE_LABEL, compareSegments, isRemote } from './speakers.ts';
@@ -106,6 +107,8 @@ export async function startServer(options: {
   keys?: { keychain?: Keychain; fetch?: typeof fetch };
   /** Live draft transcription; by default on with the local model, off when a test recognizer is injected. */
   drafts?: LiveDrafts | null;
+  /** Injectable transport/configuration for isolated AEC checks; production defaults on when a call is present. */
+  echo?: EchoOptions | null;
   /** Cloud model access through Pi; null disables it (MEETING_CLOUD=0 does the same). */
   quick?: Quick | null; heavy?: Heavy | null; notes?: NotesRunner | null; actions?: ActionRunner | null; board?: GateAsk | null; clock?: () => number; correctionTickMs?: number;
   /** Pi for the plans (M7b): tests give a stand-in with runPiTask's shape; null turns making plans off (saved ones stay). */
@@ -252,7 +255,7 @@ export async function startServer(options: {
     const liveJobs = jobs;
     // Set once the board exists: a window sealed later (also one recovered after a restart) gets its tail scanned.
     let onLiveChunk = (_meetingId: string) => {};
-    const capture = new LiveCapture(store, { drafts, clock: options.clock, onChunk: id => { liveJobs?.kick(); onLiveChunk(id); }, log: message => console.warn(message) });
+    const capture = new LiveCapture(store, { drafts, echo: options.echo, clock: options.clock, onChunk: id => { liveJobs?.kick(); onLiveChunk(id); }, log: message => console.warn(message) });
     live = capture;
     if (switchable) speechSetup.attachRuntime({
       recording: () => capture.recording(), cancelSwitch: () => switchable.cancelSwitch(),

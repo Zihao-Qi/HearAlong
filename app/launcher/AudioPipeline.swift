@@ -33,6 +33,48 @@ final class MonoFramer {
     var tail: [Float] { pending }
 }
 
+struct CaptureWallGap: Encodable {
+    let offsetSamples: Int
+    let fromWallMs: Double
+    let toWallMs: Double
+}
+struct TimedMonoFrame {
+    let samples: [Float]
+    let wallMs: Double
+    let discontinuities: [CaptureWallGap]
+}
+
+/// Framing preserves the sample clock, but capture wall time follows each input span after sleep/pauses.
+/// Every >2 ms wall step needs an offset; only >5 s positive gaps become visible notices on the server.
+final class TimedMonoFramer {
+    private var pending: [Float] = []
+    private var firstWallMs = 0.0
+    private var lastEndMs: Double?
+    private var gaps: [CaptureWallGap] = []
+    let onFrame: (TimedMonoFrame) -> Void
+    init(onFrame: @escaping (TimedMonoFrame) -> Void) { self.onFrame = onFrame; pending.reserveCapacity(16000) }
+    func append(_ samples: [Float], wallMs: Double) {
+        guard !samples.isEmpty else { return }
+        if !pending.isEmpty, let end = lastEndMs, abs(wallMs - end) > 2 {
+            gaps.append(CaptureWallGap(offsetSamples: pending.count, fromWallMs: end, toWallMs: wallMs))
+        }
+        var index = 0
+        while index < samples.count {
+            if pending.isEmpty { firstWallMs = wallMs + Double(index) / 16 }
+            let count = min(16000 - pending.count, samples.count - index)
+            pending.append(contentsOf: samples[index..<index + count]); index += count
+            if pending.count == 16000 { flush() }
+        }
+        lastEndMs = wallMs + Double(samples.count) / 16
+    }
+    func flush() {
+        guard !pending.isEmpty else { return }
+        let frame = TimedMonoFrame(samples: pending, wallMs: firstWallMs, discontinuities: gaps)
+        pending = []; pending.reserveCapacity(16000); gaps = []
+        onFrame(frame)
+    }
+}
+
 struct ConversionResult {
     let samples: [Float]
     let fullFrames: Int
