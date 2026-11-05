@@ -106,6 +106,7 @@ export class LiveCapture {
    */
   async close() {
     this.closing = true;
+    await this.echo?.flush(); // Stop reference waits and drain latency BEFORE queued seals wait for results.
     await this.sweeping;
     await Promise.allSettled([...this.sources.values()].map(s => s.chain));
     for (const { meetingId, source } of this.store.heldSources()) {
@@ -154,13 +155,14 @@ export class LiveCapture {
       const saved = this.store.lastFrameSequence(meetingId, source);
       if (lastSequence !== null && (saved ?? -1) < lastSequence) throw new CaptureConflict(`Frames up to ${lastSequence} have not all arrived.`);
       state.ended = true;
+      if (isRemote(source)) await this.echo?.end(meetingId, source); // Keep its buffered final reference, but stop waiting beyond it.
       // Recognizers release at Stop; sealed display previews remain until their chunks complete.
       try {
         const sealed = await this.sealIfDue(state, source, true);
         this.store.finishRecordingSource(meetingId, source, 'ended', this.clock());
         return { sealed };
       }
-      finally { await this.echo?.end(meetingId, source); this.options.drafts?.release(source); }
+      finally { if (!isRemote(source)) await this.echo?.end(meetingId, source); this.options.drafts?.release(source); }
     });
   }
   /** Loss detection may seal audio, but cannot end a source that became live while sealing or waiting in its queue. */
@@ -279,6 +281,7 @@ export class LiveCapture {
   }
 
   private async sealIfDue(state: SourceState, source: string, force: boolean): Promise<number> {
+    if (force || this.closing) await this.echo?.flush(source);
     let sealed = 0;
     for (;;) {
       const held = this.store.heldFrames(state.meetingId, source);

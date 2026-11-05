@@ -14,6 +14,7 @@ private struct UploadFrame {
     let sequence: Int
     let samplesBefore: Int
     let wallMs: Double
+    let discontinuities: [CaptureWallGap]
 }
 
 /** Main-queue owner of capture, framing and one ordered, bounded upload queue. */
@@ -29,7 +30,7 @@ final class AppCaptureClient {
     private var receiving = false
     private var stopScheduled = false
     private var pending: [UploadFrame] = []
-    private var tail: [Float] = []
+    private var framer: TimedMonoFramer?
     private var sequence = 0
     private var sampleCount = 0
     private var timeline: AppTimeline?
@@ -78,7 +79,8 @@ final class AppCaptureClient {
     }
     private func start(_ request: CaptureCommand) {
         command = request; ending = false; endSent = false; failed = false; message = nil; deadline = nil
-        pending = []; tail = []; sequence = 0; sampleCount = 0; timeline = nil; sound = false; noticeSent = false; began = Date()
+        pending = []; sequence = 0; sampleCount = 0; timeline = nil; sound = false; noticeSent = false; began = Date()
+        framer = TimedMonoFramer { [weak self] frame in self?.enqueue(frame) }
         if request.stopping { stop(); return }
         do {
             try input.start(app: request.app, receive: { [weak self] samples, firstWallMs in
@@ -87,15 +89,12 @@ final class AppCaptureClient {
                 defer { self.receiving = false }
                 self.timeline = self.timeline ?? AppTimeline(clockStart: request.clockStart, firstWallMs: firstWallMs)
                 if AudioPipeline.rms(samples) >= 0.001 { self.sound = true }
-                self.tail.append(contentsOf: samples)
-                while self.tail.count >= 16000 {
-                    let frame = Array(self.tail.prefix(16000)); self.tail.removeFirst(16000)
-                    self.enqueue(frame)
-                }
+                self.framer?.append(samples, wallMs: firstWallMs)
             }, ended: { [weak self] reason in self?.stop(message: reason) })
         } catch { stop(message: "\(request.app.name) capture could not start: \(error). The microphone keeps recording.") }
     }
-    private func enqueue(_ samples: [Float]) {
+    private func enqueue(_ frame: TimedMonoFrame) {
+        let samples = frame.samples
         guard !samples.isEmpty, !failed else { return }
         guard pending.count < 30 else {
             failed = true; pending = []
@@ -103,7 +102,7 @@ final class AppCaptureClient {
             return
         }
         let data = samples.withUnsafeBytes { Data($0) }
-        pending.append(UploadFrame(bytes: data, sequence: sequence, samplesBefore: sampleCount, wallMs: (timeline?.firstWallMs ?? Date().timeIntervalSince1970 * 1000) + Double(sampleCount) * 1000 / 16000))
+        pending.append(UploadFrame(bytes: data, sequence: sequence, samplesBefore: sampleCount, wallMs: frame.wallMs, discontinuities: frame.discontinuities))
         sequence += 1; sampleCount += samples.count
         pump()
     }
@@ -127,7 +126,7 @@ final class AppCaptureClient {
         input.stop()
         stoppingInput = false
         ending = true; deadline = Date().addingTimeInterval(30)
-        let final = tail; tail = []; enqueue(final)
+        framer?.flush()
         pump()
     }
     private func pump() {
@@ -135,7 +134,10 @@ final class AppCaptureClient {
         guard let frame = pending.first, !failed else { if ending { end() }; return }
         uploading = true
         let start = timeline?.startMs(samples: frame.samplesBefore) ?? max(0, frame.wallMs - command.clockStart - Double(frame.bytes.count / 4) * 1000 / 16000)
-        let headers = ["Content-Type": "application/octet-stream", "X-Audio-Source": command.source, "X-Sequence": String(frame.sequence), "X-Sample-Rate": "16000", "X-Start-Ms": String(start), "X-Clock-Start": String(command.clockStart), "X-Recording": command.recordingId, "X-Page": command.pageId, "X-Pending": String(pending.count), "X-Capture-Wall-Ms": String(frame.wallMs), "X-Capture-Settings": String(data: try! JSONSerialization.data(withJSONObject: ["kind": "app", "app": command.app.name]), encoding: .utf8)!]
+        var headers = ["Content-Type": "application/octet-stream", "X-Audio-Source": command.source, "X-Sequence": String(frame.sequence), "X-Sample-Rate": "16000", "X-Start-Ms": String(start), "X-Clock-Start": String(command.clockStart), "X-Recording": command.recordingId, "X-Page": command.pageId, "X-Pending": String(pending.count), "X-Capture-Wall-Ms": String(frame.wallMs), "X-Capture-Settings": String(data: try! JSONSerialization.data(withJSONObject: ["kind": "app", "app": command.app.name]), encoding: .utf8)!]
+        if !frame.discontinuities.isEmpty {
+            headers["X-Capture-Discontinuities"] = String(data: try! JSONEncoder().encode(frame.discontinuities), encoding: .utf8)!
+        }
         retry(path: "api/meetings/\(command.meetingId)/pcm", bytes: frame.bytes, headers: headers) { [weak self] json, error in
             guard let self else { return }
             self.uploading = false

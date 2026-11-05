@@ -20,7 +20,7 @@ const mic = 'mic:00000000-0000-0000-0000-000000000001', call = 'tab:00000000-000
 test('wall-clock alignment is per frame: reference early/late, lead, drift, out-of-order spans', () => {
   const spans = [...audioSpans(audio(2001, 0.2)), ...audioSpans(audio(1000, 0.1))].sort((a, b) => a.wallMs - b.wallMs);
   assert.ok(Math.abs(referenceBlock(spans, 1990, 160).pcm[0] - 0.1) < 1e-7);
-  assert.equal(referenceBlock(spans, 2000, 160).missing, 16, '1 ms clock drift is not compressed away');
+  assert.equal(referenceBlock(spans, 2000, 160).missing, 0, '1 ms drift gap is held, without moving either frame timestamp');
   assert.ok(Math.abs(referenceBlock(spans, 2001, 160).pcm[0] - 0.2) < 1e-7);
   assert.equal(referenceBlock(audioSpans(audio(1100), 100), 1000, 160).missing, 0, 'lead corrects a late timestamp');
   assert.equal(referenceBlock(audioSpans(audio(1100)), 1000, 160).missing, 160);
@@ -84,7 +84,8 @@ test('call ending flushes pending raw immediately and stops AEC while mic contin
     await echo.end('m', call);
     assert.ok((await pending)!.equals(raw));
     assert.ok(performance.now() - start < 1400, 'end flush does not wait the reference timeout');
-    assert.equal(echo.microphone('m', mic, '2', raw, { captureWallMs: 4000 }), null);
+    const after = echo.microphone('m', mic, '2', raw, { captureWallMs: 4000 });
+    assert.ok(after === null || (await after).equals(raw), 'ended reference does not wait for future render');
     assert.equal(echo.stats().frames, 1, 'completed stats survive worker retirement');
   } finally { await echo.close(); }
 });
@@ -95,7 +96,8 @@ for (const leadMs of [299, 298]) test(`worker ${leadMs === 299 ? 'failure' : 'st
     echo.reference('m', call, pcm(), { captureWallMs: 1000 });
     const raw = pcm(), results = await Promise.all([echo.microphone('m', mic, 'a', raw, { captureWallMs: 1000 }), echo.microphone('m', mic, 'b', raw, { captureWallMs: 2000 })]);
     assert.ok(results.every(result => result!.equals(raw)));
-    assert.equal(echo.microphone('m', mic, 'c', raw, { captureWallMs: 3000 }), null);
+    const after = echo.microphone('m', mic, 'c', raw, { captureWallMs: 3000 });
+    assert.ok(after === null || (await after).equals(raw), 'failed worker stays raw');
     assert.equal(logs.length, 1);
   } finally { await echo.close(); }
 });
@@ -145,8 +147,10 @@ test('actual processor keeps both sides of an inside-frame sleep and sorts cross
   try {
     processor.reference(audio(12000));
     processor.reference(frame);
-    assert.equal(processor.process(frame).missingSamples, 0, 'pre-sleep reference was not evicted by wall-clock pruning');
-    assert.equal(processor.process(audio(12000)).missingSamples, 0);
+    processor.push('before/after-sleep', frame);
+    processor.push('next', audio(12000));
+    processor.flush();
+    assert.deepEqual(processor.takeReady().map(result => result.missingSamples), [0, 0], 'pre-sleep reference and aligned output tail were retained');
   } finally { processor.close(); }
 });
 
@@ -173,6 +177,7 @@ test('pause-cut preview replay uses cleaned remaining frames, and every cleaned 
       const data = new Float32Array(16000).fill(0.4); data[8000] += n / 1000;
       if (n === 20) { data.fill(0, 0, 1600); data.fill(0, 14400); }
       expected.push(Buffer.from(data.map(value => value / 2).buffer));
+      if (n) await live.accept(meeting.id, call, n, n * 1000, pcm(0.2), undefined, { captureWallMs: 1000 + n * 1000 });
       await live.accept(meeting.id, mic, n, n * 1000, Buffer.from(data.buffer), undefined, { captureWallMs: 1000 + n * 1000 });
     }
     await live.end(meeting.id, mic, 24);

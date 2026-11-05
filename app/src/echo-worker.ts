@@ -1,45 +1,50 @@
-// The only production module loading AEC WASM. Never runs on the server event loop.
+// AEC, latency buffering and reference waiting run only in this owned worker.
 import { parentPort, workerData } from 'node:worker_threads';
 import { createRequire } from 'node:module';
 import WebRtcAec3 from '@ennuicastr/webrtcaec3.js';
-import { EchoProcessor, audioEnd, type TimedAudio } from './echo-timeline.ts';
+import { EchoProcessor, type TimedAudio, type EchoOutput } from './echo-timeline.ts';
+import { EchoScheduler } from './echo-scheduler.ts';
 
 if (!parentPort) throw new Error('AEC requires a worker thread.');
-const port = parentPort;
-const module = await WebRtcAec3();
+const port = parentPort, module = await WebRtcAec3();
 const processor = new EchoProcessor(module, workerData.leadMs ?? 0);
 if (workerData.selfTest) {
-  const pcm = new Float32Array(160);
-  processor.reference({ pcm, timing: { captureWallMs: 1000 } });
-  const result = processor.process({ pcm, timing: { captureWallMs: 1000 } });
+  const pcm = new Float32Array(160); pcm[159] = 0.5;
+  processor.reference({ pcm: new Float32Array(1600), timing: { captureWallMs: 1000 } });
+  processor.push('smoke', { pcm, timing: { captureWallMs: 1000 } }); processor.flush();
+  const result = processor.takeReady()[0];
   port.postMessage({ kind: 'self-test', wasmPath: createRequire(import.meta.url).resolve('@ennuicastr/webrtcaec3.js/dist/webrtcaec3-0.3.0.wasm'),
-    samples: result.pcm.length, finite: result.pcm.every(Number.isFinite) });
+    samples: result.pcm.length, finite: result.pcm.every(Number.isFinite), delaySamples: processor.delaySamples, tail: result.pcm[159] });
   processor.close(); port.close();
 } else {
-  type Pending = TimedAudio & { id: string; receivedAt: number };
-  const pending: Pending[] = [];
-  let timer: NodeJS.Timeout | undefined, finishing = false;
-  const drain = () => {
-    clearTimeout(timer);
-    while (pending.length) {
-      const next = pending[0];
-      const remaining = workerData.waitMs - (Date.now() - next.receivedAt);
-      if (!finishing && processor.referenceEndMs < audioEnd(next) && remaining > 0) {
-        timer = setTimeout(drain, remaining); return;
-      }
-      pending.shift();
-      const start = performance.now();
-      const result = processor.process(next);
-      port.postMessage({ kind: 'audio', id: next.id, pcm: result.pcm, missingSamples: result.missingSamples,
-        computeMs: performance.now() - start }, [result.pcm.buffer]);
-    }
-    if (finishing) { processor.close(); port.close(); }
+  type Message = (TimedAudio & { kind: 'microphone'; id: string; receivedAt: number }) | (TimedAudio & { kind: 'reference' })
+    | { kind: 'switch'; audio: TimedAudio[] } | { kind: 'reference-ended' } | { kind: 'flush' | 'finish'; request?: number; fadeToRaw?: boolean };
+  const scheduler = new EchoScheduler(processor, workerData.waitMs);
+  let timer: NodeJS.Timeout | undefined, computeMs = 0;
+  const emit = (results: EchoOutput[]) => {
+    const samples = results.reduce((sum, result) => sum + result.pcm.length, 0);
+    for (const result of results) port.postMessage({ kind: 'audio', ...result, computeMs: computeMs * result.pcm.length / samples }, [result.pcm.buffer]);
+    if (results.length) computeMs = 0;
   };
-  port.on('message', (message: Pending & { kind: string }) => {
-    if (message.kind === 'reference') processor.reference(message);
-    else if (message.kind === 'microphone') pending.push(message);
-    else if (message.kind === 'finish') finishing = true;
+  const drain = (force = false, fadeToRaw = false) => {
+    clearTimeout(timer);
+    const start = performance.now(), results = scheduler.drain(Date.now(), force, fadeToRaw);
+    computeMs += performance.now() - start; emit(results);
+    if (Number.isFinite(scheduler.deadline)) timer = setTimeout(() => drain(), Math.max(1, scheduler.deadline - Date.now()));
+  };
+  port.on('message', (message: Message) => {
+    if (message.kind === 'reference') scheduler.reference(message);
+    else if (message.kind === 'microphone') scheduler.admit(message.id, message, message.receivedAt);
+    else if (message.kind === 'reference-ended') scheduler.referenceEnded();
+    else if (message.kind === 'switch') {
+      const start = performance.now(), results = scheduler.switchReference(message.audio, Date.now());
+      computeMs += performance.now() - start; emit(results);
+    } else {
+      drain(true, message.fadeToRaw);
+      if (message.request !== undefined) port.postMessage({ kind: 'flushed', request: message.request });
+      if (message.kind === 'finish') { clearTimeout(timer); processor.close(); port.close(); return; }
+    }
     drain();
   });
-  port.postMessage({ kind: 'ready' });
+  port.postMessage({ kind: 'ready', delaySamples: processor.delaySamples });
 }

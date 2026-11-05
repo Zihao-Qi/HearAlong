@@ -27,6 +27,31 @@ private final class ConvertingInput: AppAudioInput {
         try! converter.convert([], channels: 1, final: true) { self.receive?($0, 1_800_000_000_000) }
     }
 }
+private final class ClockUpload: URLProtocol {
+    static let lock = NSLock()
+    static var saved: [[String: String]] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        if request.url!.path.hasSuffix("/pcm") {
+            let keys = ["X-Capture-Wall-Ms", "X-Capture-Discontinuities", "X-Start-Ms", "X-Sequence"]
+            let headers = Dictionary(uniqueKeysWithValues: keys.map { ($0, request.value(forHTTPHeaderField: $0) ?? "") })
+            Self.lock.lock(); Self.saved.append(headers); Self.lock.unlock()
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 201, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("{}".utf8)); client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+    static func frames() -> [[String: String]] { lock.lock(); defer { lock.unlock() }; return saved }
+}
+private final class TimedTestInput: AppAudioInput {
+    var available: Bool { true }
+    var receive: (([Float], Double) -> Void)?
+    func apps() throws -> [AudioApp] { [] }
+    func start(app: AudioApp, receive: @escaping ([Float], Double) -> Void, ended: @escaping (String) -> Void) throws { self.receive = receive }
+    func stop() {}
+}
+
 @main struct TapRegressionTests {
     static func require(_ value: @autoclosure () -> Bool, _ text: String) throws { if !value() { throw ProbeError.message(text) } }
     static func main() {
@@ -34,7 +59,33 @@ private final class ConvertingInput: AppAudioInput {
     }
     static func run() throws {
         let which = CommandLine.arguments[1]
-        if which == "backlog" {
+        if which == "client-clock" {
+            let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ClockUpload.self]
+            let session = URLSession(configuration: configuration); defer { session.invalidateAndCancel() }
+            let input = TimedTestInput()
+            let client = AppCaptureClient(base: URL(string: "http://127.0.0.1:1")!, origin: "http://127.0.0.1:1", input: input, session: session)
+            client.poll(["appCapture": ["app": ["id": "test.fictional", "name": "Fictional Call"], "meetingId": UUID().uuidString, "recordingId": UUID().uuidString, "source": "app:\(UUID().uuidString)", "pageId": "page", "clockStart": 98000.0, "stopping": false]])
+            input.receive?([Float](repeating: 0.1, count: 8000), 100000)
+            input.receive?([Float](repeating: 0.2, count: 8000), 110500) // 10 s sleep inside a frame.
+            input.receive?([Float](repeating: 0.3, count: 16000), 111000)
+            var stopped = false; client.stop(completion: { stopped = true })
+            let deadline = Date().addingTimeInterval(3)
+            while !stopped && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            let frames = ClockUpload.frames()
+            try require(stopped && frames.count == 2, "fake-only client must drain both frames and Stop")
+            try require(Double(frames[0]["X-Capture-Wall-Ms"]!) == 100000 && Double(frames[1]["X-Capture-Wall-Ms"]!) == 111000, "capture wall must re-anchor after sleep, not firstWall + counted samples")
+            try require(Double(frames[0]["X-Start-Ms"]!) == 2000 && Double(frames[1]["X-Start-Ms"]!) == 3000, "recording sample clock remains compact and unchanged")
+            let gaps = try JSONSerialization.jsonObject(with: Data(frames[0]["X-Capture-Discontinuities"]!.utf8)) as! [[String: Any]]
+            try require(gaps.count == 1 && gaps[0]["offsetSamples"] as? Int == 8000 && gaps[0]["fromWallMs"] as? Double == 100500 && gaps[0]["toWallMs"] as? Double == 110500, "long in-frame gaps must be sent at the original sample offset")
+            print("PASS native upload clock: real span wall times, in-frame discontinuity, unchanged Start/sequence, fake URLSession only")
+        } else if which == "sleep-clock" {
+            var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
+            let second = UInt64(1_000_000_000.0 * Double(info.denom) / Double(info.numer))
+            let clock = TapHostClock(hostTime: second * 100, wallMs: 100000, continuousTime: second * 200)
+            let wake = clock.wall(at: second * 101, observedHost: second * 103, continuous: second * 213)
+            try require(abs(wake - 111000) < 0.001, "continuous/absolute mapping includes 10 s sleep and excludes 2 s callback/drain delay")
+            print("PASS native host clock: sleep included, callback delay excluded")
+        } else if which == "backlog" {
             let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [StuckUpload.self]
             let session = URLSession(configuration: configuration)
             defer { session.invalidateAndCancel() }
@@ -59,6 +110,22 @@ private final class ConvertingInput: AppAudioInput {
             print("PASS production drain gate: teardown after conversion, no recursive final drain")
         } else if #available(macOS 14.4, *) {
             let input = CoreAudioInput(serverGroup: 0, log: { _ in })
+            if which == "callback-gaps" {
+                var frames: [TimedMonoFrame] = []
+                let framer = TimedMonoFramer { frames.append($0) }
+                try input.prepareForTest(receive: { samples, wall in framer.append(samples, wallMs: wall) }, ended: { _ in })
+                var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
+                let second = UInt64(1_000_000_000.0 * Double(info.denom) / Double(info.numer))
+                let host = mach_absolute_time(), continuous = mach_continuous_time()
+                input.injectForTest([Float](repeating: 0.1, count: 4000), hostTime: host, observedHost: host, continuous: continuous)
+                input.injectForTest([Float](repeating: 0.2, count: 4000), hostTime: host + second / 4, observedHost: host + second / 4, continuous: continuous + second * 10 + second / 4)
+                input.drainForTest(); input.stop(); framer.flush()
+                try require(frames.count == 1 && frames[0].samples.count == 8000, "converter and final drain retain every sample across a sleep")
+                try require(frames[0].discontinuities.count == 1 && frames[0].discontinuities[0].offsetSamples == 4000, "callback stamps within the same bank must not be flattened")
+                try require(abs(frames[0].discontinuities[0].toWallMs - frames[0].discontinuities[0].fromWallMs - 10000) < 1, "same-bank host timestamp gap survives conversion")
+                print("PASS timestamped tap banks/converter: synthetic 10 s sleep, all 8000 samples and gap preserved")
+                return
+            }
             if which == "overrun-live" {
                 var received = 0, atEnd = 0
                 try input.prepareForTest(rate: 48000, receive: { samples, _ in received += samples.count }, ended: { _ in atEnd = received })

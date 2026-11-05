@@ -38,7 +38,8 @@ class PcmCapture extends AudioWorkletProcessor {
     if (input && !this.started && !this.stopped) this.started = true;
     if (this.started && !this.stopped) {
       const length = input ? input.length : 128;
-      const quantumWallMs = this.clock.at(currentFrame, sampleRate, Date.now());
+      const observedWallMs = Date.now();
+      const quantumWallMs = this.clock.at(currentFrame, sampleRate, observedWallMs, false);
       // A sleep can be entirely inside the last, partial frame. Keep its sample offset without cutting or padding PCM.
       // At a frame boundary, leave detection to the server's capture-time comparison instead.
       if (this.used && this.lastCaptureEndWallMs !== null && quantumWallMs - this.lastCaptureEndWallMs > 5000) {
@@ -47,12 +48,12 @@ class PcmCapture extends AudioWorkletProcessor {
       for (let index = 0; index < length; index++) {
         if (this.used === 0) {
           this.firstFrame = currentFrame + index;
-          this.captureWallMs = quantumWallMs + index * 1000 / sampleRate;
+          this.captureWallMs = this.clock.frame(currentFrame + index, sampleRate, observedWallMs + index * 1000 / sampleRate);
         }
         this.buffer[this.used++] = input ? input[index] : 0;
         if (this.used === this.buffer.length) this.flush();
       }
-      this.lastCaptureEndWallMs = quantumWallMs + length * 1000 / sampleRate;
+      this.lastCaptureEndWallMs = this.clock.time(currentFrame + length, sampleRate);
     }
     for (const output of outputs) for (const channel of output) channel.fill(0);
     return true;

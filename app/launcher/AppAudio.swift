@@ -52,7 +52,9 @@ func groupAudioApps(_ processes: [AudioProcess]) -> [AudioApp] {
     return names.map { AudioApp(id: $0.key, name: String($0.value.prefix(120))) }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 }
 
-/** One wall-clock placement; thereafter sample count, independent of polling and upload latency. */
+/** Recording X-Start-Ms only: one placement, then compact sample count. Capture wall headers
+ * come from TimedMonoFramer, never from this clock, and can re-anchor after sleep/pauses.
+ */
 struct AppTimeline {
     let clockStart: Double
     let firstWallMs: Double
@@ -85,19 +87,45 @@ func halString(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector)
     return value?.takeRetainedValue() as String? ?? ""
 }
 
-/** Calibrated on the main thread once per capture; callback delay never becomes audio placement. */
+/** Host timestamps exclude sleep on this platform; continuous time includes it. Record both in
+ * each callback, so a later drain neither bakes in queue delay nor loses a sleep interval.
+ */
 struct TapHostClock {
     let hostTime: UInt64
+    let continuousTime: UInt64
     let wallMs: Double
     private let msPerTick: Double
-    init(hostTime: UInt64 = mach_absolute_time(), wallMs: Double = Date().timeIntervalSince1970 * 1000) {
+    init(hostTime: UInt64 = mach_absolute_time(), wallMs: Double = Date().timeIntervalSince1970 * 1000, continuousTime: UInt64 = mach_continuous_time()) {
         var info = mach_timebase_info_data_t(); mach_timebase_info(&info)
-        self.hostTime = hostTime; self.wallMs = wallMs
+        self.hostTime = hostTime; self.wallMs = wallMs; self.continuousTime = continuousTime
         msPerTick = Double(info.numer) / Double(info.denom) / 1_000_000
     }
-    func wall(at host: UInt64) -> Double {
-        let delta = host >= hostTime ? Double(host - hostTime) : -Double(hostTime - host)
-        return wallMs + delta * msPerTick
+    private func difference(_ a: UInt64, _ b: UInt64) -> Double { a >= b ? Double(a - b) : -Double(b - a) }
+    func wall(at host: UInt64, observedHost: UInt64, continuous: UInt64) -> Double {
+        wallMs + (difference(continuous, continuousTime) + difference(host, observedHost)) * msPerTick
+    }
+}
+
+/** Converter priming delays delivery, not the source sample's timestamp. Retain per-callback
+ * placements until their corresponding resampled output is delivered, splitting across gaps.
+ */
+final class TapSampleTimeline {
+    private var inputFrames = 0
+    private var outputSamples = 0
+    private var placements: [(sample: Int, wallMs: Double)] = []
+    func note(frames: Int, rate: Double, wallMs: Double) {
+        placements.append((Int((Double(inputFrames) * 16000 / rate).rounded()), wallMs)); inputFrames += frames
+    }
+    func deliver(_ samples: [Float], receive: ([Float], Double) -> Void) {
+        var offset = 0
+        while offset < samples.count {
+            while placements.count > 1 && placements[1].sample <= outputSamples { placements.removeFirst() }
+            guard let first = placements.first else { return }
+            let next = placements.count > 1 ? placements[1].sample : Int.max
+            let count = min(samples.count - offset, next - outputSamples)
+            receive(Array(samples[offset..<offset + count]), first.wallMs + Double(outputSamples - first.sample) / 16)
+            offset += count; outputSamples += count
+        }
     }
 }
 
@@ -109,12 +137,20 @@ private final class TapBank {
     let channels: Int
     var count = 0
     var buffers = 0
+    let stampCapacity = 8192
+    let offsets: UnsafeMutablePointer<Int>
+    let hosts: UnsafeMutablePointer<UInt64>
+    let observedHosts: UnsafeMutablePointer<UInt64>
+    let continuousTimes: UnsafeMutablePointer<UInt64>
+    var stampCount = 0
     init(capacity: Int, channels: Int) {
         self.capacity = capacity; self.channels = channels
         data = .allocate(capacity: capacity * channels); data.initialize(repeating: 0, count: capacity * channels)
         widths = .allocate(capacity: channels); widths.initialize(repeating: 0, count: channels)
+        offsets = .allocate(capacity: stampCapacity); hosts = .allocate(capacity: stampCapacity)
+        observedHosts = .allocate(capacity: stampCapacity); continuousTimes = .allocate(capacity: stampCapacity)
     }
-    deinit { data.deallocate(); widths.deallocate() }
+    deinit { data.deallocate(); widths.deallocate(); offsets.deallocate(); hosts.deallocate(); observedHosts.deallocate(); continuousTimes.deallocate() }
     // Called only after the bank is detached from IO, never under queue.sync.
     func interleaved() -> [Float] {
         var samples = [Float](repeating: 0, count: count * channels), offset = 0
@@ -130,16 +166,15 @@ private final class TapStorage {
     private var writing: TapBank
     private var spare: TapBank
     private var failed = false
-    private var firstHostTime: UInt64?
     init(rate: Double, channels: Int) {
         writing = TapBank(capacity: Int(rate * 2), channels: channels)
         spare = TapBank(capacity: Int(rate * 2), channels: channels)
     }
-    func take() -> (bank: TapBank, host: UInt64?, failed: Bool) {
-        swap(&writing, &spare); writing.count = 0; writing.buffers = 0
-        return (spare, firstHostTime, failed)
+    func take() -> (bank: TapBank, failed: Bool) {
+        swap(&writing, &spare); writing.count = 0; writing.buffers = 0; writing.stampCount = 0
+        return (spare, failed)
     }
-    func receive(_ input: UnsafePointer<AudioBufferList>, timestamp: AudioTimeStamp) {
+    func receive(_ input: UnsafePointer<AudioBufferList>, timestamp: AudioTimeStamp, observedHost: UInt64 = mach_absolute_time(), continuous: UInt64 = mach_continuous_time()) {
         guard !failed else { return }
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input)), bank = writing
         var width = 0, frames: Int?
@@ -154,7 +189,10 @@ private final class TapStorage {
         }
         guard width == bank.channels, let frames, frames <= bank.capacity - bank.count else { failed = true; return }
         guard frames > 0 else { return }
-        firstHostTime = firstHostTime ?? timestamp.mHostTime
+        guard bank.stampCount < bank.stampCapacity else { failed = true; return }
+        let stamp = bank.stampCount
+        bank.offsets[stamp] = bank.count; bank.hosts[stamp] = timestamp.mHostTime
+        bank.observedHosts[stamp] = observedHost; bank.continuousTimes[stamp] = continuous; bank.stampCount += 1
         var offset = 0
         for (index, buffer) in buffers.enumerated() {
             let n = Int(buffer.mNumberChannels)
@@ -237,6 +275,7 @@ final class CoreAudioInput: AppAudioInput {
     private var drainError: String?
     private var rate = 16000.0
     private var hostClock = TapHostClock()
+    private var sampleTimeline = TapSampleTimeline()
     private let drainGate = TapDrainGate()
     private var lastProcessCheck = Date.distantPast
     private var processSet = Set<AudioObjectID>()
@@ -305,7 +344,7 @@ final class CoreAudioInput: AppAudioInput {
             guard format.mFormatID == kAudioFormatLinearPCM, format.mFormatFlags & kAudioFormatFlagIsFloat != 0, format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0, format.mBitsPerChannel == 32, (1...8).contains(channels), (8000...192000).contains(format.mSampleRate), format.mBytesPerFrame == UInt32(4 * (nonInterleaved ? 1 : channels)), format.mSampleRate == tapFormat.mSampleRate, format.mChannelsPerFrame == tapFormat.mChannelsPerFrame else { throw ProbeError.message("Unsupported call audio format.") }
             rate = format.mSampleRate
             let storage = TapStorage(rate: rate, channels: channels), rate = rate
-            self.storage = storage; converter = try TapConverter(rate: rate); hostClock = TapHostClock()
+            self.storage = storage; converter = try TapConverter(rate: rate); hostClock = TapHostClock(); sampleTimeline = TapSampleTimeline()
             self.receive = receive; failed = ended; target = app
             try halCheck(AudioDeviceCreateIOProcIDWithBlock(&ioProc, aggregate, queue) { _, input, timestamp, _, _ in storage.receive(input, timestamp: timestamp.pointee) })
             guard let ioProc else { throw ProbeError.message("Could not start call audio.") }
@@ -318,9 +357,16 @@ final class CoreAudioInput: AppAudioInput {
     private func drainNow(final: Bool) {
         guard let storage, let converter else { return }
         let batch = queue.sync { storage.take() }
-        let samples = batch.bank.interleaved(), first = hostClock.wall(at: batch.host ?? hostClock.hostTime)
+        let bank = batch.bank, samples = bank.interleaved()
         do {
-            try converter.convert(samples, channels: batch.bank.channels, final: final) { self.receive?($0, first) }
+            for stamp in 0..<bank.stampCount {
+                let first = bank.offsets[stamp], end = stamp + 1 < bank.stampCount ? bank.offsets[stamp + 1] : bank.count
+                let wall = hostClock.wall(at: bank.hosts[stamp], observedHost: bank.observedHosts[stamp], continuous: bank.continuousTimes[stamp])
+                sampleTimeline.note(frames: end - first, rate: rate, wallMs: wall)
+                let part = Array(samples[first * bank.channels..<end * bank.channels])
+                try converter.convert(part, channels: bank.channels, final: false) { self.sampleTimeline.deliver($0) { self.receive?($0, $1) } }
+            }
+            if final { try converter.convert([], channels: bank.channels, final: true) { self.sampleTimeline.deliver($0) { self.receive?($0, $1) } } }
             if batch.failed { throw ProbeError.message("Call audio processing fell behind; this source stopped.") }
             if !final, let target, Date().timeIntervalSince(lastProcessCheck) >= 2 {
                 lastProcessCheck = Date()
@@ -356,14 +402,14 @@ final class CoreAudioInput: AppAudioInput {
 #if APP_AUDIO_TESTING
     // Exercise the production drain/converter without discovering devices or creating any HAL object.
     func prepareForTest(rate: Double = 16000, channels: Int = 1, receive: @escaping ([Float], Double) -> Void, ended: @escaping (String) -> Void) throws {
-        stop(); self.rate = rate; storage = TapStorage(rate: rate, channels: channels); converter = try TapConverter(rate: rate); hostClock = TapHostClock()
+        stop(); self.rate = rate; storage = TapStorage(rate: rate, channels: channels); converter = try TapConverter(rate: rate); hostClock = TapHostClock(); sampleTimeline = TapSampleTimeline()
         self.receive = receive; failed = ended
     }
-    func injectForTest(_ samples: [Float], hostTime: UInt64, channels: Int = 1) {
+    func injectForTest(_ samples: [Float], hostTime: UInt64, channels: Int = 1, observedHost: UInt64? = nil, continuous: UInt64? = nil) {
         samples.withUnsafeBytes { bytes in
             var list = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: UInt32(channels), mDataByteSize: UInt32(bytes.count), mData: UnsafeMutableRawPointer(mutating: bytes.baseAddress)))
             var timestamp = AudioTimeStamp(); timestamp.mHostTime = hostTime; timestamp.mFlags = .hostTimeValid
-            withUnsafePointer(to: &list) { pointer in queue.sync { storage?.receive(pointer, timestamp: timestamp) } }
+            withUnsafePointer(to: &list) { pointer in queue.sync { storage?.receive(pointer, timestamp: timestamp, observedHost: observedHost ?? mach_absolute_time(), continuous: continuous ?? mach_continuous_time()) } }
         }
     }
     func drainForTest() { drain() }
@@ -398,7 +444,8 @@ final class FakeAudioInput: AppAudioInput {
             if (quit.map { FileManager.default.fileExists(atPath: $0) } ?? false) || self.mode() == "quit" { self.stop(); ended("Fictional Meet closed; the microphone keeps recording."); return }
             let silent = self.mode() == "silent"
             let signal = (0..<1600).map { silent ? Float(0) : Float(sin(Double(self.samples + $0) * 2 * .pi * 440 / 16000) * 0.1) }
-            self.samples += signal.count; receive(signal, first)
+            let wall = first + Double(self.samples) / 16
+            self.samples += signal.count; receive(signal, wall)
         }
         RunLoop.main.add(timer, forMode: .common); self.timer = timer
     }
