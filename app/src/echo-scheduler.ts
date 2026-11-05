@@ -39,7 +39,7 @@ export class EchoScheduler {
     const expired = [...this.admitted.values()].some(at => now - at >= this.waitMs);
     // A timeout is a checkpoint, not EOF: its last samples must already fade to raw
     // in case the next capture has missing reference. Never cross an emitted clean/raw edge abruptly.
-    if (force || expired || (this.ended && !this.pending.length)) this.processor.flush(fadeToRaw || !force, !force && !this.ended);
+    if (force || expired || (this.ended && !this.pending.length)) this.processor.flush(fadeToRaw || !force);
     const results = this.processor.takeReady();
     for (const result of results) this.admitted.delete(result.id);
     return results;

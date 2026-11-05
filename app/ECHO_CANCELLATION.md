@@ -58,9 +58,10 @@ Cleaned/raw switches crossfade same-position values over at most 80 samples (5 m
 never copying/replaying old microphone samples. A timeout/checkpoint fades its
 unemitted tail to raw before publication (even for fewer than 80 covered samples),
 so a later missing-reference span cannot introduce an edge after the previous
-frame has already escaped. Expiry/missing-reference checkpoints retain the adapted
-kernel; only real capture discontinuities, switches, forced flushes and retirement
-free it. Trailing padding is excluded when rebasing the input/output routing. The split/merge FIR still colors
+frame has already escaped. Every checkpoint drains the complete tail, then frees
+and resets the kernel, including expiry/missing-reference checkpoints. Retaining
+adaptation across timeout padding was measured and reverted because it worsened
+steady-state suppression at one upload phase. The split/merge FIR still colors
 the waveform; phase coloration is not a missing/repeated frame or sample shift.
 
 A main-thread **2000 ms watchdog** covers worker startup, crashes, invalid output,
@@ -180,7 +181,6 @@ short/signed clock-cut placement. The separate
 actual WASM, checking marker survival, alignment, waiting and memory without any
 speech model, devices or network. `test/echo-review3.test.ts` covers monotonic
 waits/watchdog recovery, backward render epochs, mic-first sleep boundaries,
-reference resumption, short fades and kernel reuse. `scripts/bench/aec-steady.ts
---out NEW_DIR` reports both render-covered and >=6 dB echo-reduced fractions with
-reference uploads 600 ms after frame end; preserving adaptation is not a promise
-of improved suppression for every late-reference phase.
+reference resumption, short fades and kernel reset at timeout checkpoints.
+`scripts/bench/aec-steady.ts --out NEW_DIR` reports both render-covered and >=6 dB
+echo-reduced fractions with reference uploads 600 ms after frame end.

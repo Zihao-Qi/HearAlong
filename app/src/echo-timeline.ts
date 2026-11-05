@@ -121,7 +121,7 @@ export class EchoProcessor {
       const count = Math.min(ECHO_BLOCK - this.used, pcm.length - pos);
       const reference = allowReference && wallMs !== null ? referenceBlock(this.spans, wallMs + pos / 16, count) : null;
       if (!reference || reference.missing) {
-        this.flush(true, true); // Drain before raw; a reference timeout is not a new acoustic path.
+        this.flush(true); // Drain the delayed clean prefix BEFORE switching to same-position raw samples.
         frame.written += count; frame.missingSamples += count;
       } else {
         this.aec ??= new this.module.AEC3(48_000, 1, 1);
@@ -164,17 +164,13 @@ export class EchoProcessor {
     }
     this.processed += ECHO_BLOCK; this.used = 0; this.input.fill(0); this.render.fill(0);
   }
-  flush(fadeToRaw = false, keepKernel = false) {
+  flush(fadeToRaw = false) {
     if (!this.aec) return;
     if (fadeToRaw) this.fadeOutAt = this.inputCount - ECHO_FADE;
-    if (this.inputCount) {
-      if (this.used) this.block(); // Only the final partial block needs padding.
-      while (this.processed < this.inputCount + this.delaySamples) this.block();
-    }
+    if (this.used) this.block(); // The unused suffix was zeroed after the previous block.
+    while (this.processed < this.inputCount + this.delaySamples) this.block();
     if (this.targets.length) throw new Error('AEC did not flush its input tail.');
-    if (!keepKernel) { this.aec.free(); this.aec = null; }
-    // A checkpoint's trailing zeros are DSP-only: rebase routing, not adaptive filter history.
-    this.used = 0; this.inputCount = 0; this.processed = 0; this.fadeOutAt = Infinity;
+    this.aec.free(); this.aec = null; this.used = 0; this.inputCount = 0; this.processed = 0; this.fadeOutAt = Infinity;
   }
   takeReady(): EchoOutput[] {
     const result: EchoOutput[] = [];

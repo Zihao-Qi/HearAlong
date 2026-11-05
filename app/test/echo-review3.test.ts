@@ -120,7 +120,7 @@ test('review3: 40 covered samples fade all the way to raw at sample 39, not a 0.
   } finally { processor.close(); }
 });
 
-test('review3: expiry checkpoints preserve one adapted kernel, aligned samples and all tails until real reset', () => {
+test('review3: expiry checkpoints reset the kernel after preserving aligned samples and all tails', () => {
   const { module, counts } = delayedAec(), processor = new EchoProcessor(module, 0), scheduler = new EchoScheduler(processor, 1500);
   try {
     for (let n = 0; n < 10; n++) {
@@ -129,10 +129,10 @@ test('review3: expiry checkpoints preserve one adapted kernel, aligned samples a
       scheduler.admit(String(n), { pcm, timing: { captureWallMs: 1000 + n * 1000 } }, n * 2000);
       scheduler.drain(n * 2000);
       assert.deepEqual(scheduler.drain(n * 2000 + 1500)[0].pcm, pcm);
+      assert.equal(counts.constructed, n + 2, 'calibration plus a fresh kernel for each timeout window');
+      assert.equal(counts.freed, n + 2, 'the checkpoint drains every tail, then frees its kernel');
     }
-    assert.equal(counts.constructed, 2, 'calibration plus ONE retained kernel across ten expiry checkpoints');
-    assert.equal(counts.freed, 1, 'only the calibration kernel was freed');
-    processor.resetReference(); assert.equal(counts.freed, 2);
+    processor.resetReference(); assert.equal(counts.freed, 11, 'no retained kernel remains to free');
     assert.equal(referenceBlock([], 1000, 40).missing, 40);
   } finally { processor.close(); }
 });
