@@ -2,6 +2,8 @@
 // "Them" is a meeting tab or app's audio (everyone on the call); "Me" is the microphone recorded alongside it.
 // Microphone audio from before the call (an in-person discussion) and imports have no label.
 
+import { echoWords, commonWords, type EchoWord } from './echo-words.ts';
+
 export type Role = 'me' | 'them';
 export const ROLE_LABEL: Record<Role, string> = { me: 'Me', them: 'Them' };
 export const isRemote = (source: string) => source.startsWith('tab:') || source.startsWith('app:');
@@ -35,19 +37,14 @@ export function rolesFor(ranges: { source: string; startMs: number; endMs: numbe
   return { labelled, roleOf, tabs, cacheKey };
 }
 
-type EchoSegment = { id: string; source: string; startMs: number; endMs: number; text: string };
-const echoWords = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, (char, at: number, raw: string) => {
-  const before = raw[at - 1] ?? '', after = raw[at + 1] ?? '';
-  if ((char === '.' || char === ',') && /\d/.test(before) && /\d/.test(after)) return char;
-  if ((char === '-' || char === '−') && /\d/.test(after) && !/[\p{L}\p{M}\p{N}]/u.test(before)) return '-';
-  return /\p{Pd}/u.test(char) ? ' ' : '';
-}).split(/\s+/).filter(Boolean);
+export type EchoSegment = { id: string; source: string; startMs: number; endMs: number; text: string; words?: EchoWord[] };
 
 /** Read-time acoustic-echo heuristic. Never changes stored text or hides the call channel.
  * Hyphens separate words; other punctuation is removed except numeric separators/signs. Numbers are not expanded.
  * All overlapping remote pieces are joined in meeting order, regardless of their chunk boundaries.
  */
-export function echoesFor(segments: EchoSegment[], speakers: Speakers): Set<string> {
+export function echoesFor(segments: EchoSegment[], speakers: Speakers,
+  wordsFor: (segment: EchoSegment) => EchoWord[] | undefined = segment => segment.words): Set<string> {
   const echoes = new Set<string>();
   if (!speakers.labelled) return echoes;
   const role = (s: EchoSegment) => speakers.roleOf(s.source, s.startMs, s.endMs);
@@ -60,6 +57,14 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers): Set<stri
   for (let i = 0; i < remote.length; i++) ends[size + i] = remote[i].endMs;
   for (let i = size - 1; i > 0; i--) ends[i] = Math.max(ends[i * 2], ends[i * 2 + 1]);
   const tokens: (string[] | undefined)[] = new Array(remote.length);
+  const overlapping = (node: number, from: number, to: number, limit: number, earliest: number, into: number[]) => {
+    if (from >= limit || ends[node] < earliest) return;
+    if (to - from === 1) { into.push(from); return; }
+    const mid = (from + to) >>> 1;
+    overlapping(node * 2, from, mid, limit, earliest, into);
+    overlapping(node * 2 + 1, mid, to, limit, earliest, into);
+  };
+  const inCall = (word: EchoWord) => speakers.tabs.some(t => (word.startMs + word.endMs) / 2 >= t.startMs && (word.startMs + word.endMs) / 2 <= t.endMs);
   for (const mic of segments) {
     if (role(mic) !== 'me') continue;
     const earliest = mic.startMs - 3000, latest = mic.endMs + 3000;
@@ -70,7 +75,22 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers): Set<stri
     }
     const limit = low;
     if (!limit || ends[1] < earliest) continue;
-    const words = echoWords(mic.text);
+    let words = echoWords(mic.text);
+    // Only consult stored timings at capture edges; ordinary interior segments keep the cheap whole-text path.
+    if (!speakers.tabs.some(t => mic.startMs >= t.startMs && mic.endMs <= t.endMs)) {
+      const timed = wordsFor(mic);
+      // Corrections may no longer align with original recognition tokens. Without exact alignment, keep whole-segment behavior.
+      if (timed?.length && echoWords(timed.map(w => w.text).join(' ')).join(' ') === words.join(' ')) {
+        const outside = timed.filter(w => !inCall(w)).flatMap(w => echoWords(w.text));
+        const indices: number[] = [];
+        overlapping(1, 0, size, limit, earliest, indices);
+        const reference = indices.flatMap(i => tokens[i] ??= echoWords(remote[i].text));
+        // Dropping a negation is worse than one doubled line. The outside clause must itself be an ordered echo.
+        const matched = commonWords(outside, reference);
+        if (outside.length < 3 ? matched !== outside.length : matched * 5 < outside.length * 4) continue;
+        words = timed.filter(inCall).flatMap(w => echoWords(w.text));
+      }
+    }
     if (words.length < 3) continue;
     const vocabulary = new Set(words);
     // One LCS row consumes overlapping remote pieces left-to-right, exactly as their concatenated meeting-order text.
