@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { alignedCall, cancelEcho, energySummary, estimateDelay, f32Bytes, newOutputDirectory, parseRanges, readF32, trialModel } from '../scripts/aec-trial.ts';
@@ -41,7 +41,7 @@ test('raw f32 round-trip; reject empty, partial, nonfinite and out-of-range inpu
 
 test('output is a fresh directory: existing directories/files and symlinks are rejected', async () => {
   const parent = await mkdtemp(join(tmpdir(), 'aec-output-')), path = join(parent, 'out');
-  assert.equal(await newOutputDirectory(path), path);
+  assert.equal(await newOutputDirectory(path), join(await realpath(parent), 'out'));
   await assert.rejects(newOutputDirectory(path), { code: 'EEXIST' });
   await symlink(path, join(parent, 'link'));
   await assert.rejects(newOutputDirectory(join(parent, 'link')), { code: 'EEXIST' });
