@@ -2,7 +2,7 @@
 // "Them" is a meeting tab or app's audio (everyone on the call); "Me" is the microphone recorded alongside it.
 // Microphone audio from before the call (an in-person discussion) and imports have no label.
 
-import { echoWords, type EchoWord } from './echo-words.ts';
+import { echoWords, commonWords, type EchoWord } from './echo-words.ts';
 
 export type Role = 'me' | 'them';
 export const ROLE_LABEL: Record<Role, string> = { me: 'Me', them: 'Them' };
@@ -84,9 +84,10 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers,
         const outside = timed.filter(w => !inCall(w)).flatMap(w => echoWords(w.text));
         const indices: number[] = [];
         overlapping(1, 0, size, limit, earliest, indices);
-        const reference = new Set(indices.flatMap(i => tokens[i] ??= echoWords(remote[i].text)));
-        // Preserve a potentially genuine clause: three out-of-capture words absent from all nearby call text are enough.
-        if (outside.filter(word => !reference.has(word)).length >= 3) continue;
+        const reference = indices.flatMap(i => tokens[i] ??= echoWords(remote[i].text));
+        // Dropping a negation is worse than one doubled line. The outside clause must itself be an ordered echo.
+        const matched = commonWords(outside, reference);
+        if (outside.length < 3 ? matched !== outside.length : matched * 5 < outside.length * 4) continue;
         words = timed.filter(inCall).flatMap(w => echoWords(w.text));
       }
     }

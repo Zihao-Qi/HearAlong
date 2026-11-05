@@ -21,7 +21,12 @@ export function simpleEchoesFor(segments: Line[], speakers: Speakers): Set<strin
       && mic.words?.length && words(mic.words.map(w => w.text).join(' ')).join(' ') === own.join(' ')) {
       const inside = (w: NonNullable<Line['words']>[number]) => speakers.tabs.some(t => w.startMs + w.endMs >= 2 * t.startMs && w.startMs + w.endMs <= 2 * t.endMs);
       const outside = mic.words.filter(w => !inside(w)).flatMap(w => words(w.text));
-      if (outside.filter(w => !reference.includes(w)).length >= 3) continue;
+      const outsideTable = Array.from({ length: reference.length + 1 }, () => new Uint32Array(outside.length + 1));
+      for (let i = 1; i <= reference.length; i++) for (let j = 1; j <= outside.length; j++) {
+        outsideTable[i][j] = reference[i - 1] === outside[j - 1] ? outsideTable[i - 1][j - 1] + 1 : Math.max(outsideTable[i - 1][j], outsideTable[i][j - 1]);
+      }
+      const count = outsideTable[reference.length][outside.length];
+      if (outside.length < 3 ? count !== outside.length : count * 5 < outside.length * 4) continue;
       own = mic.words.filter(inside).flatMap(w => words(w.text));
     }
     if (own.length < 3) continue;

@@ -7,7 +7,7 @@ import { echoesFor, rolesFor, type EchoSegment } from '../src/speakers.ts';
 import { MeetingStore } from '../src/store.ts';
 
 const rest = 'paper lamps turn amber shades beside folded copper frames after sunset today'.split(' ');
-function edge(prefix = 'paper lamps turn softly', trailing = false) {
+function edge(prefix = 'paper lamps turn amber', trailing = false) {
   const leading = prefix.split(' '), before = leading.map((text, i) => ({ text, startMs: 4300 + i * 35, endMs: 4330 + i * 35 }));
   const inside = rest.map((text, i) => ({ text, startMs: 4600 + i * 350, endMs: 4800 + i * 350 }));
   const words = trailing ? [...inside, ...before.map(w => ({ ...w, startMs: w.startMs + 5000, endMs: w.endMs + 5000 }))] : [...before, ...inside];
@@ -17,15 +17,37 @@ function edge(prefix = 'paper lamps turn softly', trailing = false) {
   return { mic, remote, roles };
 }
 
-test('four leading words before capture no longer turn a 100% captured echo into a 75% whole-segment match', () => {
+test('clipping is allowed when four outside words themselves match, despite the 75% whole-segment ratio', () => {
   const { mic, remote, roles } = edge();
   assert.deepEqual([...echoesFor([mic, remote], roles)], ['mic']);
   assert.deepEqual([...echoesFor([{ ...mic, words: undefined }, remote], roles)], [], 'no timings: old whole-segment behavior');
 });
 
-test('safer decision: three or more unmatched room words before the call keep the entire mixed segment visible', () => {
+test('unmatched room words before the call keep the entire mixed segment visible', () => {
   const { mic, remote, roles } = edge('please mute notifications now');
   assert.deepEqual([...echoesFor([mic, remote], roles)], []);
+});
+
+test('a 75% outside-word match now keeps the whole user-shaped sixteen-word segment visible', () => {
+  const { mic, remote, roles } = edge('paper lamps turn softly');
+  assert.deepEqual([...echoesFor([mic, remote], roles)], []);
+});
+
+test('negated genuine pre-call speech is preserved even though only do/not are novel', () => {
+  const { mic, remote, roles } = edge('do not approve this plan');
+  const rest = 'approve this plan tomorrow with the team after final checks are complete'.split(' ');
+  const words = [...mic.words!.slice(0, 5), ...rest.map((text, i) => ({ text, startMs: 4600 + i * 350, endMs: 4800 + i * 350 }))];
+  assert.deepEqual([...echoesFor([{ ...mic, text: words.map(w => w.text).join(' '), words }, { ...remote, text: rest.join(' ') }], roles)], []);
+});
+
+for (const prefix of ['softly', 'turn paper', 'paper softly', 'paper lamps softly']) test(`outside words must match in order: ${prefix}`, () => {
+  const { mic, remote, roles } = edge(prefix);
+  assert.deepEqual([...echoesFor([mic, remote], roles)], []);
+});
+
+for (const prefix of ['paper', 'paper lamps', 'paper lamps turn amber softly']) test(`outside words meeting their own ordered threshold may be clipped: ${prefix}`, () => {
+  const { mic, remote, roles } = edge(prefix);
+  assert.deepEqual([...echoesFor([mic, remote], roles)], ['mic']);
 });
 
 test('capture-end clipping is symmetric, and a genuine trailing clause is preserved too', () => {

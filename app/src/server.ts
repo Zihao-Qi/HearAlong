@@ -672,7 +672,8 @@ export async function startServer(options: {
       const recording = capture.recordingNow();
       const clockMs = recording?.meetingId === meetingId ? recording.clockMs : appStore.audioEndMs(meetingId);
       return filterPreviewEchoes(display.drafts, display.pending, callSources,
-        appStore.recentCallWords(meetingId, new Set(callSources), clockMs - 10000), clockMs);
+        appStore.recentCallWords(meetingId, new Set(callSources), clockMs - 10000), clockMs,
+        new Set(chunks.filter(c => c.status === 'failed' || c.status === 'cancelled').map(c => c.id)));
     };
     /**
      * The recording now, for the mini view. `have` is the `paragraphsTag` of the page's last reply: the paragraphs it already holds
