@@ -28,16 +28,16 @@ if (workerData.selfTest) {
   };
   const drain = (force = false, fadeToRaw = false) => {
     clearTimeout(timer);
-    const start = performance.now(), results = scheduler.drain(Date.now(), force, fadeToRaw);
+    const start = performance.now(), results = scheduler.drain(performance.now(), force, fadeToRaw);
     computeMs += performance.now() - start; emit(results);
-    if (Number.isFinite(scheduler.deadline)) timer = setTimeout(() => drain(), Math.max(1, scheduler.deadline - Date.now()));
+    if (Number.isFinite(scheduler.deadline)) timer = setTimeout(() => drain(), Math.max(1, scheduler.deadline - performance.now()));
   };
   port.on('message', (message: Message) => {
     if (message.kind === 'reference') scheduler.reference(message);
     else if (message.kind === 'microphone') scheduler.admit(message.id, message, message.receivedAt);
     else if (message.kind === 'reference-ended') scheduler.referenceEnded();
     else if (message.kind === 'switch') {
-      const start = performance.now(), results = scheduler.switchReference(message.audio, Date.now());
+      const start = performance.now(), results = scheduler.switchReference(message.audio, performance.now());
       computeMs += performance.now() - start; emit(results);
     } else {
       drain(true, message.fadeToRaw);

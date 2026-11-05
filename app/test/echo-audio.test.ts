@@ -141,12 +141,12 @@ test('recovered frames seal raw, even when new call frames create an AEC session
 });
 
 
-test('actual processor keeps both sides of an inside-frame sleep and sorts cross-source reference arrival', async () => {
+test('actual processor keeps both sides of an inside-frame sleep and the following reference frame', async () => {
   const module = await WebRtcAec3(), processor = new EchoProcessor(module, 0);
   const frame = { ...audio(1000), timing: { captureWallMs: 1000, discontinuities: [{ offsetSamples: 8000, fromWallMs: 1500, toWallMs: 11500 }] } };
   try {
-    processor.reference(audio(12000));
     processor.reference(frame);
+    processor.reference(audio(12000));
     processor.push('before/after-sleep', frame);
     processor.push('next', audio(12000));
     processor.flush();

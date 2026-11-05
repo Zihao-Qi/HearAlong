@@ -8,7 +8,11 @@ import type { CaptureTiming } from './capture-gaps.ts';
 export const ECHO_WAIT_MS = 1500;
 export const ECHO_DEADLINE_MS = 2000;
 export const ECHO_REFERENCE_LEAD_MS = 100;
-export type EchoOptions = { leadMs?: number; waitMs?: number; deadlineMs?: number; workerScript?: URL; log?: (message: string) => void; clock?: () => number };
+export type EchoOptions = { leadMs?: number; waitMs?: number; deadlineMs?: number; workerScript?: URL; log?: (message: string) => void;
+  clock?: () => number; // Monotonic elapsed clock, never capture UTC.
+  wallClock?: () => number; // Watchdog diagnosis only: a UTC step must not permanently disable AEC.
+};
+const monotonic = (options: EchoOptions) => options.clock?.() ?? performance.now();
 export type EchoStats = { frames: number; samples: number; missingSamples: number; computeMs: number; delayMs: number; maxDelayMs: number; failures: number };
 const floats = (pcm: Buffer) => new Float32Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength));
 type Job = { raw: Buffer; resolve: (pcm: Buffer) => void; timer: NodeJS.Timeout; at: number };
@@ -39,7 +43,7 @@ class EchoSession {
           if (!job) return;
           if (!(message.pcm instanceof Float32Array) || message.pcm.byteLength !== job.raw.length || !message.pcm.every(Number.isFinite)) { this.failure(); return; }
           this.jobs.delete(message.id); clearTimeout(job.timer);
-          this.onAudio(message, performance.now() - job.at);
+          this.onAudio(message, monotonic(this.options) - job.at);
           job.resolve(Buffer.from(message.pcm.buffer, message.pcm.byteOffset, message.pcm.byteLength));
         }
       });
@@ -49,12 +53,12 @@ class EchoSession {
   }
   private watchdog() {
     const budget = this.options.deadlineMs ?? ECHO_DEADLINE_MS;
-    const at = this.options.clock?.() ?? Date.now();
+    const at = monotonic(this.options), wallAt = (this.options.wallClock ?? Date.now)();
     return setTimeout(() => {
-      const elapsed = (this.options.clock?.() ?? Date.now()) - at;
+      const elapsed = monotonic(this.options) - at, wallElapsed = (this.options.wallClock ?? Date.now)() - wallAt;
       // A timer serviced >3 s late after whole-process sleep is not proof of a hung worker.
       // Resolve raw now, but permit a fresh worker when timestamped capture resumes.
-      this.failure(elapsed > budget + 3000);
+      this.failure(elapsed > budget + 3000 || wallElapsed < elapsed - 250);
     }, budget);
   }
   private failure(resumable = false) {
@@ -63,7 +67,7 @@ class EchoSession {
     try { this.onFailure(resumable); } catch { /* Even logging must not break raw fallback. */ }
     for (const [id, job] of this.jobs) {
       clearTimeout(job.timer);
-      this.onAudio({ kind: 'audio', id, pcm: floats(job.raw), missingSamples: job.raw.length / 4, computeMs: 0 }, performance.now() - job.at);
+      this.onAudio({ kind: 'audio', id, pcm: floats(job.raw), missingSamples: job.raw.length / 4, computeMs: 0 }, monotonic(this.options) - job.at);
       job.resolve(job.raw); // Unemitted samples are literal raw; never apply a prior frame's correction.
     }
     this.jobs.clear();
@@ -84,8 +88,9 @@ class EchoSession {
     if (this.jobs.size >= 32) { this.failure(); return Promise.resolve(raw); }
     return new Promise(resolve => {
       const timer = this.watchdog();
-      this.jobs.set(id, { raw, resolve, timer, at: performance.now() });
-      this.post({ kind: 'microphone', id, pcm: floats(raw), timing, receivedAt: Date.now() });
+      this.jobs.set(id, { raw, resolve, timer, at: monotonic(this.options) });
+      // Node worker_threads share this monotonic time origin; do not transmit an adjustable UTC deadline.
+      this.post({ kind: 'microphone', id, pcm: floats(raw), timing, receivedAt: performance.now() });
     });
   }
   flush(fadeToRaw = true): Promise<void> {
@@ -123,7 +128,7 @@ export class LiveEcho {
     const configured = Number(process.env.MEETING_AEC_REFERENCE_LEAD_MS ?? ECHO_REFERENCE_LEAD_MS);
     this.options = { ...options, leadMs: options.leadMs ?? (Number.isFinite(configured) && configured >= 0 && configured <= 300 ? configured : ECHO_REFERENCE_LEAD_MS) };
   }
-  private now() { return this.options.clock?.() ?? Date.now(); }
+  private now() { return monotonic(this.options); }
   private warn(record: MicRecord, reason: string) {
     if (record.logged) return;
     record.logged = true;
@@ -133,13 +138,13 @@ export class LiveEcho {
     record.missing += samples;
     if (record.missing > 10 * 16000) this.warn(record, `more than 10 s of missing/late reference (${reason})`);
   }
-  private active(reference: Reference, micEnd = -Infinity) {
-    return !reference.ended && reference.timed && this.now() - reference.lastAt <= 3000 && micEnd - (reference.endMs - this.options.leadMs!) <= 5000;
+  private active(reference: Reference, micPosition = -Infinity) {
+    return !reference.ended && reference.timed && this.now() - reference.lastAt <= 3000 && micPosition - (reference.endMs - this.options.leadMs!) <= 5000;
   }
-  private select(meeting: MeetingReference, micEnd = -Infinity): Reference | undefined {
+  private select(meeting: MeetingReference, micPosition = -Infinity): Reference | undefined {
     const pinned = meeting.pinned ? meeting.sources.get(meeting.pinned) : undefined;
-    if (pinned && this.active(pinned, micEnd)) return pinned;
-    const next = [...meeting.sources.values()].find(reference => this.active(reference, micEnd));
+    if (pinned && this.active(pinned, micPosition)) return pinned;
+    const next = [...meeting.sources.values()].find(reference => this.active(reference, micPosition));
     meeting.pinned = next?.source ?? null;
     return next;
   }
@@ -193,8 +198,10 @@ export class LiveEcho {
       return;
     }
     const audio = { pcm: floats(pcm), timing };
+    const spans = audioSpans(audio);
+    if (spans.some((span, i) => span.wallMs < (i ? spans[i - 1].wallMs + spans[i - 1].pcm.length / 16 : reference.endMs) - 50)) reference.audio = [];
     reference.audio.push(audio); if (reference.audio.length > 10) reference.audio.shift();
-    reference.endMs = Math.max(...reference.audio.map(audioEnd));
+    reference.endMs = audioEnd(audio);
     this.select(meeting);
     // Other remotes are bounded standby histories, never mixed into the pinned render stream.
     for (const entry of this.sessions.values()) if (entry.meetingId === meetingId && entry.source === source) entry.session.reference(audio);
@@ -205,13 +212,14 @@ export class LiveEcho {
     let entry = this.sessions.get(source), record = this.records.get(source);
     if (!meeting && !entry && !record) return null;
     if (!record) { record = { meetingId, logged: false, disabled: false, missing: 0 }; this.records.set(source, record); }
-    const micEnd = timing ? audioEnd({ pcm: floats(pcm), timing }) : Infinity;
-    const micStart = timing ? audioSpans({ pcm: floats(pcm), timing })[0]?.wallMs ?? Infinity : Infinity;
+    const micStart = timing?.captureWallMs ?? Infinity;
+    const crossesGap = timing?.discontinuities?.some(cut => cut.toWallMs > cut.fromWallMs);
     const current = entry && meeting?.sources.get(entry.source);
     const overlaps = (reference: Reference) => reference.ended && reference.timed && micStart < reference.endMs - this.options.leadMs!;
     // Preserve overlapping final render; otherwise prefer a live standby BEFORE considering retirement.
+    const boundary = current?.timed && !current.ended && crossesGap && micStart - (current.endMs - this.options.leadMs!) <= 5000;
     const selected = timing && !record.disabled && meeting ? (current && overlaps(current) ? current
-      : this.select(meeting, micEnd) ?? [...meeting.sources.values()].find(overlaps)) : undefined;
+      : this.select(meeting, micStart) ?? (boundary ? current : [...meeting.sources.values()].find(overlaps))) : undefined;
     if (entry) {
       if (!selected || entry.session.failed) { this.retire(source, entry); entry = undefined; }
       else if (selected.source !== entry.source) {
@@ -224,7 +232,7 @@ export class LiveEcho {
       const session = new EchoSession(this.options, resumable => {
         if (!resumable) activeRecord.disabled = true;
         this.totals.failures++;
-        this.warn(activeRecord, resumable ? 'server paused; pending samples passed raw, AEC will retry on resumed capture' : 'worker unavailable or exceeded its bounded processing deadline');
+        this.warn(activeRecord, resumable ? 'server paused or wall clock stepped; pending samples passed raw, AEC will retry on resumed capture' : 'worker unavailable or exceeded its bounded processing deadline');
       }, (message, delay) => {
         this.totals.frames++; this.totals.samples += message.pcm.length; this.totals.missingSamples += message.missingSamples;
         this.totals.computeMs += message.computeMs; this.totals.delayMs += delay; this.totals.maxDelayMs = Math.max(this.totals.maxDelayMs, delay);
@@ -239,7 +247,7 @@ export class LiveEcho {
     if (liveCall) {
       const known = [...meeting.sources.values()].find(item => !item.ended);
       if (!timing) this.warn(record, 'microphone has no capture wall clock');
-      if (known && (!known.timed || !this.active(known, micEnd))) this.warn(record, known.timed ? 'reference is stale (>3 s without frames or >5 s behind microphone)' : 'reference has no capture wall clock');
+      if (known && (!known.timed || !this.active(known, micStart))) this.warn(record, known.timed ? 'reference is stale (>3 s without frames or >5 s behind microphone)' : 'reference has no capture wall clock');
       this.missing(record, pcm.length / 4, 'inactive reference or missing microphone clock');
     }
     return null; // Raw fallback is immediate; it must not depend on a retired worker.

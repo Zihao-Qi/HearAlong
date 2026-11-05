@@ -114,7 +114,8 @@ struct TapHostClock {
         let observed = epoch(at: observedHost)
         let sleep = (difference(continuous, observed.continuous) - difference(observedHost, observed.host)) * msPerTick
         if abs(sleep) > 2 {
-            remember(Epoch(host: observedHost, continuous: continuous, wall: observed.wall + difference(continuous, observed.continuous) * msPerTick))
+            let first = min(host, observedHost), offset = difference(first, observedHost)
+            remember(Epoch(host: first, continuous: continuous - (observedHost - first), wall: observed.wall + (difference(continuous, observed.continuous) + offset) * msPerTick))
         }
         let capture = epoch(at: host)
         return capture.wall + difference(host, capture.host) * msPerTick

@@ -46,15 +46,21 @@ late. This is not a fix for arbitrary drift/late delivery (500 ms is still outsi
 this chosen margin).
 
 Capture processes only the arrived reference prefix, waiting at most **1500 ms
-from admission**, including the short output lookahead. Uncovered input spans
+from admission**, including the short output lookahead. All waiting, watchdogs,
+reference freshness and grace expiry use monotonic time, independently of capture
+UTC placement. Watchdog-only UTC comparison permits recovery after a clock step
+rather than permanently disabling AEC. Uncovered input spans
 pass through raw rather than taking suppression output from a silent reference.
 The kernel's impulse latency is measured (165 samples in the pinned build) and
 removed from its output position. Output waits for the corresponding input sample;
 Stop/checkpoint/reset flush enough trailing input to recover the complete tail.
 Cleaned/raw switches crossfade same-position values over at most 80 samples (5 ms),
 never copying/replaying old microphone samples. A timeout/checkpoint fades its
-unemitted tail to raw before publication, so a later missing-reference span cannot
-introduce an edge after the previous frame has already escaped. The split/merge FIR still colors
+unemitted tail to raw before publication (even for fewer than 80 covered samples),
+so a later missing-reference span cannot introduce an edge after the previous
+frame has already escaped. Expiry/missing-reference checkpoints retain the adapted
+kernel; only real capture discontinuities, switches, forced flushes and retirement
+free it. Trailing padding is excluded when rebasing the input/output routing. The split/merge FIR still colors
 the waveform; phase coloration is not a missing/repeated frame or sample shift.
 
 A main-thread **2000 ms watchdog** covers worker startup, crashes, invalid output,
@@ -71,14 +77,19 @@ depends on AEC succeeding.
 
 A reference with no new frame for more than 3 s or an end more than 5 s behind the
 mic is inactive: no reference wait, one reason log, raw until fresh timed frames
-resume. Losing reference wall-clock metadata also retires it. More than 10 total
+resume. The lag check uses the mic frame's start, not an end already advanced by
+an in-frame sleep/UTC jump. An existing pin may wait the normal 1.5 s for its
+matching boundary reference. A reference step backward by more than 50 ms discards
+older render spans so the old UTC high-water cannot stand in for new audio.
+Losing reference wall-clock metadata also retires it. More than 10 total
 seconds of live-call missing-reference fallback logs once (shared with the failure
 log budget), instead of silently remaining ineffective.
 
 The first live remote is pinned; other remotes are bounded standby histories,
 not render input. Ending a non-pinned remote never retires the mic. When the pin
 ends, its spans remain available for the mic's final second without waiting for
-future render; after the mic crosses that end, a live standby can take over with
+future render; fresh audio from the same source clears that ended state. After
+the mic crosses the end, a live standby can take over with
 a reset **in the existing worker**, before retirement is considered. A fully
 covered last frame flushes its latency tail as soon as reference is ended. Ended
 render history is retained for up to 10 s even before the first mic upload, to
@@ -106,7 +117,9 @@ The native tap retains each callback's host timestamp plus absolute/continuous
 clock observations in its preallocated banks. On the framing thread, a bounded
 epoch history is recalibrated against UTC once per second. Timestamp lookup uses
 the input's capture epoch, so a pre-sleep callback delivered after wake does not
-inherit wake's sleep offset or a newer wall-clock correction. Clock bookkeeping
+inherit a newer wall-clock correction. When sleep is first observed, the new
+epoch starts at the input buffer's host time (no later than callback observation),
+so the first ~10 ms post-wake buffer does not inherit the pre-sleep epoch. Clock bookkeeping
 and UTC reads never run in IO. Timestamp spans survive converter priming and
 framing. `X-Capture-Wall-Ms` is the actual frame placement, all interior clock
 steps exceeding the slew bound use `X-Capture-Discontinuities`, and
@@ -165,4 +178,9 @@ frame), standby handoff, retirement collection, Stop behind a waiting seal and
 short/signed clock-cut placement. The separate
 `scripts/aec-long-check.ts --out NEW_DIR` runs 7200 synthetic seconds through
 actual WASM, checking marker survival, alignment, waiting and memory without any
-speech model, devices or network.
+speech model, devices or network. `test/echo-review3.test.ts` covers monotonic
+waits/watchdog recovery, backward render epochs, mic-first sleep boundaries,
+reference resumption, short fades and kernel reuse. `scripts/bench/aec-steady.ts
+--out NEW_DIR` reports both render-covered and >=6 dB echo-reduced fractions with
+reference uploads 600 ms after frame end; preserving adaptation is not a promise
+of improved suppression for every late-reference phase.
