@@ -112,16 +112,12 @@ export function miniPendingRows(finals, drafts, pending) {
   return last ? composePreview(drafts, pending, finals).filter(p => p.part === 'before' && compareDisplayOrder(p, last) < 0) : [];
 }
 /** Insert pending markers before grouping finals, then use that identical order to assign their paragraph anchors. */
-export function miniLog(finals, drafts, pending) {
+export function miniLog(finals, drafts, pending, gaps = [], chunkBarriers = []) {
   const pendingRows = miniPendingRows(finals, drafts, pending);
-  const ordered = [...finals.map(s => ({ ...s, kind: 'final' })), ...pendingRows].sort(compareDisplayOrder);
-  const paragraphs = [];
-  let run = [];
-  for (const row of ordered) {
-    if (row.kind === 'pending') { paragraphs.push(...paragraphsOf(run)); run = []; }
-    else run.push(row);
-  }
-  paragraphs.push(...paragraphsOf(run));
+  const labelled = finals.some(s => 'speaker' in s);
+  const barriers = [...composePreview(drafts, pending, finals).map(p => ({ startMs: p.startMs, speaker: labelled ? p.speaker : undefined })),
+    ...gaps.map(g => ({ startMs: g.atMs, all: true })), ...chunkBarriers];
+  const paragraphs = paragraphsOf([...finals].sort(compareDisplayOrder), barriers);
   const placements = pendingRows.map(p => ({ key: p.key, chunkId: p.chunkId, source: p.source, startMs: p.startMs,
     text: p.text, speaker: p.speaker ?? null, beforeKey: paragraphs.find(f => compareDisplayOrder(p, f.segments[0]) < 0)?.key ?? null }));
   return { paragraphs, placements };

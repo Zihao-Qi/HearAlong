@@ -1,4 +1,4 @@
-import type { Paragraph, ParagraphLine } from './live-shared.js';
+import type { Paragraph, ParagraphLine, ParagraphBarrier } from './live-shared.js';
 export type TimedWord = { text: string; startMs: number; endMs: number };
 export type Preview = { source: string; window: string; windowStartMs: number; committedUntilMs?: number; coveredUntilMs: number; words: TimedWord[]; text: string; behind: boolean; speaker?: string | null };
 export type PendingPreview = Preview & { chunkId: string; cutMs: number };
@@ -14,4 +14,4 @@ export type DisplayOrder = { startMs: number; source?: string; kind?: string; ke
 export function compareDisplayOrder(a: DisplayOrder, b: DisplayOrder): number;
 export function miniPendingRows(finals: DisplayOrder[], drafts: Preview[], pending: PendingPreview[]): ComposedPreview[];
 export type MiniPlacement = { key: string; chunkId?: string; source: string; startMs: number; text: string; speaker: string | null; beforeKey: string | null };
-export function miniLog<T extends ParagraphLine & { source?: string; text: string }>(finals: T[], drafts: Preview[], pending: PendingPreview[]): { paragraphs: Paragraph<T>[]; placements: MiniPlacement[] };
+export function miniLog<T extends ParagraphLine & { source?: string; text: string }>(finals: T[], drafts: Preview[], pending: PendingPreview[], gaps?: { atMs: number }[], chunkBarriers?: ParagraphBarrier[]): { paragraphs: Paragraph<T>[]; placements: MiniPlacement[] };

@@ -12,7 +12,7 @@ import {createTranscriptView} from '/transcript-view.js';
 const box=document.querySelector('#box');
 // Hold delivery, not the scroll itself: playback and a poll may run in this interval in a real page.
 box.addEventListener('scroll',event=>{if(window.holdScroll)event.stopImmediatePropagation()},true);
-window.snapshot={segments:Array.from({length:80},(_,i)=>({id:'fictional-'+i+':0',revision:0,startMs:i*4000,endMs:(i+1)*4000,text:'Fictional line '+i}))};
+window.snapshot={segments:Array.from({length:80},(_,i)=>({id:'fictional-'+i+':0',revision:0,startMs:i*6000,endMs:i*6000+4000,text:'Fictional line '+i+'.'}))};
 window.changes=0;
 window.view=createTranscriptView(box,{segmentNode:s=>document.createTextNode(s.text),changed:()=>window.changes++});
 window.ready=true;

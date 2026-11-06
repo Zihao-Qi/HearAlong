@@ -27,6 +27,7 @@ import { SwitchableRecognizer } from './setup/switchable-recognizer.ts';
 import { JobManager, type Recognizer } from './jobs.ts';
 import { LiveDrafts, ownsDisplayInterval, type Draft } from './drafts.ts';
 import { miniPreviewWords, miniLog, midpoint } from '../public/preview-composition.js';
+import { paragraphCachePrefix } from '../public/live-shared.js';
 import { LiveCapture } from './live.ts';
 import type { EchoOptions } from './echo-audio.ts';
 import { captureDiscontinuities } from './capture-gaps.ts';
@@ -648,7 +649,8 @@ export async function startServer(options: {
         capture.liveSources(meetingId).map(s => s.source).filter(isRemote), clock());
       if (labelled) visible.sort(compareSegments);
       const speaker = (source: string, startMs: number, endMs: number) => { const role = roleOf(source, startMs, endMs); return role ? ROLE_LABEL[role] : null; };
-      return { labelled, roleOf, visible, heldChunks, speaker };
+      const paragraphBarriers = appStore.chunkParagraphBarriers(meetingId).map(({ startMs, speaker }) => ({ startMs, speaker }));
+      return { labelled, roleOf, visible, heldChunks, speaker, paragraphBarriers };
     };
     /** Display-only previews, annotated once for both response shapes. Retirement sees the finals in the same reply. */
     const displayPreviews = (meetingId: string, visible: ReturnType<typeof appStore.visibleSegments>, heldChunks: Set<string>, speaker: (source: string, startMs: number, endMs: number) => string | null) => {
@@ -680,22 +682,31 @@ export async function startServer(options: {
     };
     /**
      * The recording now, for the mini view. `have` is the `paragraphsTag` of the page's last reply: the paragraphs it already holds
-     * (all but the last, which may still grow). While they are unchanged, only the paragraphs after them are sent, so a long
+     * (the prefix before any paragraph that could join speech still awaiting a final). While they are unchanged, only the rest is sent, so a long
      * meeting's transcript is sent once and then only what changed at its end.
      */
     const liveModel = async (have: string | null = null) => {
       const now = recordingNow();
       if (!now) return { recording: null, mini: { native: liveView.native(), state: liveView.miniState() } };
       const { meetingId } = now;
-      const { labelled, roleOf, visible, heldChunks, speaker } = labelledLines(meetingId);
+      const { labelled, roleOf, visible, heldChunks, speaker, paragraphBarriers } = labelledLines(meetingId);
       // The whole meeting's paragraphs, grouped as the transcript groups them; the mini view scrolls back through them.
       const lines = visible.map(s => ({ id: s.id, source: s.source, startMs: s.startMs, endMs: s.endMs, revision: s.revision, text: s.text, ...(labelled ? { speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
       const previews = displayPreviews(meetingId, visible, heldChunks, speaker);
-      const { paragraphs: meeting, placements } = miniLog(lines, previews.drafts, previews.pending);
+      const { paragraphs: meeting, placements } = miniLog(lines, previews.drafts, previews.pending, appStore.captureGaps(meetingId), paragraphBarriers);
       // Names the first n paragraphs as they are now, in this recording: any change among them (a correction, a line hidden)
       // changes it, and so does a new recording, even of the same meeting (a page that held the last one starts afresh).
       const session = liveView.sessionId();
       const tag = (n: number) => `${session}.${n}.${createHash('sha1').update(meeting.slice(0, n).map(p => `${p.key}/${p.signature}`).join('\n')).digest('base64url').slice(0, 16)}`;
+      // Preview barriers are temporary, and an inactive speaker's last paragraph is not open forever.
+      // Include windows with no preview yet and held mic finals, not just the visible grey words.
+      const awaiting = [
+        ...previews.drafts.map(d => d.windowStartMs), ...previews.pending.map(p => p.windowStartMs),
+        ...appStore.chunks(meetingId).filter(c => heldChunks.has(c.id) || c.status === 'queued' || c.status === 'running').map(c => c.startMs),
+        ...appStore.heldFrames(meetingId).map(f => f.startMs),
+      ];
+      const horizon = awaiting.length ? awaiting.reduce((earliest, start) => Math.min(earliest, start)) : now.clockMs;
+      const cacheable = paragraphCachePrefix(meeting, horizon);
       const held = Number((have ?? '').split('.')[1]);
       const from = Number.isInteger(held) && held >= 0 && held <= meeting.length && have === tag(held) ? held : 0;
       const paragraphs = meeting.slice(from).map(p => ({ key: p.key, signature: p.signature, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
@@ -713,7 +724,7 @@ export async function startServer(options: {
       const newest = cards.find(c => c.type !== 'other') ?? cards[0];
       return {
         recording: { meetingId, session: liveView.sessionId(), clockMs: liveView.clockMs() ?? now.clockMs, stopping: liveView.stopping(), labelled,
-          paragraphs, paragraphsFrom: from, paragraphsTag: tag(Math.max(0, meeting.length - 1)), drafts: slots, pending: previews.pending.map(p => ({ ...p,
+          paragraphs, paragraphsFrom: from, paragraphsTag: tag(cacheable), drafts: slots, pending: previews.pending.map(p => ({ ...p,
             placements: placements.filter(r => r.chunkId === p.chunkId) })),
           card: newest ? { id: newest.id, type: newest.type, firstMs: newest.firstMs, text: newest.text } : null, notices: liveView.notices(now.sources) },
         mini: { native: liveView.native(), state: liveView.miniState() },
@@ -1164,7 +1175,7 @@ export async function startServer(options: {
         }
         if (req.method === 'GET' && action === 'segments') {
           // Only the transcript list is a delta; all live state still travels on every poll.
-          const { labelled, visible, heldChunks, speaker } = labelledLines(meetingId);
+          const { labelled, visible, heldChunks, speaker, paragraphBarriers } = labelledLines(meetingId);
           const segments = visible.map(s => ({ id: s.id, startMs: s.startMs, endMs: s.endMs, text: s.text, originalText: s.originalText, edits: JSON.parse(s.edits),
             revision: s.revision, timing: s.timing, ...(labelled ? { source: s.source, speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
           const delta = segmentsTag.delta(meetingId, segments, url.searchParams.get('have'));
@@ -1175,7 +1186,7 @@ export async function startServer(options: {
           const canBuild = options.heavy === undefined && ai.mode() === 'off' ? 'AI is off. Change it in AI settings.' : !heavy ? 'Needs cloud models (they are off).' : !rootsFor(meetingId).length ? 'Attach materials first.' : null;
           send(res, 200, {
             meetingId,
-            captureGaps: appStore.captureGaps(meetingId),
+            captureGaps: appStore.captureGaps(meetingId), paragraphBarriers,
             replay: replay ? { speed: replay.speed, positionMs: appStore.replayPositionMs(replay, now), durationMs: replay.durationMs, baseMs: replay.baseMs } : null,
             // Active recognizers and sealed display previews have separate lifetimes.
             ...displayPreviews(meetingId, visible, heldChunks, speaker),

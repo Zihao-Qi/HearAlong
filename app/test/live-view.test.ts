@@ -245,18 +245,18 @@ test('/api/live: the whole meeting\'s paragraphs, then only those after the ones
     const first = await live();
     assert.equal(first.paragraphsFrom, 0);
     assert.deepEqual(first.paragraphs.map(p => p.text), ['Window 1 line a.', 'Window 1 line b.', 'Window 1 line c.']);
-    assert.match(first.paragraphsTag, /^\d+\.2\./, 'the page holds all but the last, which may still grow');
+    assert.match(first.paragraphsTag, /^\d+\.3\./, 'all three paragraphs are older than the earliest not-yet-final frame minus the join horizon');
     const same = await live(first.paragraphsTag);
-    assert.equal(same.paragraphsFrom, 2);
-    assert.deepEqual(same.paragraphs.map(p => p.text), ['Window 1 line c.'], 'nothing new: only the last is sent again');
+    assert.equal(same.paragraphsFrom, 3);
+    assert.deepEqual(same.paragraphs, [], 'nothing new: no stable paragraphs need to be sent again');
     // More of the meeting: only what follows the paragraphs the page holds.
     await speak(25);
     const more = await live(first.paragraphsTag);
-    assert.equal(more.paragraphsFrom, 2);
-    assert.deepEqual(more.paragraphs.map(p => p.text).slice(0, 2), ['Window 1 line c.', 'Window 2 line a.']);
+    assert.equal(more.paragraphsFrom, 3);
+    assert.deepEqual(more.paragraphs.map(p => p.text).slice(0, 2), ['Window 2 line a.', 'Window 2 line b.']);
     const whole = await live();
     assert.equal(whole.paragraphsFrom, 0, 'without a tag, the whole meeting');
-    assert.deepEqual([...first.paragraphs.slice(0, 2), ...more.paragraphs].map(p => p.key), whole.paragraphs.map(p => p.key), 'the parts make the whole meeting');
+    assert.deepEqual([...first.paragraphs.slice(0, 3), ...more.paragraphs].map(p => p.key), whole.paragraphs.map(p => p.key), 'the parts make the whole meeting');
     assert.ok(whole.paragraphs.length >= 6, `${whole.paragraphs.length} paragraphs`);
     // A change among the paragraphs the page holds (a correction), or a tag that names none of them: the whole meeting again.
     const corrected = app.store!.segments(meeting.id).find(s => s.text === 'Window 1 line a.')!;
