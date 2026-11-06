@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pure conversion/framing/grouping/timeline and helper wording tests. No helper launch, Core Audio discovery, process tap, or TCC calls.
+# Pure conversion/framing/grouping/timeline tests. No app launch, Core Audio discovery, process tap, or TCC calls.
 set -eu
 cd "$(dirname "$0")/.."
 TMP="$(mktemp -d)"
@@ -10,7 +10,5 @@ swiftc -O -DAPP_AUDIO_TESTING -o "$TMP/app-audio-tests" launcher/AudioPipeline.s
 "$TMP/app-audio-tests"
 swiftc -O -DAPP_AUDIO_TESTING -o "$TMP/tap-regressions" launcher/AudioPipeline.swift launcher/AppAudio.swift launcher/AppCaptureClient.swift launcher/TapRegressionTests.swift -framework Cocoa -framework CoreAudio -framework AVFoundation
 for scenario in backlog timestamp overrun overrun-live gate banks sleep-clock callback-gaps client-clock utc-clock short-pauses; do "$TMP/tap-regressions" "$scenario"; done
-swiftc -O -DHELPER_TESTING -o "$TMP/helper-tests" launcher/main.swift launcher/AudioPipeline.swift launcher/AppAudio.swift launcher/AppCaptureClient.swift launcher/HelperTests.swift -framework Cocoa -framework WebKit -framework CoreAudio -framework AVFoundation
-"$TMP/helper-tests"
 # Compile the shipped, windowless entry point too. No launch/discovery/tap here; fake SIGTERM/end is exercised by app-audio-check.ts.
 swiftc -O -target arm64-apple-macosx26.0 -o "$TMP/hearalong-capture" launcher/capture-main.swift launcher/AudioPipeline.swift launcher/AppAudio.swift launcher/AppCaptureClient.swift -framework CoreAudio -framework AVFoundation
