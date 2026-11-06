@@ -1528,8 +1528,9 @@ export async function startServer(options: {
         shuttingDown = true;
         appCapture.stop();
         const until = Date.now() + waitMs;
-        // A page polls about once a second; give it time to see the flag, then wait for its sources' ends (or the deadline).
-        await new Promise(resolve => setTimeout(resolve, 2500));
+        // Recording pages need time to see the flag and drain (including a first PCM body still arriving). Restarts also
+        // retain their admission-guard grace; idle quits still run the full HTTP, save/seal, worker and write cleanup below.
+        if (restarting || recordingAnywhere()) await new Promise(resolve => setTimeout(resolve, 2500));
         while (!hurry && capture.recording() && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 250));
         await app.close();
       },
