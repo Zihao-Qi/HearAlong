@@ -1,23 +1,16 @@
-// Shown by the service worker when the local server is not running. Asks the helper app to start it (macOS opens the helper for
-// meetingassistant:// links; Chrome asks once whether to allow that), then loads the app as soon as the server answers.
+// Development-only offline page. Wait for a manually started server; never launch a removed helper.
 const title = document.getElementById('title'), detail = document.getElementById('detail'), retry = document.getElementById('retry');
-let timer, launchTimer;
-function stopTimers() { clearInterval(timer); clearInterval(launchTimer); }
+let timer;
+function stopTimers() { clearInterval(timer); }
 function start() {
   stopTimers();
-  title.textContent = 'Starting HearAlong…';
-  detail.textContent = 'This takes a few seconds. If Chrome asks whether to open HearAlong Helper, allow it (tick “Always allow” to skip this next time).';
+  title.textContent = 'HearAlong server is not running';
+  detail.textContent = 'Start it with npm start from the app folder, then try again.';
   retry.hidden = true;
   const until = Date.now() + 60_000;
-  const launch = () => { if (Date.now() < until) location.href = 'meetingassistant://start'; };
-  launch();
-  // A restarting helper may still be quitting when the first request arrives. Once it exits, a later request launches anew.
-  launchTimer = setInterval(launch, 3000);
   timer = setInterval(async () => {
     if (Date.now() > until) {
       stopTimers();
-      title.textContent = 'HearAlong did not start';
-      detail.innerHTML = 'Open <code>HearAlong Helper</code> from <code>~/Applications</code> (or <code>app/dist</code> for a source checkout), then try again. Installed release logs are in <code>~/Library/Application Support/HearAlong/data/logs/launcher.log</code>; source checkout logs are in <code>app/data/logs/launcher.log</code>.';
       retry.hidden = false;
       retry.focus(); return;
     }

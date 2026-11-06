@@ -24,8 +24,7 @@
     "bench:live": "node --experimental-strip-types scripts/bench/live-run.ts",
     "bench:rescore": "node --experimental-strip-types scripts/bench/rescore.ts",
     "bench:ihm": "node --experimental-strip-types scripts/bench/ihm-run.ts",
-    "bench:report": "node --experimental-strip-types scripts/bench/report.ts",
-    "build:app": "sh scripts/build-app.sh"
+    "bench:report": "node --experimental-strip-types scripts/bench/report.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.3.0",

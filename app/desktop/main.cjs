@@ -2,11 +2,12 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, systemPreferences, powerSaveBlocker, dialog, screen, session } = require('electron');
 const { readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { fileURLToPath } = require('node:url');
 const { setTimeout: delay } = require('node:timers/promises');
 const { locations } = require('./locations.cjs');
 const { captureBinary, startCapture } = require('./capture.cjs');
 const { backgroundLabel, backgroundVisible, backgroundQuitText, miniVisible, serverExit, permissionAllowed, navigation } = require('./policy.cjs');
-const { logger, logTail, availablePort, startServer, ServerSession } = require('./server.cjs');
+const { logger, logTail, availablePort, quitOtherCopy, startServer, ServerSession } = require('./server.cjs');
 
 let config;
 try { config = locations(process.env, app.isPackaged); }
@@ -24,10 +25,14 @@ function launch() {
   const api = new ServerSession(config.origin);
   let main, mini, server, capture, tray, blocker, timer, pollBusy = false, live, background;
   let quitting = false, finished = false, askingQuit = false, failing = false, loaded = false, wasFrontmost = true;
-  let focusCount = 0;
+  let focusCount = 0, startupBusy = false, startupError = null;
+  // Chromium leaves literal '%' unescaped in file URLs; preserve it before decoding the path.
+  const isStarting = url => { try { return fileURLToPath(url.replace(/%(?![\da-f]{2})/gi, '%25')) === config.starting; } catch { return false; } };
+  const startupStatus = () => ({ message: startupError?.message, canQuitOther: Boolean(startupError?.owner), busy: startupBusy });
+  const sendStartup = () => { if (main && isStarting(main.webContents.getURL())) main.webContents.send('hearalong:startup-status', startupStatus()); };
   const frontmost = () => Boolean(main?.isFocused());
   const preferences = () => ({ preload: config.preload, contextIsolation: true, sandbox: true, nodeIntegration: false,
-    additionalArguments: [`--hearalong-origin=${config.origin}`] });
+    additionalArguments: [`--hearalong-origin=${config.origin}`, `--hearalong-starting=${config.starting}`] });
   const boundsFile = join(config.userData, 'window.json');
   function bounds() {
     try {
@@ -175,6 +180,7 @@ function launch() {
   }
   async function requestQuit() {
     if (quitting || askingQuit) return;
+    if (!server) { await stop(); return; } // A port conflict must never contact its listener.
     askingQuit = true;
     try {
       // Do not rely on a stale 500 ms snapshot for destructive decisions.
@@ -220,6 +226,16 @@ function launch() {
     });
     const trusted = event => event.senderFrame === event.sender.mainFrame && navigation(config.origin, event.senderFrame.url) === 'allow'
       && (event.sender === main?.webContents || event.sender === mini?.webContents);
+    const trustedStartup = event => event.sender === main?.webContents && event.senderFrame === event.sender.mainFrame && isStarting(event.senderFrame.url);
+    ipcMain.handle('hearalong:startup-status', event => {
+      if (!trustedStartup(event)) throw new Error('Not allowed');
+      return startupStatus();
+    });
+    ipcMain.handle('hearalong:startup-retry', async (event, quitOther) => {
+      if (!trustedStartup(event)) throw new Error('Not allowed');
+      if (!startupBusy && startupError && !loaded && !quitting) await bootServer(quitOther === true);
+      return startupStatus();
+    });
     ipcMain.handle('hearalong:microphone-status', event => {
       if (!trusted(event)) throw new Error('Not allowed');
       return config.testing ? 'granted' : process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('microphone') : 'not-determined';
@@ -239,8 +255,20 @@ function launch() {
       { label: 'Window', submenu: [{ role: 'minimize' }, { role: 'zoom' }, { label: 'Open HearAlong', click: open }] },
     ]));
     makeMain(); log('Helper started directly.');
+    await bootServer();
+  }).catch(error => { void fail(error.message); });
+  async function bootServer(quitOther = false) {
+    if (startupBusy || quitting || loaded) return;
+    startupBusy = true;
+    sendStartup();
     try {
+      if (quitOther && startupError?.owner) await quitOtherCopy(config, startupError.owner, () => {
+        startupError.message = 'The other copy is still finishing its work…';
+        sendStartup();
+      });
       await availablePort(config);
+      if (quitting) return;
+      startupError = null;
       server = startServer(config, log, (code) => {
         const decision = serverExit(code, quitting);
         if (decision === 'quit') void stop();
@@ -261,8 +289,12 @@ function launch() {
         await delay(500);
       }
       if (!quitting && !failing && server.alive()) await fail('The server did not answer within 60 s.');
-    } catch (error) { await fail(`The server could not start: ${error.message}`); }
-  }).catch(error => { void fail(error.message); });
+    } catch (error) {
+      if (error.portConflict || (quitOther && startupError)) {
+        startupError = error.portConflict ? error : { ...startupError, message: error.message };
+      } else await fail(`The server could not start: ${error.message}`);
+    } finally { startupBusy = false; sendStartup(); }
+  }
   // No renderer debug/test IPC. Playwright can inspect the main process only in development.
   if (config.testing) module.exports.state = () => ({ live, background, quitting, focusCount, loaded, serverPid: server?.child.pid, capturePid: capture?.pid(),
     miniVisible: mini?.isVisible() || false, frontmost: frontmost(), blocker, tray: Boolean(tray) });

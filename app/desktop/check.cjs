@@ -9,12 +9,13 @@ async function nativeFocus(page) {
   const client = playwright._connection.toImpl(page).delegate._mainFrameSession._client;
   await client.send('Emulation.setFocusEmulationEnabled', { enabled: false });
 }
-const { mkdtemp, mkdir, readFile, rm, writeFile } = require('node:fs/promises');
+const { cp, mkdtemp, mkdir, readFile, rm, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join } = require('node:path');
 const { createServer } = require('node:net');
 const { spawn, execFileSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
+const { once } = require('node:events');
 const { setTimeout: delay } = require('node:timers/promises');
 const executablePath = require('electron');
 const output = process.argv[2];
@@ -53,10 +54,27 @@ function finder() {
   let electron, owned = [], database;
   const passed = label => { results.cases.push(label); console.log('PASS', label); };
   try {
-    for (const mode of ['capture', 'recording', 'crash', 'renderer', 'idle']) {
+    for (const mode of ['conflict-known', 'conflict-free', 'conflict-changed', 'conflict-percent', 'conflict-drain', 'conflict-unknown', 'conflict-stubborn', 'capture', 'recording', 'crash', 'renderer', 'idle']) {
       const scope = join(root, mode), home = join(scope, 'home'), data = join(scope, 'meetings');
       await mkdir(home, { recursive: true });
       const PORT = String(await port());
+      let listener;
+      if (mode.startsWith('conflict-')) {
+        let executable = process.execPath;
+        if (mode !== 'conflict-unknown') {
+          executable = join(scope, 'HearAlong.app/Contents/MacOS/node');
+          await mkdir(join(scope, 'HearAlong.app/Contents/MacOS'), { recursive: true });
+          await cp(process.execPath, executable);
+        }
+        listener = ownElectron(spawn(executable, ['-e', `
+          ${['conflict-stubborn', 'conflict-drain'].includes(mode) ? `process.on('SIGTERM', () => {
+            require('node:fs').appendFileSync(${JSON.stringify(join(scope, 'signals'))}, 'term\\n');
+            ${mode === 'conflict-drain' ? 'setTimeout(() => process.exit(0), 12000);' : ''}
+          });` : ''}
+          require('node:net').createServer().listen(${PORT}, '127.0.0.1', () => console.log('ready'));
+        `], { stdio: ['ignore', 'pipe', 'pipe'] }));
+        await once(listener.stdout, 'data');
+      }
       const env = { ...process.env, HOME: home, MEETING_DATA_DIR: data, PORT, HEARALONG_NODE: process.execPath,
         MEETING_CLOUD: '0', HEARALONG_DESKTOP_TEST: '1', HEARALONG_DESKTOP_TEST_HIDE_DOCK: mode === 'recording' ? '0' : '1',
         MEETING_IDLE_EXIT_S: mode === 'idle' ? '6' : '60',
@@ -64,7 +82,21 @@ function finder() {
         ...(mode === 'capture' ? { HEARALONG_DESKTOP_TEST_CAPTURE: join(__dirname, 'fixture-capture.cjs'), HEARALONG_DESKTOP_TEST_CAPTURE_EVENTS: join(scope, 'capture-events.jsonl') } : {}),
         HF_HOME: join(scope, 'empty-hf'), XDG_CACHE_HOME: join(scope, 'cache'), XDG_CONFIG_HOME: join(scope, 'config') };
       delete env.ELECTRON_RUN_AS_NODE;
-      electron = await _electron.launch({ executablePath, args: [__dirname], env, timeout: 30000 });
+      let entry = __dirname;
+      if (mode === 'conflict-percent') {
+        const folder = join(scope, '100% ready');
+        await mkdir(join(folder, 'public'), { recursive: true });
+        await mkdir(join(folder, 'desktop'));
+        const starting = join(folder, 'desktop/starting.html');
+        await cp(join(__dirname, 'starting.html'), starting);
+        await cp(join(__dirname, '../public/starting.css'), join(folder, 'public/starting.css'));
+        entry = join(scope, 'percent-entry.cjs');
+        await writeFile(entry, `const paths = require(${JSON.stringify(join(__dirname, 'locations.cjs'))});
+          const original = paths.locations;
+          paths.locations = (...args) => ({ ...original(...args), starting: ${JSON.stringify(starting)} });
+          require(${JSON.stringify(join(__dirname, 'main.cjs'))});`);
+      }
+      electron = await _electron.launch({ executablePath, args: [entry], env, timeout: 30000 });
       ownElectron(electron.process());
       // Intercept native dialog and external-open APIs so checks cannot prompt or drive a real browser.
       await electron.evaluate(({ dialog, shell }) => {
@@ -78,9 +110,61 @@ function finder() {
         shell.openExternal = async url => { globalThis.checkExternal.push(url); };
       });
       const page = await electron.firstWindow();
-      const starting = await page.locator('h1').textContent();
-      assert.equal(starting, 'Starting HearAlong…');
-      assert.equal(await page.locator('p').textContent(), 'This takes a few seconds.');
+      if (!listener) {
+        const starting = await page.locator('h1').textContent();
+        assert.equal(starting, 'Starting HearAlong…');
+        assert.equal(await page.locator('p').textContent(), 'This takes a few seconds.');
+      }
+      if (listener) {
+        await page.locator('#retry').waitFor({ state: 'visible' });
+        if (mode === 'conflict-unknown') {
+          assert.equal(await page.locator('#detail').textContent(), `Another program is using port ${PORT}, which HearAlong needs. Quit that program, then open HearAlong again.`);
+          assert.equal(await page.locator('#quit-other').isHidden(), true);
+          listener.kill('SIGTERM'); await exited(listener);
+          await page.locator('#retry').click();
+        } else {
+          assert.equal(await page.locator('#detail').textContent(), 'Another copy of HearAlong is already running, so this one cannot start. Quit the other copy, then open HearAlong again.');
+          if (['conflict-free', 'conflict-changed'].includes(mode)) {
+            listener.kill('SIGTERM'); await exited(listener);
+            if (mode === 'conflict-changed') {
+              listener = ownElectron(spawn(process.execPath, ['-e', `require('node:net').createServer().listen(${PORT}, '127.0.0.1', () => console.log('ready'));`], { stdio: ['ignore', 'pipe', 'pipe'] }));
+              await once(listener.stdout, 'data');
+            }
+          }
+          await page.locator('#quit-other').click();
+          if (mode === 'conflict-changed') {
+            await until(async () => (await page.locator('#detail').textContent()).includes('has changed'), 'changed owner');
+            assert.equal(await page.locator('#quit-other').isHidden(), true);
+            assert.equal(listener.exitCode, null);
+            listener.kill('SIGTERM'); await exited(listener);
+            await page.locator('#retry').click();
+          } else if (['conflict-stubborn', 'conflict-drain'].includes(mode)) {
+            await page.getByText('The other copy is still finishing its work…', { exact: true }).waitFor();
+            assert.equal(await page.locator('#quit-other').isDisabled(), true);
+            await delay(10500);
+            assert.equal(await page.locator('#quit-other').isDisabled(), true);
+            assert.equal(await readFile(join(scope, 'signals'), 'utf8'), 'term\n');
+            if (mode === 'conflict-stubborn') {
+              await until(async () => (await page.locator('#detail').textContent()).includes('still running after 60 seconds'), 'sixty-second drain bound', 65000);
+              assert.equal(await page.locator('#quit-other').isHidden(), true);
+              await page.locator('#retry').click();
+              await until(async () => await page.locator('#retry').isEnabled(), 'retry without another signal');
+              assert.equal(await page.locator('#quit-other').isHidden(), true);
+              assert.equal(await readFile(join(scope, 'signals'), 'utf8'), 'term\n');
+              listener.kill('SIGKILL'); await exited(listener);
+              await page.locator('#retry').click();
+            } else await exited(listener);
+          } else await exited(listener);
+        }
+        await page.waitForURL(`http://127.0.0.1:${PORT}/`, { timeout: 30000 });
+        await until(async () => { try { owned = [JSON.parse(await readFile(join(data, 'ready.json'), 'utf8')).pid, ...Object.values(JSON.parse(await readFile(join(data, 'descendants.json'), 'utf8')))]; return owned.length === 3; } catch { return false; } }, 'recovered descendants');
+        assert.equal(await page.evaluate(() => Boolean(window.hearalongStartup)), false);
+        const closed = closedElectron(electron);
+        electron.process().kill('SIGTERM'); await closed; electron = null;
+        await until(() => owned.every(pid => !alive(pid)), 'recovered server group cleanup');
+        owned = []; passed(`${mode}: local error page, safe action, then normal startup`);
+        continue;
+      }
       await page.waitForURL(`http://127.0.0.1:${PORT}/${['idle', 'renderer', 'capture'].includes(mode) ? 'setup' : ''}`, { timeout: 30000 });
       await page.waitForFunction(() => window.hearalong?.desktop);
       // Playwright otherwise emulates focus, making document.hasFocus() unusable as native evidence.

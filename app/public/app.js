@@ -47,7 +47,7 @@ const notesView = { tab: ['notes', 'plans', 'project'].includes(store.get('right
 // Project memory (M6): the project of the shown meeting, what the Project tab shows, and rows resolved in the last 15 s.
 const projectView = { owner: null, project: null, data: null, run: null, filter: null, expanded: new Map(), editing: null, resolved: new Map(), resolvedEdits: new Map(), sources: new Map(), wordings: new Map(), commits: null, commitsFor: null, menu: null, sequence: 0, tell: null, menuProject: undefined, projects: [] };
 
-if (!window.hearalong?.desktop) navigator.serviceWorker?.register('/sw.js').catch(() => {}); // only for the "Starting…" page of the installed app
+if (!window.hearalong?.desktop) navigator.serviceWorker?.register('/sw.js').catch(() => {}); // browser-only offline guidance
 /** An API call that gives up after `ms` (a stalled request must not hang recording or stopping). */
 function apiWithin(ms, path, options = {}) {
   const controller = new AbortController();
@@ -311,6 +311,13 @@ async function refreshSegments() {
 }
 
 function renderUpdate(force = false) {
+  const upgrade = !window.hearalong?.desktop && document.documentElement.dataset.chromeUpgrade;
+  if (upgrade) {
+    $('update-bar').hidden = false;
+    $('update-text').textContent = upgrade;
+    for (const id of ['update-later', 'update-restart', 'update-spinner']) $(id).hidden = true;
+    return;
+  }
   const restarting = updateView.phase === 'restarting', failed = updateView.phase === 'failed';
   const canRestart = Boolean(status?.update?.canRestart);
   $('update-bar').hidden = !restarting && !failed && (updateView.dismissed || !status?.update?.ready || (!force && status?.working));
@@ -330,8 +337,8 @@ $('update-restart').onclick = async () => {
   try {
     await apiWithin(10_000, '/api/restart', { method: 'POST' });
     updateView.accepted = true;
-    // Fetch (not navigation) bypasses the service worker's Starting fallback. Only navigate once the old server is gone;
-    // the offline navigation then shows Starting, which launches the helper and returns to the newly started dashboard.
+    // Fetch (not navigation) bypasses the offline fallback. Only navigate once the old server is gone;
+    // development then explains npm start; a packaged browser page points to the Mac app.
     const until = Date.now() + 10_000;
     while (Date.now() < until) {
       const controller = new AbortController();

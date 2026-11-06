@@ -129,8 +129,8 @@ esac
 stage=$(mktemp -d "$APPLICATIONS/.hearalong-XXXXXX")
 asset=HearAlong-mac-arm64.zip
 echo 'Downloading HearAlong.'
-curl -fSL "$release/$asset" -o "$stage/$asset"
-curl -fSL "$release/$asset.sha256" -o "$stage/$asset.sha256"
+curl -fsSL "$release/$asset" -o "$stage/$asset"
+curl -fsSL "$release/$asset.sha256" -o "$stage/$asset.sha256"
 # Do not trust filenames from the checksum file.
 expected=$(awk 'NR == 1 { print tolower($1) }' "$stage/$asset.sha256")
 case "$expected" in *[!a-f0-9]*|'') fail 'Invalid release checksum.' ;; esac

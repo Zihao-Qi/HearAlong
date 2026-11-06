@@ -1,10 +1,77 @@
 'use strict';
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, execFile, execFileSync } = require('node:child_process');
+const { promisify } = require('node:util');
 const { openSync, closeSync, appendFileSync, mkdirSync, fstatSync, readSync } = require('node:fs');
 const { createServer } = require('node:net');
-const { dirname } = require('node:path');
+const { dirname, join } = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { launcherLogLines } = require('./policy.cjs');
+const exec = promisify(execFile);
+async function output(command, args) {
+  return (await exec(command, args, { encoding: 'utf8', timeout: 2000, maxBuffer: 256 * 1024 })).stdout;
+}
+async function identifyListener(port) {
+  if (process.platform !== 'darwin') return null;
+  try {
+    // No requests to the listener, and no authority from its process title/argv.
+    const listeners = await output('/usr/sbin/lsof', ['-nP', '-a', `-iTCP@127.0.0.1:${port}`, '-sTCP:LISTEN', '-Fpu']);
+    const pids = [...new Set([...listeners.matchAll(/^p(\d+)$/gm)].map(m => Number(m[1])))];
+    if (pids.length !== 1) return null;
+    const pid = pids[0];
+    const info = (await output('/bin/ps', ['-p', String(pid), '-o', 'uid=', '-o', 'lstart='])).trim();
+    const match = info.match(/^(\d+)\s+(.+)$/);
+    if (!match || Number(match[1]) !== process.getuid()) return null;
+    const files = await output('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-d', 'txt', '-Fn']);
+    // lsof's first txt entry is the executable (later entries can be shared libraries).
+    const executable = files.match(/^n(.+)$/m)?.[1];
+    const bundle = executable?.match(/^(.*?\.app)\/Contents\//)?.[1];
+    if (!bundle) return null;
+    let known = /\/(?:HearAlong|HearAlong Helper)\.app$/.test(bundle);
+    if (!known) {
+      const id = (await output('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', join(bundle, 'Contents/Info.plist')])).trim();
+      known = /^(?:io\.github\.zihao-qi\.hearalong|local\.meeting-research-assistant)/.test(id);
+    }
+    return known ? { pid, uid: Number(match[1]), started: match[2], executable } : null;
+  } catch { return null; } // Missing permissions, tools, or ambiguous identity: never offer to kill.
+}
+function sameOwner(a, b) {
+  return Boolean(a && b && a.pid === b.pid && a.uid === b.uid && a.started === b.started && a.executable === b.executable);
+}
+// Remember requests for this launch, including across retries and refreshed conflict snapshots.
+// A second SIGTERM would bypass the other server's graceful recording drain.
+const quitRequests = new Set();
+// A process that execs another binary is still the same lifetime: do not signal it twice either.
+const ownerKey = owner => JSON.stringify([owner.pid, owner.uid, owner.started]);
+const quitRequested = owner => Boolean(owner && quitRequests.has(ownerKey(owner)));
+const conflict = message => Object.assign(new Error(message), { portConflict: true, owner: null });
+async function quitListener(config, owner, { identify = identifyListener, signal = (pid) => process.kill(pid, 'SIGTERM'), free,
+  timeout = 60000, onWaiting = () => {}, now = Date.now, sleep = delay } = {}) {
+  if (await free()) return;
+  if (!sameOwner(owner, await identify(config.port))) {
+    if (await free()) return;
+    throw conflict('The other copy has changed. Try again before quitting it.');
+  }
+  if (!quitRequested(owner)) {
+    quitRequests.add(ownerKey(owner));
+    try { signal(owner.pid); } // Only the re-identified listener, never a process group or name match.
+    catch (error) {
+      if (error.code === 'ESRCH') return; // Normal startup rechecks the port, including any replacement listener.
+      throw conflict('The other copy could not be asked to quit. Quit it, then try again.');
+    }
+  }
+  onWaiting();
+  const deadline = now() + timeout;
+  do {
+    if (await free()) return;
+    if (!sameOwner(owner, await identify(config.port))) {
+      if (await free()) return;
+      throw conflict('The other copy has changed. Try again before quitting it.');
+    }
+    await sleep(Math.min(1000, Math.max(0, deadline - now())));
+  } while (now() < deadline);
+  if (await free()) return;
+  throw conflict('The other copy is still running after 60 seconds. Let it finish or quit it yourself, then try again.');
+}
 
 function logger(config) {
   mkdirSync(dirname(config.log), { recursive: true });
@@ -20,14 +87,27 @@ function logTail(config) {
   } catch { return ''; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
-async function availablePort(config) {
-  // Do not adopt/load an unrelated server, even if it looks like HearAlong.
+async function portFree(config) {
   const probe = createServer();
-  await new Promise((resolve, reject) => {
-    probe.once('error', () => reject(new Error(`Port ${config.port} is used by another program, so HearAlong cannot start there.`)));
-    probe.listen(config.port, '127.0.0.1', resolve);
+  const free = await new Promise((resolve, reject) => {
+    probe.once('error', error => error.code === 'EADDRINUSE' ? resolve(false) : reject(error));
+    probe.listen(config.port, '127.0.0.1', () => resolve(true));
   });
-  await new Promise(resolve => probe.close(resolve));
+  if (free) await new Promise(resolve => probe.close(resolve));
+  return free;
+}
+async function availablePort(config) {
+  // Never adopt an existing server, even if it is another HearAlong.
+  if (await portFree(config)) return;
+  const owner = await identifyListener(config.port);
+  const requested = quitRequested(owner);
+  throw Object.assign(new Error(requested
+    ? 'The other copy is still finishing its work… Try again when it has finished.'
+    : owner ? 'Another copy of HearAlong is already running, so this one cannot start. Quit the other copy, then open HearAlong again.'
+    : `Another program is using port ${config.port}, which HearAlong needs. Quit that program, then open HearAlong again.`), { portConflict: true, owner: requested ? null : owner });
+}
+async function quitOtherCopy(config, owner, onWaiting) {
+  await quitListener(config, owner, { free: () => portFree(config), onWaiting });
 }
 function serverEnvironment(config, env = process.env) {
   const result = { ...env, PORT: String(config.port), MEETING_DATA_DIR: config.data,
@@ -107,4 +187,4 @@ class ServerSession {
     return Array.isArray(status.meetings) && typeof status.config === 'object';
   }
 }
-module.exports = { logger, logTail, availablePort, serverEnvironment, startServer, ServerSession };
+module.exports = { logger, logTail, availablePort, quitOtherCopy, portFree, identifyListener, sameOwner, quitListener, serverEnvironment, startServer, ServerSession };
