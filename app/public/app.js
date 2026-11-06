@@ -311,6 +311,13 @@ async function refreshSegments() {
 }
 
 function renderUpdate(force = false) {
+  const upgrade = !window.hearalong?.desktop && document.documentElement.dataset.chromeUpgrade;
+  if (upgrade) {
+    $('update-bar').hidden = false;
+    $('update-text').textContent = upgrade;
+    for (const id of ['update-later', 'update-restart', 'update-spinner']) $(id).hidden = true;
+    return;
+  }
   const restarting = updateView.phase === 'restarting', failed = updateView.phase === 'failed';
   const canRestart = Boolean(status?.update?.canRestart);
   $('update-bar').hidden = !restarting && !failed && (updateView.dismissed || !status?.update?.ready || (!force && status?.working));

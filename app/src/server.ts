@@ -185,6 +185,25 @@ export async function startServer(options: {
       try { staticSnapshot.set(path, { bytes: await readFile(join(publicRoot, path)) }); }
       catch (error) { staticSnapshot.set(path, { error }); } // Missing assets fail on request, not on startup.
     }));
+    // Only the installed server retires the old Chrome app; source checkouts stay unchanged.
+    if (process.env.HEARALONG_PACKAGED === '1') {
+      const notice = 'HearAlong is now an app on your Mac. Open HearAlong from your Applications folder. You can remove this Chrome version: open chrome://apps, right-click HearAlong, Remove from Chrome.';
+      const text = (path: string) => {
+        const snapshot = staticSnapshot.get(path)!;
+        if ('error' in snapshot) throw snapshot.error;
+        return snapshot.bytes.toString('utf8');
+      };
+      for (const path of ['index.html', 'setup.html']) {
+        staticSnapshot.set(path, { bytes: Buffer.from(text(path).replace('<html lang="en">', `<html lang="en" data-chrome-upgrade="${notice}">`)) });
+      }
+      const offline = text('starting.html')
+        .replace('<link rel="stylesheet" href="/starting.css">', `<style>${text('starting.css')}</style>`)
+        .replace('Starting HearAlong…', 'HearAlong')
+        .replace('This takes a few seconds.', notice)
+        .replace('  <button id="retry" type="button" hidden>Try again</button>\n', '')
+        .replace('<script src="/starting.js"></script>', '');
+      staticSnapshot.set('sw.js', { bytes: Buffer.from(text('sw.js').replace("const OFFLINE_PAGE = '';", `const OFFLINE_PAGE = ${JSON.stringify(offline)};`)) });
+    }
     const fingerprint = await CodeFingerprint.start(options.codeRoot ?? ROOT, publicRoot, options.clock ?? Date.now, options.fingerprint);
     const canRestart = (options.idleMs ?? Number(process.env.MEETING_IDLE_EXIT_S ?? 0) * 1000) > 0;
     // Before anything else (M7b §4): what a crash left running ends. The Pi group of a run recorded as running and the groups
