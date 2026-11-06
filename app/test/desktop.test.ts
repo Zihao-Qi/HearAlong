@@ -4,11 +4,15 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { spawn } from 'node:child_process';
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 const require = createRequire(import.meta.url);
 const { locations } = require('../desktop/locations.cjs');
-const { ServerSession, availablePort, serverEnvironment } = require('../desktop/server.cjs');
+const { ServerSession, availablePort, quitOtherCopy, portFree, serverEnvironment } = require('../desktop/server.cjs');
 const { captureBinary } = require('../desktop/capture.cjs');
+const { identifyListener, sameOwner, quitListener } = require('../desktop/server.cjs');
 const { backgroundLabel, backgroundVisible, backgroundQuitText, miniVisible, serverExit, permissionAllowed, navigation, launcherLogLines } = require('../desktop/policy.cjs');
 
 test('desktop paths use Node 22 outside Electron and keep Chromium separate from meetings', () => {
@@ -148,7 +152,64 @@ test('startup accepts the onboarding redirect, shares/renews its cookie, and nev
     await client.request('/api/live/mini', { session: 1, action: 'closed' });
     assert.equal(requests.at(-1)?.origin, origin);
     assert.ok(requests.every(request => request.page === undefined));
-    await assert.rejects(availablePort({ port: address.port }), /used by another program/);
+    await assert.rejects(availablePort({ port: address.port }), /Another program is using port/);
   } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   await availablePort({ port: address.port });
+});
+
+
+test('port conflicts identify only an owned HearAlong executable, recheck before SIGTERM, and wait for release', { skip: process.platform !== 'darwin' }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'hearalong-port-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  async function listener(bundle: string | null, ignoreTerm = false, bundleId?: string) {
+    let executable = process.execPath;
+    if (bundle) {
+      executable = join(directory, bundle, 'Contents/MacOS/node');
+      await mkdir(dirname(executable), { recursive: true });
+      await cp(process.execPath, executable);
+      if (bundleId) await writeFile(join(directory, bundle, 'Contents/Info.plist'), `<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${bundleId}</string></dict></plist>`);
+    }
+    const child = spawn(executable, ['-e', `
+      process.title = 'HearAlong'; // An unrelated program cannot gain authority from its title.
+      ${ignoreTerm ? "process.on('SIGTERM', () => {});" : ''}
+      require('node:net').createServer().listen(0, '127.0.0.1', function() { console.log(this.address().port); });
+    `], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const closed = once(child, 'exit');
+    t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await closed; });
+    const [data] = await once(child.stdout!, 'data');
+    const port = Number(String(data).trim());
+    assert.ok(port > 0 && ![4318, 11434, 1234].includes(port));
+    return { child, port, closed };
+  }
+  const unrelated = await listener(null);
+  assert.equal(await identifyListener(unrelated.port), null);
+  await assert.rejects(availablePort(unrelated), (error: Error & { owner?: unknown }) => {
+    assert.equal(error.message, `Another program is using port ${unrelated.port}, which HearAlong needs. Quit that program, then open HearAlong again.`);
+    assert.equal(error.owner, null); return true;
+  });
+  for (const [bundle, id] of [['HearAlong.app', undefined], ['HearAlong Helper.app', undefined],
+    ['Fictional.app', 'io.github.zihao-qi.hearalong.fixture'], ['Legacy.app', 'local.meeting-research-assistant.fixture']]) {
+    const fake = await listener(bundle!, false, id);
+    const owner = await identifyListener(fake.port);
+    assert.equal(owner?.pid, fake.child.pid);
+    await assert.rejects(availablePort(fake), (error: Error & { owner?: { pid: number } }) => {
+      assert.equal(error.message, 'Another copy of HearAlong is already running, so this one cannot start. Quit the other copy, then open HearAlong again.');
+      assert.equal(error.owner?.pid, fake.child.pid); return true;
+    });
+    await quitOtherCopy(fake, owner);
+    await fake.closed;
+    assert.equal(await portFree(fake), true);
+  }
+  const stubborn = await listener('Stubborn/HearAlong.app', true);
+  const owner = await identifyListener(stubborn.port);
+  let signalled = false;
+  for (const change of [{ pid: owner.pid + 1 }, { uid: owner.uid + 1 }, { started: 'changed' }, { executable: '/fictional/other' }]) {
+    await assert.rejects(quitListener(stubborn, owner, { identify: async () => ({ ...owner, ...change }), signal: () => { signalled = true; } }), /has changed/);
+  }
+  assert.equal(signalled, false);
+  assert.equal(sameOwner(owner, null), false);
+  await assert.rejects(quitListener(stubborn, owner, { free: () => portFree(stubborn), timeout: 250 }), /has not freed the port/);
+  assert.equal(await portFree(stubborn), false);
+  // No unrelated listener was signalled by any path.
+  assert.equal(unrelated.child.exitCode, null); assert.equal(unrelated.child.signalCode, null);
 });
