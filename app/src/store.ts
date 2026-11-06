@@ -8,11 +8,12 @@ import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
 import { buildSegments, wordSegments, type Timing } from './segments.ts';
 import { echoWords, type EchoWord } from './echo-words.ts';
 import type { Recognition } from './recognizer.ts';
-import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Role, type Speakers } from './speakers.ts';
+import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
 import { heldMicrophoneFinals } from './live-finals.ts';
 import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/capture-gaps.js';
+import { paragraphsOf } from '../public/live-shared.js';
 
 export type Mode = 'periodic' | 'manual' | 'questions';
 export type Meeting = { id: string; title: string; createdAt: number; mode: Mode; intervalSeconds: number; replay: string | null; correction: string | null;
@@ -88,6 +89,8 @@ export class MeetingStore {
         text TEXT NOT NULL DEFAULT '', error TEXT, metrics TEXT, hash TEXT NOT NULL,
         UNIQUE(meetingId, source, sequence));
       CREATE INDEX IF NOT EXISTS chunk_queue ON chunks(status, startMs);
+      CREATE TABLE IF NOT EXISTS chunk_originals (id TEXT PRIMARY KEY REFERENCES chunks(id),
+        meetingId TEXT NOT NULL REFERENCES meetings(id), path TEXT NOT NULL, hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS segments (id TEXT PRIMARY KEY, meetingId TEXT NOT NULL REFERENCES meetings(id),
         chunkId TEXT NOT NULL REFERENCES chunks(id), source TEXT NOT NULL, ord INTEGER NOT NULL,
         startMs REAL NOT NULL, endMs REAL NOT NULL, text TEXT NOT NULL, originalText TEXT NOT NULL,
@@ -166,9 +169,11 @@ export class MeetingStore {
   }
   private repairRecordingPaths() {
     this.transaction(() => {
+      // An older binary may have removed this meeting's audio without knowing about originals.
+      this.db.exec("UPDATE chunk_originals SET path='' WHERE path<>'' AND meetingId IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL)");
       const absolutePaths = sep === '/' ? "path GLOB '/*'"
         : "(path GLOB '[A-Za-z]:[/\\\\]*' OR path GLOB '[/\\\\]*')";
-      for (const table of ['frames', 'chunks']) {
+      for (const table of ['frames', 'chunks', 'chunk_originals']) {
         // Filter native absolute paths in SQLite; relative and removed rows need no JS or filesystem work.
         const rows = this.db.prepare(`SELECT id,meetingId,path FROM ${table} WHERE path <> '' AND ${absolutePaths}`).all() as { id: string; meetingId: string; path: string }[];
         const update = this.db.prepare(`UPDATE ${table} SET path=? WHERE id=?`);
@@ -192,16 +197,20 @@ export class MeetingStore {
     try { const result = fn(); this.db.exec('COMMIT'); return result; }
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
-  /** Own a new file until its row commits. A failed write/sync/publication must not strand audio on disk. */
-  private async writeAudio(table: 'frames' | 'chunks', id: string, path: string, pcm: Buffer, publish: () => void) {
-    const directory = dirname(path), file = await openAudioFile(directory, path);
+  /** Own all files until their rows commit together. A failed write/sync/publication cannot strand a partial seal. */
+  private async writeAudio(table: 'frames' | 'chunks', id: string, path: string, pcm: Buffer, publish: () => void, sidecar?: { path: string; pcm: Buffer }) {
+    const directory = dirname(path), created: string[] = [];
     try {
-      try { await file.writeFile(pcm); await file.sync(); } finally { await file.close(); }
+      for (const audio of [{ path, pcm }, ...(sidecar ? [sidecar] : [])]) {
+        const file = await openAudioFile(directory, audio.path);
+        created.push(audio.path);
+        try { await file.writeFile(audio.pcm); await file.sync(); } finally { await file.close(); }
+      }
       await syncDirectory(directory);
       publish();
     } catch (error) {
       // Never delete a file whose publication did commit. If the database cannot be read, startup reconciliation decides.
-      try { if (!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(id)) await rm(path, { force: true }); }
+      try { if (!this.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(id)) await Promise.all(created.map(file => rm(file, { force: true }))); }
       catch { /* Best effort while storage is failing; removeOrphanAudioFiles retries at startup. */ }
       throw error;
     }
@@ -381,6 +390,32 @@ export class MeetingStore {
     this.meeting(id);
     return this.db.prepare('SELECT * FROM chunks WHERE meetingId=? ORDER BY startMs, sequence').all(id) as Chunk[];
   }
+  /** Original microphone window, for recovery/inspection only; never a recognition or playback source. */
+  originalAudio(chunkId: string): { path: string; hash: string } | undefined {
+    return this.db.prepare('SELECT path,hash FROM chunk_originals WHERE id=?').get(chunkId) as { path: string; hash: string } | undefined;
+  }
+  /** All retained recording files, including AEC originals, excluding already-reclaimed sealed frames. Paths stay data-relative. */
+  audioFiles(meetingId: string): { kind: 'chunk' | 'frame' | 'raw'; path: string; hash: string }[] {
+    this.meeting(meetingId);
+    return this.db.prepare(`SELECT 'chunk' AS kind,path,hash FROM chunks WHERE meetingId=? AND path<>''
+      UNION SELECT 'raw',path,hash FROM chunk_originals WHERE meetingId=? AND path<>''
+      UNION SELECT 'frame',path,hash FROM frames WHERE meetingId=? AND path<>'' AND windowChunkId IS NULL`).all(meetingId, meetingId, meetingId) as ReturnType<MeetingStore['audioFiles']>;
+  }
+  /** Read-only integrity check of saved recordings. Imported media has no admission hash. */
+  async verifyAudioFiles(meetingId: string): Promise<{ path: string; problem: 'missing' | 'hash mismatch' }[]> {
+    const problems: Awaited<ReturnType<MeetingStore['verifyAudioFiles']>> = [];
+    for (const file of this.audioFiles(meetingId)) {
+      try {
+        if (file.hash === 'file') { await access(this.resolvePath(file.path)); continue; }
+        const pcm = await readFile(this.resolvePath(file.path));
+        if (createHash('sha256').update(pcm).digest('hex') !== file.hash) problems.push({ path: file.path, problem: 'hash mismatch' });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        problems.push({ path: file.path, problem: 'missing' });
+      }
+    }
+    return problems;
+  }
   queuedCount(): number {
     return Number((this.db.prepare("SELECT COUNT(*) AS count FROM chunks WHERE status IN ('queued','running')").get() as { count: number }).count);
   }
@@ -545,10 +580,14 @@ export class MeetingStore {
     // Live AEC may replace window samples only, never durable raw frames or admission hashes.
     // Recovery/direct callers omit this argument and retain the original raw sealing path.
     if (processedPcm && processedPcm.length !== frames.reduce((sum, frame) => sum + frame.samples * 4, 0)) throw new Error('Processed window must preserve every frame sample.');
-    const pcm = processedPcm ?? Buffer.concat(await Promise.all(frames.map(f => readFile(this.resolvePath(f.path)))));
+    const raw = Buffer.concat(await Promise.all(frames.map(f => readFile(this.resolvePath(f.path)))));
+    const pcm = processedPcm ?? raw;
+    // LiveCapture also supplies pass-through windows. Only changed samples need a second copy.
+    const keepRaw = processedPcm !== undefined && !pcm.equals(raw);
     const hash = createHash('sha256').update(pcm).digest('hex');
     const id = randomUUID();
     const path = join(this.directory, 'audio', meetingId, this.audioName(meetingId, `${id}.f32`));
+    const originalPath = path.replace(/\.f32$/, '.raw.f32');
     await this.writeAudio('chunks', id, path, pcm, () => {
       this.transaction(() => {
         const held = this.db.prepare(`SELECT COUNT(*) AS n FROM frames WHERE meetingId=? AND source=? AND sequence BETWEEN ? AND ? AND windowChunkId IS NULL`)
@@ -556,11 +595,13 @@ export class MeetingStore {
         if (Number(held.n) !== frames.length) throw new Error('These frames were already sealed.');
         this.db.prepare(`INSERT INTO chunks (id,meetingId,source,sequence,path,decodeStart,startMs,seconds,sampleRate,status,hash)
           VALUES (?,?,?,?,?,0,?,?,?,'queued',?)`).run(id, meetingId, source, frames[0].sequence, this.storedPath(path), frames[0].startMs, pcm.length / 4 / FRAME_RATE, FRAME_RATE, hash);
+        if (keepRaw) this.db.prepare('INSERT INTO chunk_originals (id,meetingId,path,hash) VALUES (?,?,?,?)')
+          .run(id, meetingId, this.storedPath(originalPath), createHash('sha256').update(raw).digest('hex'));
         this.db.prepare('UPDATE frames SET windowChunkId=? WHERE meetingId=? AND source=? AND sequence BETWEEN ? AND ?')
           .run(id, meetingId, source, frames[0].sequence, frames.at(-1)!.sequence);
       });
-    });
-    // Committed: the window is queued whatever happens next. Frame files are only cleanup (retried at startup).
+    }, keepRaw ? { path: originalPath, pcm: raw } : undefined);
+    // Committed: both files and their hashes are published. Frame files are only cleanup (retried at startup).
     await Promise.allSettled(frames.map(f => rm(this.resolvePath(f.path), { force: true })));
     return this.chunk(id)!;
   }
@@ -568,14 +609,14 @@ export class MeetingStore {
   async removeOrphanAudioFiles() {
     const data = await realpath(this.directory), root = join(data, 'audio');
     if (!(await lstat(root).catch(() => null))?.isDirectory() || await realpath(root) !== root) return;
-    const referenced = new Set((this.db.prepare("SELECT path FROM frames WHERE path<>'' UNION SELECT path FROM chunks WHERE path<>''").all() as { path: string }[])
+    const referenced = new Set((this.db.prepare("SELECT path FROM frames WHERE path<>'' UNION SELECT path FROM chunks WHERE path<>'' UNION SELECT path FROM chunk_originals WHERE path<>''").all() as { path: string }[])
       .map(row => { const path = resolve(this.resolvePath(row.path)), relative = this.relativePath(path); return relative === null ? path : join(data, relative); }));
     for (const meeting of await readdir(root)) {
       if (!/^[a-f0-9-]{36}$/.test(meeting)) continue;
       const folder = join(root, meeting);
       if (!(await lstat(folder)).isDirectory() || await realpath(folder) !== folder) continue;
       for (const name of await readdir(folder)) {
-        if (!/^(?:g[1-9]\d*-)?[a-f0-9-]{36}(?:\.frame)?\.f32$/.test(name)) continue;
+        if (!/^(?:g[1-9]\d*-)?[a-f0-9-]{36}(?:\.frame|\.raw)?\.f32$/.test(name)) continue;
         const path = join(folder, name);
         if (!referenced.has(path) && (await lstat(path)).isFile()) await rm(path, { force: true });
       }
@@ -584,10 +625,25 @@ export class MeetingStore {
   /** Removes frame files whose audio is already in a window (a crash between the seal and the cleanup). */
   async removeSealedFrameFiles() {
     // Only when the window's own file exists: otherwise the frame files are the only copy of that audio.
-    const sealed = this.db.prepare(`SELECT f.path AS path, c.path AS windowPath FROM frames f JOIN chunks c ON c.id = f.windowChunkId`).all() as { path: string; windowPath: string }[];
+    const sealed = this.db.prepare(`SELECT f.path AS path, c.path AS windowPath, o.path AS originalPath, o.hash AS originalHash
+      FROM frames f JOIN chunks c ON c.id = f.windowChunkId LEFT JOIN chunk_originals o ON o.id=c.id`).all() as { path: string; windowPath: string; originalPath: string | null; originalHash: string | null }[];
+    const originals = new Map<string, Promise<boolean>>(); // Check each window once, not once per frame.
     await Promise.allSettled(sealed.map(async f => {
       if (!f.path || !f.windowPath) return;
-      await access(this.resolvePath(f.windowPath)); await rm(this.resolvePath(f.path), { force: true });
+      // Sealed frame rows survive cleanup for admission dedup. Do not hash years of retained
+      // originals on every start when their frame files were already reclaimed.
+      await access(this.resolvePath(f.path));
+      await access(this.resolvePath(f.windowPath));
+      if (f.originalPath !== null) {
+        if (!f.originalPath) return;
+        let intact = originals.get(f.originalPath);
+        if (!intact) {
+          intact = readFile(this.resolvePath(f.originalPath)).then(pcm => createHash('sha256').update(pcm).digest('hex') === f.originalHash);
+          originals.set(f.originalPath, intact);
+        }
+        if (!await intact) return;
+      }
+      await rm(this.resolvePath(f.path), { force: true });
     }));
   }
   /** Speaker roles of a meeting's sources (see speakers.ts), from saved chunks and held frames. */
@@ -647,33 +703,33 @@ export class MeetingStore {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return source;
   }
+  /** Non-final chunks split only their own speaker's paragraph in every transcript surface. */
+  chunkParagraphBarriers(id: string) {
+    const { labelled, roleOf } = this.speakers(id);
+    return this.chunks(id).filter(c => c.status !== 'completed').map(c => {
+      const role = labelled ? roleOf(c.source, c.startMs, c.startMs + c.seconds * 1000) : null;
+      return { startMs: c.startMs, speaker: role ? ROLE_LABEL[role] : null, gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` };
+    });
+  }
   /** Both exports share entries and paragraph boundaries; only their presentation differs. */
   private transcriptParagraphs(id: string, mode: 'corrected' | 'raw', locale?: string, plain = false) {
     const prefix = (ms: number) => plain ? '' : `[${new Date(ms).toISOString().slice(11, 19)}] `;
-    // Online meetings (a tab source): Me/Them per paragraph, a new paragraph at each change of speaker, one fixed order.
+    // Exports use the same sentence-aware, per-speaker grouping as both transcript views.
     const { labelled, roleOf } = this.speakers(id);
     const segments = this.segments(id);
     if (labelled) segments.sort(compareSegments);
     const entries = [
-      ...this.captureGaps(id).map(g => ({ at: g.atMs, end: g.atMs, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
-      ...segments.map(s => ({ at: s.startMs, end: s.endMs, text: mode === 'raw' ? s.originalText : s.text, speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })),
-      ...this.chunks(id).filter(c => c.status !== 'completed').map(c => ({ at: c.startMs, end: c.startMs, gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` })),
-    ].sort((a, b) => a.at - b.at);
-    const paragraphs: string[] = [];
-    let current: string[] = [];
-    let start = 0;
-    let last = -Infinity;
-    let speaker: Role | null = null;
-    const label = () => (speaker ? `${ROLE_LABEL[speaker]}: ` : '');
-    for (const entry of entries) {
-      const changed = labelled && !('gap' in entry) && entry.speaker !== speaker;
-      if (current.length && ('gap' in entry || changed || entry.at - last >= 2000 || entry.at - start >= 45_000)) { paragraphs.push(`${prefix(start)}${label()}${current.join(' ')}`); current = []; }
-      if ('gap' in entry) { paragraphs.push(`${prefix(entry.at)}${entry.gap}`); continue; }
-      if (!current.length) { start = entry.at; speaker = entry.speaker; last = entry.end; }
-      current.push(entry.text);
-      last = labelled ? Math.max(last, entry.end) : entry.end; // overlapping sources: the latest end within this paragraph
-    }
-    if (current.length) paragraphs.push(`${prefix(start)}${label()}${current.join(' ')}`);
+      ...this.captureGaps(id).map(g => ({ startMs: g.atMs, all: true, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
+      ...this.chunkParagraphBarriers(id),
+    ];
+    const grouped = paragraphsOf(segments.map(s => {
+      const role = labelled ? roleOf(s.source, s.startMs, s.endMs) : null;
+      return { ...s, text: mode === 'raw' ? s.originalText : s.text, speaker: role ? ROLE_LABEL[role] : null };
+    }), entries);
+    const paragraphs = [...grouped.map(p => ({ startMs: p.startMs, all: false,
+      text: `${prefix(p.startMs)}${p.speaker ? `${p.speaker}: ` : ''}${p.segments.map(s => s.text).join(' ')}` })),
+    ...entries.map(e => ({ startMs: e.startMs, all: 'all' in e && e.all, text: `${prefix(e.startMs)}${e.gap}` }))]
+      .sort((a, b) => a.startMs - b.startMs || Number(b.all) - Number(a.all)).map(e => e.text);
     return { labelled, paragraphs };
   }
   plainText(id: string): string {

@@ -1,19 +1,40 @@
 // Shared by the app page, the mini view and the server (M7 native mini window, docs/design/M7-native-mini.md §3): how transcript
 // lines group into paragraphs, and the problem notices' words, so both windows and the transcript say the same thing.
 
-/** Lines into paragraphs: a change of speaker, a 2 s pause or 45 s of speech starts a new one. Keyed by its first line. */
-export function paragraphsOf(segments) {
-  const out = [];
-  for (const segment of segments) {
-    const current = out.at(-1);
-    // Online meetings (segments carry a speaker): a change of speaker starts a new paragraph; lines of two sources overlap in time.
-    const labelled = 'speaker' in segment;
-    if (!current || (labelled && segment.speaker !== current.speaker) || segment.startMs - current.endMs >= 2000 || segment.startMs - current.startMs >= 45_000) {
-      out.push({ key: segment.id, startMs: segment.startMs, endMs: segment.endMs, segments: [segment], speaker: labelled ? segment.speaker : undefined });
-    } else { current.segments.push(segment); current.endMs = labelled ? Math.max(current.endMs, segment.endMs) : segment.endMs; }
+/** A sentence ends only at the end of a line (possibly before closing quotes/brackets). */
+const sentenceEnd = text => /[.?!…][\p{Pe}\p{Pf}"']*$/u.test((text ?? '').trim());
+
+/** One open paragraph per speaker, keyed by its first line. Only gaps close all speakers;
+ * previews/missing chunks close their own speaker (the single open lane in unlabelled meetings). */
+export function paragraphsOf(segments, barriers = []) {
+  const out = [], open = new Map();
+  const entries = [...segments.map(segment => ({ segment, startMs: segment.startMs })),
+    ...barriers.map(barrier => ({ barrier, startMs: barrier.startMs }))]
+    .sort((a, b) => a.startMs - b.startMs || Number(Boolean(b.barrier?.all)) - Number(Boolean(a.barrier?.all))
+      || Number(Boolean(a.barrier)) - Number(Boolean(b.barrier)));
+  for (const entry of entries) {
+    if (entry.barrier) {
+      if (entry.barrier.all) open.clear(); else open.delete(entry.barrier.speaker ?? undefined);
+      continue;
+    }
+    const segment = entry.segment, speaker = segment.speaker ?? undefined;
+    const current = open.get(speaker);
+    const ended = current && sentenceEnd(current.segments.at(-1).text);
+    const length = current ? segment.startMs - current.startMs : 0;
+    if (!current || segment.startMs - current.endMs >= (ended ? 2000 : 10_000)
+      || length >= 60_000 || (length >= 45_000 && ended)) {
+      const paragraph = { key: segment.id, startMs: segment.startMs, endMs: segment.endMs, segments: [segment], speaker };
+      out.push(paragraph); open.set(speaker, paragraph);
+    } else { current.segments.push(segment); current.endMs = Math.max(current.endMs, segment.endMs); }
   }
   for (const p of out) p.signature = `${p.speaker ?? ''}#` + p.segments.map(s => `${s.id}:${s.revision}`).join('|');
   return out;
+}
+/** Cache only before any paragraph that could still join not-yet-final speech. A preview
+ * barrier is temporary, while an inactive speaker's last paragraph eventually becomes stable. */
+export function paragraphCachePrefix(paragraphs, horizon) {
+  const firstMutable = paragraphs.findIndex(p => p.endMs + 10_000 > horizon && p.startMs + 60_000 > horizon);
+  return firstMutable < 0 ? paragraphs.length : firstMutable;
 }
 /** The ids of a paragraph's lines, from its signature. */
 export function signatureLines(signature) {

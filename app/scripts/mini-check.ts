@@ -339,14 +339,18 @@ async function run() {
   });
   const transcript = () => mf.evaluate(() => [...document.querySelectorAll('#m-scroll .ln')].map(e => `${(e as HTMLElement).dataset.signature}`).join('|'));
   const newLines = async (timeout = 40_000) => { const was = await transcript(); return mf.waitForFunction(w => [...document.querySelectorAll('#m-scroll .ln')].map(e => `${(e as HTMLElement).dataset.signature}`).join('|') !== w, was, { timeout }).then(() => true, () => false); };
-  // The line at the top of the view, where it is, and whether any line is above it.
+  // Reading anchor: the first row starting inside the viewport, otherwise the partly visible row's bottom.
+  // A partly scrolled-off paragraph's top is deliberately NOT held when reflow/growth changes its height.
   const topRow = () => mf.evaluate(() => {
-    const top = document.getElementById('m-scroll')!.getBoundingClientRect().top;
+    const pane = document.getElementById('m-scroll')!.getBoundingClientRect();
     const rows = [...document.querySelectorAll('#m-scroll .ln')] as HTMLElement[];
-    const index = rows.findIndex(r => r.getBoundingClientRect().bottom > top);
-    return { key: rows[index]?.dataset.key, y: rows[index]?.getBoundingClientRect().top ?? NaN, index };
+    const inside = rows.findIndex(r => r.getBoundingClientRect().top >= pane.top && r.getBoundingClientRect().top < pane.bottom);
+    const index = inside >= 0 ? inside : rows.findIndex(r => r.getBoundingClientRect().bottom > pane.top);
+    const edge = inside >= 0 ? 'top' as const : 'bottom' as const;
+    return { key: rows[index]?.dataset.key, y: rows[index]?.getBoundingClientRect()[edge] ?? NaN, index, edge };
   });
-  const rowY = (key: string) => mf.evaluate(k => document.querySelector(`#m-scroll .ln[data-key="${k}"]`)?.getBoundingClientRect().top ?? NaN, key);
+  const rowY = (key: string, edge: 'top' | 'bottom' = 'top') => mf.evaluate(({ key, edge }) =>
+    document.querySelector(`#m-scroll .ln[data-key="${key}"]`)?.getBoundingClientRect()[edge] ?? NaN, { key, edge });
   scrollFailureSnapshot = async () => {
     // All work/requests below are failure-only and happen before any teardown. Save partial evidence first.
     const snapshot: Record<string, unknown> = { ms: performance.now(), currentStep };
@@ -401,7 +405,7 @@ async function run() {
   let anchor = await topRow();
   const arrived = await newLines();
   await pip.waitForTimeout(100);
-  const moved = await rowY(anchor.key!) - anchor.y;
+  const moved = await rowY(anchor.key!, anchor.edge) - anchor.y;
   state = await scrollState();
   check('scrolled up: new lines arrive below without moving what the user reads', arrived && Math.abs(moved) < 0.5 && state.back, `${moved.toFixed(2)} px; ${JSON.stringify(state)}`);
   // A paragraph above the view changes (faked on the wire: a correction that makes it longer, then the real one again): the
@@ -426,10 +430,10 @@ async function run() {
   await context.route(liveApi, grow);
   await mf.waitForFunction(() => /corrected: a longer paragraph/.test(document.querySelector('#m-scroll .ln')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {});
   const grown = await mf.evaluate(() => /corrected: a longer paragraph/.test(document.querySelector('#m-scroll .ln')?.textContent ?? ''));
-  const movedGrow = await rowY(anchor.key!) - anchor.y;
+  const movedGrow = await rowY(anchor.key!, anchor.edge) - anchor.y;
   await context.unroute(liveApi, grow);
   await mf.waitForFunction(() => !/corrected: a longer paragraph/.test(document.querySelector('#m-scroll .ln')?.textContent ?? ''), null, { timeout: 5000 }).catch(() => {});
-  const movedBack = await rowY(anchor.key!) - anchor.y;
+  const movedBack = await rowY(anchor.key!, anchor.edge) - anchor.y;
   check('scrolled up: a paragraph above the view growing and shrinking back does not move the lines in view',
     grown && anchor.index > 0 && (await scrollState()).back && Math.abs(movedGrow) < 0.5 && Math.abs(movedBack) < 0.5, `top line #${anchor.index}; ${movedGrow.toFixed(2)} / ${movedBack.toFixed(2)} px`);
   // Scrolled up, the window made narrower (the lines rewrap) and wider again, and a notice coming above the lines and going: the
@@ -437,19 +441,19 @@ async function run() {
   anchor = await topRow();
   await pip.setViewportSize({ width: 290, height: 268 });
   await pip.waitForTimeout(400);
-  const movedNarrow = await rowY(anchor.key!) - anchor.y;
+  const movedNarrow = await rowY(anchor.key!, anchor.edge) - anchor.y;
   await pip.setViewportSize({ width: 360, height: 268 });
   await pip.waitForTimeout(400);
-  const movedWide = await rowY(anchor.key!) - anchor.y;
+  const movedWide = await rowY(anchor.key!, anchor.edge) - anchor.y;
   anchor = await topRow();
   await fakeQuiet();
   await mf.locator('.notice').waitFor({ timeout: 5000 });
   await pip.waitForTimeout(200);
-  const movedNotice = await rowY(anchor.key!) - anchor.y;
+  const movedNotice = await rowY(anchor.key!, anchor.edge) - anchor.y;
   await unfakeQuiet();
   await mf.locator('.notice').waitFor({ state: 'detached', timeout: 5000 });
   await pip.waitForTimeout(200);
-  const movedGone = await rowY(anchor.key!) - anchor.y;
+  const movedGone = await rowY(anchor.key!, anchor.edge) - anchor.y;
   state = await scrollState();
   const layoutMoves = [movedNarrow, movedWide, movedNotice, movedGone];
   check('scrolled up: narrower, wider, a notice coming and going: the line read does not move', layoutMoves.every(m => Math.abs(m) < 1) && state.back,

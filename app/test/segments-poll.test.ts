@@ -156,11 +156,13 @@ test('without have the reply is byte-for-byte the base response apart from new f
   try {
     f.add(3);
     const reply = (await f.poll()).data;
-    // Captured with this exact fixture on the base server, before the delta protocol.
+    // Captured with this exact fixture on the base server, before delta and grouping-barrier metadata.
     assert.equal(typeof reply.segmentsTag, 'string');
     assert.equal(reply.segmentsFrom, 0);
     delete reply.segmentsTag;
     delete reply.segmentsFrom;
+    assert.deepEqual(reply.paragraphBarriers, []);
+    delete reply.paragraphBarriers;
     const expected = await readFile(new URL('./fixtures/segments-base.json', import.meta.url), 'utf8');
     assert.equal(JSON.stringify(reply) + '\n', expected);
   } finally { await f.close(); }

@@ -25,7 +25,7 @@ try {
   const kept = app.store.createMeeting('Fictional shipment');
   for (let i = 0; i < 18; i++) {
     const audio = new Float32Array(64000); for (let j = 0; j < audio.length; j++) audio[j] = .1 * Math.sin(j * 2 * Math.PI * (220 + i * 20) / 16000);
-    const c = await app.store.addPcm(kept.id, 'mic:fiction', i, i * 4000, 16000, Buffer.from(audio.buffer));
+    const c = await app.store.addPcm(kept.id, 'mic:fiction', i, i * 6000, 16000, Buffer.from(audio.buffer));
     app.store.completeChunk(c.id, result(`Fictional line ${i + 1}: check the shipping quote before Friday.`));
   }
   app.store.db.prepare('INSERT INTO capture_gaps (meetingId,source,atMs,fromWallMs,toWallMs,reason) VALUES (?,?,?,?,?,?)')
@@ -110,7 +110,7 @@ try {
   });
   await check('line playback, heard tint, speed, slider, end and Close', async () => {
     await times.nth(1).click(); await page.locator('#listen-player').waitFor();
-    await page.waitForFunction(() => { const a = document.querySelector('audio'); return a && Math.abs(a.currentTime - 4) <= .25; });
+    await page.waitForFunction(() => { const a = document.querySelector('audio'); return a && Math.abs(a.currentTime - 6) <= .25; });
     await page.getByRole('button', { name: 'Pause', exact: true }).click();
     assert.equal(await page.locator('.para.heard').count(), 1);
     assert.equal(await page.locator('.para.heard').evaluate(n => getComputedStyle(n).backgroundColor), 'rgb(238, 242, 253)');
@@ -202,7 +202,7 @@ try {
     try {
       await follow.route('**/listen-follow-fixture', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><style>#box{height:300px;overflow-y:auto;overflow-anchor:none}.para{height:60px}p{margin:0}</style><div id="box"></div><script type="module">
 import {createTranscriptView} from '/transcript-view.js';
-window.snapshot={segments:Array.from({length:80},(_,i)=>({id:'fictional-'+i+':0',revision:0,startMs:i*4000,endMs:(i+1)*4000,text:'Fictional line '+i}))};
+window.snapshot={segments:Array.from({length:80},(_,i)=>({id:'fictional-'+i+':0',revision:0,startMs:i*6000,endMs:i*6000+4000,text:'Fictional line '+i+'.'}))};
 window.view=createTranscriptView(document.querySelector('#box'),{segmentNode:s=>document.createTextNode(s.text)});
 window.view.render(window.snapshot);window.ready=true;
 </script>` }));

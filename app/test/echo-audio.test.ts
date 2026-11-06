@@ -4,13 +4,13 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import WebRtcAec3 from '@ennuicastr/webrtcaec3.js';
 import { audioSpans, referenceBlock, EchoProcessor } from '../src/echo-timeline.ts';
 import { LiveEcho } from '../src/echo-audio.ts';
 import { LiveCapture } from '../src/live.ts';
 import { MeetingStore } from '../src/store.ts';
 import type { LiveDrafts } from '../src/drafts.ts';
+import { observeEcho } from './helpers/observe-echo.ts';
 
 const pcm = (value = 0.1, samples = 16000) => Buffer.from(new Float32Array(samples).fill(value).buffer);
 const audio = (wallMs: number, value = 0.1, samples = 16000) => ({ pcm: new Float32Array(samples).fill(value), timing: { captureWallMs: wallMs } });
@@ -46,44 +46,48 @@ test('no call or no shared wall clock is synchronous pass-through with no worker
   } finally { await echo.close(); }
 });
 
-test('reference arrival unblocks capture, including cross-source out-of-order arrival', async () => {
-  const echo = new LiveEcho({ leadMs: 0, waitMs: 500, deadlineMs: 2000 });
+test('reference arrival unblocks capture, including cross-source out-of-order arrival', async t => {
+  const observed = observeEcho(t), echo = new LiveEcho({ leadMs: 0, workerScript: observed.workerScript });
   try {
     echo.reference('m', call, pcm(), { captureWallMs: 1000 });
     let resolved = false;
     const pending = echo.microphone('m', mic, '1', pcm(), { captureWallMs: 2000 })!.then(value => { resolved = true; return value; });
-    await delay(100);
+    await observed.waitFor(event => event.event === 'drain' && event.pending === 1);
     assert.equal(resolved, false, 'do not process beyond arrived reference');
     echo.reference('m', call, pcm(0.2), { captureWallMs: 2000 });
+    echo.reference('m', call, pcm(0.2, 320), { captureWallMs: 3000 });
+    const lookahead = echo.microphone('m', mic, 'lookahead', pcm(0, 320), { captureWallMs: 3000 });
     const cleaned = await pending;
+    observed.assertReleased('1', 'reference');
+    await echo.flush(); await lookahead;
     assert.equal(cleaned.length, pcm().length);
     assert.equal(echo.stats().missingSamples, 0);
   } finally { await echo.close(); }
 });
 
-test('missing reference times out and passes through exactly; late data cannot rewrite emitted audio', async () => {
-  const echo = new LiveEcho({ leadMs: 0, waitMs: 80, deadlineMs: 2000 });
+test('missing reference times out and passes through exactly; late data cannot rewrite emitted audio', async t => {
+  const observed = observeEcho(t), echo = new LiveEcho({ leadMs: 0, waitMs: 80, workerScript: observed.workerScript });
   try {
     echo.reference('m', call, pcm(), { captureWallMs: 1000 });
-    const raw = pcm(0.123), start = performance.now();
+    const raw = pcm(0.123);
     const cleaned = await echo.microphone('m', mic, '1', raw, { captureWallMs: 3000 });
     assert.ok(cleaned!.equals(raw));
-    assert.ok(performance.now() - start >= 70);
+    assert.ok(observed.events.some(event => event.event === 'drain' && event.expired && event.ids?.includes('1')), 'the worker reference deadline, not the transport watchdog, released the frame');
     echo.reference('m', call, pcm(), { captureWallMs: 3000 });
     assert.ok(cleaned!.equals(raw));
     assert.equal(echo.stats().missingSamples, 16000);
   } finally { await echo.close(); }
 });
 
-test('call ending flushes pending raw immediately and stops AEC while mic continues', async () => {
-  const echo = new LiveEcho({ leadMs: 0, waitMs: 1500 });
+test('call ending flushes pending raw immediately and stops AEC while mic continues', async t => {
+  const observed = observeEcho(t), echo = new LiveEcho({ leadMs: 0, workerScript: observed.workerScript });
   try {
     echo.reference('m', call, pcm(), { captureWallMs: 1000 });
     const raw = pcm(), pending = echo.microphone('m', mic, '1', raw, { captureWallMs: 3000 });
-    const start = performance.now();
+    await observed.waitFor(event => event.event === 'drain' && event.pending === 1);
     await echo.end('m', call);
     assert.ok((await pending)!.equals(raw));
-    assert.ok(performance.now() - start < 1400, 'end flush does not wait the reference timeout');
+    observed.assertReleased('1', 'reference-ended');
     const after = echo.microphone('m', mic, '2', raw, { captureWallMs: 4000 });
     assert.ok(after === null || (await after).equals(raw), 'ended reference does not wait for future render');
     assert.equal(echo.stats().frames, 1, 'completed stats survive worker retirement');
@@ -118,6 +122,10 @@ test('durable raw/dedup is unchanged, but previews and seal use cleaned PCM', as
     assert.ok((await readFile(store.resolvePath(chunk.path))).equals(pcm(0.2)), 'chunk contains cleaned audio');
     assert.equal(frame.hash, createHash('sha256').update(raw).digest('hex'));
     assert.equal(chunk.hash, createHash('sha256').update(pcm(0.2)).digest('hex'));
+    const original = store.originalAudio(chunk.id)!;
+    assert.ok((await readFile(store.resolvePath(original.path))).equals(raw), 'sealed cleaned mic retains its original window');
+    assert.equal(original.hash, frame.hash);
+    assert.deepEqual(await store.verifyAudioFiles(meeting.id), []);
     assert.equal(feeds.length, 2, 'one call feed and one cleaned mic feed, never a duplicate');
     assert.ok(Math.abs(feeds[1][0] - 0.2) < 1e-7);
     assert.equal(live.echoStats()!.frames, 1);
@@ -137,6 +145,7 @@ test('recovered frames seal raw, even when new call frames create an AEC session
     await live.end(meeting.id, mic, 1);
     const chunk = store.chunks(meeting.id).find(chunk => chunk.source === mic)!;
     assert.ok((await readFile(store.resolvePath(chunk.path))).equals(Buffer.concat([raw, pcm(0.2)])));
+    assert.ok((await readFile(store.resolvePath(store.originalAudio(chunk.id)!.path))).equals(Buffer.concat([raw, raw])), 'mixed recovery/live window retains all original samples');
   } finally { await live.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -197,11 +206,11 @@ test('a stuck worker cannot block a seal: unprocessed tail seals raw and logs on
     const raw = pcm(0.4);
     await live.accept(meeting.id, mic, 0, 0, raw, undefined, { captureWallMs: 1000 });
     await live.accept(meeting.id, mic, 1, 1000, raw, undefined, { captureWallMs: 2000 });
-    const start = performance.now();
     await live.end(meeting.id, mic, 1);
-    assert.ok(performance.now() - start < 2000);
+    assert.equal(live.echoStats()!.failures, 1, 'the watchdog released the stalled worker before sealing');
     const chunk = store.chunks(meeting.id).find(chunk => chunk.source === mic)!;
     assert.ok((await readFile(store.resolvePath(chunk.path))).equals(Buffer.concat([raw, raw])));
+    assert.equal(store.originalAudio(chunk.id), undefined, 'literal-raw fallback does not duplicate the window');
     assert.equal(logs.length, 1);
   } finally { await live.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });

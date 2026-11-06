@@ -57,10 +57,10 @@ test('export paragraphs: a speaker change does not carry the previous speaker\'s
       store.completeChunk(chunk.id, recognition(text));
     };
     await add(MIC, 0, 0, 20, 'a long sentence from the microphone');
-    await add(TAB, 0, 10_000, 1, 'first remote line');
+    await add(TAB, 0, 10_000, 1, 'first remote line.');
     await add(TAB, 1, 14_000, 1, 'second remote line');
     const md = store.markdown(meeting.id);
-    assert.match(md, /\] Them: first remote line\n\n\[[^\]]+\] Them: second remote line/);
+    assert.match(md, /\] Them: first remote line\.\n\n\[[^\]]+\] Them: second remote line/);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -110,7 +110,7 @@ test('an online meeting labels lines, joins quotes only within one speaker, and 
     assert.equal(sourcesFor(notes as never, snapshot)[snapshot.segments[1].id].speaker, 'Them');
 
     const md = f.store.markdown(f.meeting.id);
-    assert.match(md, /\] Me: The jellyfish tank needs a mesh cover\n\n\[[^\]]+\] Them: I found the spare clips\n\n\[[^\]]+\] Me: before/);
+    assert.match(md, /\] Me: The jellyfish tank needs a mesh cover before the night feeder starts\n\n\[[^\]]+\] Them: I found the spare clips/);
   } finally { await f.close(); }
 
   // In person (no tab): exactly the old lines, instructions and hash.

@@ -27,10 +27,10 @@ test('M9a fix 3 B: only finals and before-cut text split the post-cut lane', () 
 
 test('M9a fix 3 C: before-cut rows use their first word time and share their final row key', () => {
   const delayed = { ...pending('delayed', 0, 5), words: words.slice(0, 3).map(w => ({ ...w, startMs: w.startMs + 2300, endMs: w.endMs + 2300 })) };
-  const them = { ...final('them', 0, 1), source: 'tab:them', startMs: 1000, endMs: 1800 };
+  const them = { ...final('them', 0, 1), source: 'tab:them', speaker: 'Them', startMs: 1000, endMs: 1800 };
   const rows = transcriptRows({ segments: [them], drafts: [], pending: [delayed] });
   assert.deepEqual(rows.map(r => r.startMs), [1000, 2400]);
-  const completed = transcriptRows({ segments: [them, { ...final('delayed', 0, 3), startMs: 2400, endMs: 4700 }], drafts: [], pending: [] });
+  const completed = transcriptRows({ segments: [them, { ...final('delayed', 0, 3), speaker: 'Me', startMs: 2400, endMs: 4700 }], drafts: [], pending: [] });
   assert.equal(rows[1].key, completed[1].key);
 });
 

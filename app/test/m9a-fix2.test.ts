@@ -87,7 +87,7 @@ test('M9a fix 2: terminal intervals also mask active drafts in the HTTP snapshot
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('M9a fix 2: equal-time mic finals split around tab pending; all promoted text gets a placement', async () => {
+test('equal-time tab pending leaves the mic paragraph intact; all promoted text gets a placement', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'm9a-ties-'));
   const drafts = new LiveDrafts({ modelPath: 'unused', workerScript });
   const app = await startServer({ directory, port: 0, quick: null, heavy: null, drafts,
@@ -114,9 +114,9 @@ test('M9a fix 2: equal-time mic finals split around tab pending; all promoted te
     // This geometry regression exercises decided finals alongside a still-pending tab, after the bounded hold expires.
     app.store.db.prepare('UPDATE chunks SET completedAt=? WHERE id=?').run(Date.now() - 8000, micChunk.id);
     const model = await live();
-    assert.deepEqual(model.paragraphs.map((p: any) => p.text), ['mic-zero', 'mic-two'], 'the pending row at 0 s must split the mic paragraph between its 0 s and 2 s lines');
+    assert.deepEqual(model.paragraphs.map((p: any) => p.text), ['mic-zero mic-two'], 'tab pending must not close the mic paragraph');
     const placement = model.pending.find((p: any) => p.chunkId === tabChunk.id).placements[0];
-    assert.equal(placement.beforeKey, model.paragraphs[1].key);
+    assert.equal(placement.beforeKey, null, 'pending follows the paragraph that starts before it');
     assert.equal(placement.text, 'tab-tie');
     assert.equal(model.drafts.find((d: any) => d.source === tab).text, '', 'placed text is not repeated in its slot');
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }

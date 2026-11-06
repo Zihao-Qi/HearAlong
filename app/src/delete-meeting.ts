@@ -105,7 +105,7 @@ function checkReferences(store: DeletionStore, id: string, paths: string[], igno
     const target = planned.find(p => references.some(r => r === p.absolute || r.startsWith(`${p.absolute}${sep}`)));
     if (target) throw fail(409, `Cannot delete meeting ${id}: surviving ${table} ${rowId} references planned path ${target.relative}.`);
   };
-  for (const table of ['chunks', 'frames']) {
+  for (const table of ['chunks', 'frames', ...(tables(store.db).has('chunk_originals') ? ['chunk_originals'] : [])]) {
     for (const row of store.db.prepare(`SELECT id,meetingId,path FROM ${table} WHERE meetingId<>? AND path<>''`).all(id) as { id: string; meetingId: string; path: string }[]) {
       if (!ignored.has(row.meetingId)) check(table, row.id, referencePaths(store.directory, row.path, row.meetingId));
     }

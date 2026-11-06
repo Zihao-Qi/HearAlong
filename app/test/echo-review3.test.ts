@@ -1,23 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setTimeout as delay } from 'node:timers/promises';
 import { LiveEcho } from '../src/echo-audio.ts';
 import { EchoProcessor, referenceBlock } from '../src/echo-timeline.ts';
 import { EchoScheduler } from '../src/echo-scheduler.ts';
 import { delayedAec } from './fixtures/delayed-aec.ts';
+import { observeEcho } from './helpers/observe-echo.ts';
 
 const audio = (wall: number, samples = 16000) => ({ pcm: new Float32Array(samples), timing: { captureWallMs: wall } });
 const raw = () => Buffer.from(new Float32Array(16000).fill(0.2).buffer);
 const fake = new URL('./fixtures/echo-worker.ts', import.meta.url);
 
-test('review3: worker-local -1 s UTC step cannot extend a reference wait or disable AEC', async () => {
-  const logs: string[] = [], echo = new LiveEcho({ leadMs: 0, waitMs: 120, deadlineMs: 600,
+test('review3: worker-local -1 s UTC step cannot extend a reference wait or disable AEC', async t => {
+  const observed = observeEcho(t), logs: string[] = [], echo = new LiveEcho({ leadMs: 0, waitMs: 120, deadlineMs: 5000,
     workerScript: new URL('./fixtures/echo-date-step-worker.ts', import.meta.url), log: line => logs.push(line) });
   try {
     echo.reference('m', 'app:call', raw(), { captureWallMs: 1000 });
-    const start = performance.now();
     await echo.microphone('m', 'mic', 'a', raw(), { captureWallMs: 1500 });
-    assert.ok(performance.now() - start < 550); assert.equal(echo.stats().failures, 0); assert.deepEqual(logs, []);
+    const at = observed.events.findIndex(event => event.event === 'drain' && event.expired && event.ids?.includes('a'));
+    assert.ok(at >= 0, 'the worker deadline, not its transport watchdog, released capture');
+    assert.ok(observed.events.slice(0, at).some(event => event.event === 'utc-step'));
+    assert.ok(observed.events.slice(0, at + 1).filter(event => event.event === 'drain').every(event => event.wallNow! - event.now! > 1e9), 'scheduler uses monotonic elapsed, never stepped UTC');
+    assert.equal(echo.stats().failures, 0); assert.deepEqual(logs, []);
     echo.reference('m', 'app:call', raw(), { captureWallMs: 2000 });
     const next = echo.microphone('m', 'mic', 'b', raw(), { captureWallMs: 2000 });
     assert.ok(next, 'the recording still has an active canceller'); await echo.flush(); await next;
@@ -74,9 +77,9 @@ test('review3: backward reference step drops old high-water render and waits for
 });
 const rawFloats = () => new Float32Array(16000).fill(0.2);
 
-for (const jump of [10000, 30000]) test(`review3: pinned reference survives mic-first in-frame +${jump} ms boundary then call arrives 20 ms later`, async () => {
+for (const jump of [10000, 30000]) test(`review3: pinned reference survives mic-first in-frame +${jump} ms boundary then call arrives after the wait begins`, async t => {
   let now = 0;
-  const logs: string[] = [], echo = new LiveEcho({ leadMs: 0, clock: () => now, log: line => logs.push(line) });
+  const observed = observeEcho(t), logs: string[] = [], echo = new LiveEcho({ leadMs: 0, workerScript: observed.workerScript, clock: () => now, log: line => logs.push(line) });
   try {
     echo.reference('m', 'app:call', raw(), { captureWallMs: 100000 });
     echo.reference('m', 'app:call', raw(), { captureWallMs: 101000 });
@@ -88,8 +91,10 @@ for (const jump of [10000, 30000]) test(`review3: pinned reference survives mic-
     const timing = { captureWallMs: 102000, discontinuities: [{ offsetSamples: 8000, fromWallMs: 102500, toWallMs: 102500 + jump }] };
     const pending = echo.microphone('m', 'mic', 'boundary', raw(), timing);
     assert.ok(pending, 'whole-frame end is not mistaken for a stale reference');
-    await delay(20); echo.reference('m', 'app:call', raw(), timing);
+    await observed.waitFor(event => event.event === 'drain' && event.pending === 1);
+    echo.reference('m', 'app:call', raw(), timing);
     await echo.flush(); await pending;
+    observed.assertReleased('boundary', 'flush');
     assert.equal(echo.buffered().sessions, 1); assert.equal(echo.buffered().retiring, 0); assert.deepEqual(logs, []);
   } finally { await echo.close(); }
 });
