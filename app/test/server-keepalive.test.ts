@@ -71,7 +71,7 @@ for (const method of ['close', 'shutdown'] as const) {
     await app[method]();
     await closed;
     const ms = performance.now() - started;
-    // Shutdown deliberately gives pages 2500 ms; neither path may wait for the 65 s idle expiry or 5 s force-close.
+    // Neither idle path may wait for the 65 s expiry or 5 s force-close; recording pages retain their own quit grace.
     assert.ok(ms < (method === 'close' ? 2000 : 4500), `${method} with idle connection took ${ms.toFixed(2)} ms`);
     t.diagnostic(`${method} with idle connection: ${ms.toFixed(2)} ms`);
   });
