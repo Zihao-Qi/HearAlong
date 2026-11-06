@@ -119,6 +119,8 @@ test('fresh streamed install, rerun and uninstall use only the test home and kee
   assert.equal(readFileSync(join(f.data, 'meeting.txt'), 'utf8'), 'fictional meeting');
   assert.match(removed.output, /meetings are kept/);
   assert.doesNotMatch(result.output, /127\.0\.0\.1|helper|Homebrew|Node|npm|Xcode/i);
+  assert.match(result.output, /Downloading HearAlong\./);
+  assert.doesNotMatch(result.output, /% Total|% Received|Dload|Upload|Average Speed/);
   assert.match(f.calls(), /open/);
 });
 test('v0.2.0 migration removes only owned old layout; data survives byte-identical', () => {
@@ -300,7 +302,7 @@ test('unexpected archive top-level paths are refused', () => {
 });
 test('truncated installer streams execute no commands', () => {
   const f = fixture(), source = readFileSync(installer, 'utf8');
-  for (const marker of ['set -eu\n', 'not_running\n', 'trap cleanup EXIT\n', 'curl -fSL "$release/$asset"', 'promoted=1\n', 'open "$BUNDLE"\n']) {
+  for (const marker of ['set -eu\n', 'not_running\n', 'trap cleanup EXIT\n', 'curl -fsSL "$release/$asset"', 'promoted=1\n', 'open "$BUNDLE"\n']) {
     const start = source.indexOf(marker); assert.ok(start >= 0, marker);
     const result = f.run({}, [], source.slice(0, start + marker.length));
     assert.notEqual(result.status, 0); assert.match(result.stderr, /syntax error|unexpected end/i); assert.equal(f.calls(), '');
