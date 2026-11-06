@@ -12,7 +12,7 @@ HearAlong is a Mac app for people who mostly listen in meetings and lectures. It
 
 ## What it does
 
-- **Live transcript, on the Mac.** It records the room microphone, a Chrome tab, or a meeting app such as Zoom or Teams. On a call, your microphone is labelled *Me* and the call *Them*; wear headphones so the call doesn't leak into your microphone. Grey preview text appears about 2 seconds after the words are spoken and settles into final text in place. English only for now.
+- **Live transcript, on the Mac.** It records the room microphone, or a call in a meeting app such as Zoom or Teams or in a browser. On a call, your microphone is labelled *Me* and the call *Them*. Without headphones, HearAlong removes the call's sound from your microphone, so you can talk over the call; headphones still give the cleanest *Me* text. Grey preview text appears about 2 seconds after the words are spoken (about a second later during a call through speakers) and settles into final text in place. English only for now.
 - **Ask about any line.** Select a sentence to have it explained, answered from your project's files, looked up, or worked out as a small calculation, with the sources shown.
 - **A board of questions and decisions** that fills in during the meeting (in On this Mac mode, once you stop).
 - **Notes and plans afterwards.** Each point links to where it came from, and the quotes are checked against the source.

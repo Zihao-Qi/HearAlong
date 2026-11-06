@@ -57,6 +57,12 @@ Instead of a shared tab, the page can select an app playing sound. [`AppCaptureC
 
 The tap's samples are converted to 16 kHz mono float32 by [`TapConverter`](../app/launcher/AppAudio.swift). [`AppCaptureClient`](../app/launcher/AppCaptureClient.swift) uploads one-second frames in sequence to the same `/pcm` route and flushes a final partial frame at Stop. It has the same 30-frame queue cap, 30-second/three-failure retry budget and 10-second attempts, with a 30-second audio drain from capture Stop. It stops capture after three seconds without server contact; it does not promise continuous call capture across a restart. Failures stop only the call source, leaving the microphone running. Me/Them identify capture channels, not individual speakers.
 
+### Calls through speakers
+
+Without headphones the microphone also hears the call. During a call, [`LiveEcho`](../app/src/echo-audio.ts) runs WebRTC AEC3 (WebAssembly) in a worker thread per microphone source, with the call audio as the reference, aligned by each frame's capture wall time ([`echo-timeline.ts`](../app/src/echo-timeline.ts)). Raw frames are saved and acknowledged exactly as above; the cleaned audio feeds the live preview and replaces the raw window in the sealed microphone chunk, and the raw window is kept beside it as a `.raw.f32` sidecar. The microphone waits at most 1.5 s for reference audio; without a call, with a stale or missing reference, or if the worker fails, it passes through literally raw and says so once in the log. Details and limits are in [ECHO_CANCELLATION.md](../app/ECHO_CANCELLATION.md).
+
+A text rule backs this up. [`echoesFor`](../app/src/speakers.ts) hides a *Me* line at read time (nothing is deleted) when overlapping *Them* text within 3 s contains at least 80% of its words in order; shorter lines and unmatched words spoken before the call was captured keep it visible. During a live call, a *Me* final waits up to 8 s for the call audio of the same moment ([`live-finals.ts`](../app/src/live-finals.ts)), and echoed grey preview blocks are not shown ([`preview-echo.ts`](../app/src/preview-echo.ts)).
+
 ### On the server
 
 The route `POST /api/meetings/:id/pcm` in [`server.ts`](../app/src/server.ts) checks the headers (source id, sequence, 16 kHz), reads at most one second of float32 samples and rejects non-finite or out-of-range values. [`LiveCapture.accept`](../app/src/live.ts) then runs all work for that source on one promise chain, so saving, sealing and ending never interleave.
@@ -158,6 +164,10 @@ Each stretch of audio is drawn from exactly one layer. Ownership is decided per 
 ### No flicker
 
 [`transcriptRows`](../app/public/transcript-view.js) gives every row a stable key. The pending text before a cut and the first final paragraph of the same chunk share the key `chunk:<chunk id>`, so when the final text arrives the same DOM node is refilled in one synchronous step; nothing is removed and added again. [`render`](../app/public/transcript-view.js) rewrites a node only when its content signature changes.
+
+### Paragraphs when people overlap
+
+[`paragraphsOf`](../app/public/live-shared.js) groups lines the same way for the transcript, the mini window and exports. Each speaker's latest paragraph stays open across the other speaker's lines: a line joins it when the paragraph has not ended a sentence (`.`, `?`, `!`, `…`) and the gap is under 10 s, or when it has and the gap is under 2 s. At 45 s the next sentence end starts a new paragraph, and 60 s always does. A preview or unfinished chunk closes only its own speaker's paragraph; a capture gap closes all.
 
 ### Selection-safe scrolling
 

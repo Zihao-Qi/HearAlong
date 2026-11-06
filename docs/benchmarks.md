@@ -107,6 +107,8 @@ Within each cohort it prints medians and min–max spreads from eligible finishe
 
 ## Known limits
 
+- **Measured before v0.3.0:** these runs use the microphone path only. v0.3.0 loads the speech model when the app opens, which only shortens the first block after launch, and adds echo cancellation for calls through speakers, which is not measured here and delays the grey preview by about a second during such calls.
+
 - **Live tail visibility:** queue settlement does not wait for every saved final to reach the real DOM or the segment-end snapshot before closing Chromium. Tail samples can be censored; no expected/observed/unmapped coverage accounting yet. Lag is conditional on recognized, mapped, observed text, not all speech. The diagnostic warning is a heuristic, not validation.
 - **Live input alignment:** fake-microphone playback can start before the capture graph is ready. Startup loss/offset and captured duration are not measured. WER still scores the requested interval; half-open reference selection by word start can include clipped boundary words.
 - **Reference integrity:** extraction is not atomic or verified against the archive; partial XML and missing speaker files can be accepted. Extracted references are not fingerprinted in results. Blank/whitespace timestamp attributes can silently become zero; negative/reversed times are not validated.
