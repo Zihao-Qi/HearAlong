@@ -54,23 +54,33 @@ function coalesceGapRows(rows) {
   for (const { row, slot } of runs) if (slot) row.text = row.preview.text = row.preview.words.map(w => w.text).join(' ');
   return runs.map(p => p.row);
 }
-/** Chunk boundaries are display boundaries: the pending row and its first final paragraph share one key. */
+/** Preview rows and gaps are display barriers. A final paragraph can span chunks and interleaved speakers. */
 export function transcriptRows(snapshot) {
-  const rows = [], groups = [];
+  const rows = [];
   const gaps = mergeCaptureGaps(snapshot.captureGaps ?? []);
-  for (const segment of snapshot.segments ?? []) {
-    const chunkId = chunkOf(segment.id);
-    const band = gaps.filter(g => g.atMs <= segment.startMs).length;
-    if (groups.at(-1)?.chunkId !== chunkId || groups.at(-1)?.band !== band) groups.push({ chunkId, band, segments: [] });
-    groups.at(-1).segments.push(segment);
-  }
+  const previews = composePreview(snapshot.drafts, snapshot.pending, snapshot.segments).flatMap(p => gapBoundedPreviews(p, gaps));
+  const entries = [
+    ...(snapshot.segments ?? []).map(s => ({ ...s, kind: 'final' })),
+    ...previews,
+    ...gaps.map(g => ({ startMs: g.atMs, kind: 'gap' })),
+  ].sort((a, b) => a.startMs - b.startMs || Number(b.kind === 'gap') - Number(a.kind === 'gap')
+    || Number(a.kind === 'pending') - Number(b.kind === 'pending'));
   const seen = new Set();
-  for (const group of groups) for (const p of paragraphsOf(group.segments)) {
-    const first = !seen.has(group.chunkId);
-    rows.push({ ...p, key: first ? `chunk:${group.chunkId}` : `final:${p.key}`, chunkId: group.chunkId, kind: 'final' });
-    seen.add(group.chunkId);
+  let run = [];
+  const flush = () => {
+    for (const p of paragraphsOf(run)) {
+      const chunkId = chunkOf(p.key), first = !seen.has(chunkId);
+      rows.push({ ...p, key: first ? `chunk:${chunkId}` : `final:${p.key}`, chunkId, kind: 'final' });
+      seen.add(chunkId);
+    }
+    run = [];
+  };
+  for (const entry of entries) {
+    if (entry.kind === 'final') run.push(entry);
+    else flush();
   }
-  for (const composed of composePreview(snapshot.drafts, snapshot.pending, snapshot.segments)) for (const preview of gapBoundedPreviews(composed, gaps)) {
+  flush();
+  for (const preview of previews) {
     rows.push({ ...preview, key: preview.part === 'before' && preview.key === `pending:${preview.chunkId}` ? `chunk:${preview.chunkId}` : preview.key,
       segments: [], preview, speaker: snapshot.labelled ? preview.speaker : undefined });
   }

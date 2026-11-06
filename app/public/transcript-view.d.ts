@@ -1,6 +1,6 @@
 import type { CaptureGap } from './capture-gaps.js';
 import type { Preview, PendingPreview, ComposedPreview } from './preview-composition.js';
-export type DisplaySegment = { id: string; startMs: number; endMs: number; text: string; revision: number; speaker?: string | null };
+export type DisplaySegment = { id: string; source?: string; startMs: number; endMs: number; text: string; revision: number; speaker?: string | null };
 export type TranscriptSnapshot = { segments: DisplaySegment[]; drafts?: Preview[]; pending?: PendingPreview[]; labelled?: boolean; captureGaps?: CaptureGap[] };
 export type TranscriptRow = { kind?: string; gap?: CaptureGap; gapText?: string; key: string; signature: string; startMs: number; endMs: number; segments: DisplaySegment[]; preview?: ComposedPreview; speaker?: string | null };
 export function transcriptRows(snapshot: TranscriptSnapshot): TranscriptRow[];

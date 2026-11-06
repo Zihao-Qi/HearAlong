@@ -60,7 +60,7 @@ export async function checkFix4Page(page: Page, show: (snapshot: any) => Promise
         const span = document.createElement('span'); span.dataset.id = s.id; span.textContent = s.text; return span;
       } });
       const snapshot = { captureGaps, segments: Array.from({ length: 40 }, (_, i) => ({ id: `hidden${i}:0`, source, startMs: i * 3000,
-        endMs: i * 3000 + 1000, text: `Completed line ${i}`, revision: 0 })), pending: [],
+        endMs: i * 3000 + 1000, text: `Completed line ${i}.`, revision: 0 })), pending: [],
         drafts: [{ source, window: 'hidden-note', windowStartMs: 200000, committedUntilMs: 200000, coveredUntilMs: 200300,
           words: [{ text: 'note', startMs: 200100, endMs: 200300 }], text: 'note', behind: false }] };
       (window as any).hiddenTranscript = { box, view, snapshot };

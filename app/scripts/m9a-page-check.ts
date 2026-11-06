@@ -13,6 +13,7 @@ import { transcriptRows, type DisplaySegment } from '../public/transcript-view.j
 import { miniPreviewWords, miniLog } from '../public/preview-composition.js';
 import { checkFix3Page } from './m9a-fix3-page-cases.ts';
 import { checkFix4Page } from './m9a-fix4-page-cases.ts';
+import { checkOverlapPage } from './overlap-page-cases.ts';
 import { assertUniqueTranscriptKeys, watchTranscriptKeys, finishTranscriptKeyCheck } from './transcript-key-check.ts';
 // Repeat the same handoff/selection suite with a historical gap; only speech-only queries exclude the notice.
 const earlierGap = process.argv.includes('--earlier-gap') ? { atMs: 0, fromWallMs: 100000, toWallMs: 597000, reason: 'sleep' as const } : null;
@@ -158,6 +159,7 @@ try {
   assert.equal(await miniPage.locator('#m-scroll .pending-preview').count(), 1);
   nullMiniAnchor = false;
   results.push('PASS mini null placement: promoted pending text appends to the log and is not duplicated in a slot');
+  await checkOverlapPage(page, miniPage, show, results);
   checkingMini = false;
   await miniPage.close();
   const lines = Array.from({ length: 45 }, (_, i) => ({ id: `line${i}:0`, startMs: i * 3000, endMs: i * 3000 + 1000,
@@ -204,7 +206,7 @@ try {
   assert.ok((await visible()).includes('preview-one'));
   assert.deepEqual(await selectionState(), { sameNode: true, sameHTML: true, sameRange: true, ...held, y: await page.evaluate(() => (window as any).heldTranscript.y), ids: ['line44:0'] });
   await page.locator('#selection-menu').waitFor({ state: 'visible' });
-  const above = { ...lines[43], id: 'late-above:0', startMs: 130500, endMs: 131500, text: 'Text inserted above the selected words. '.repeat(8) };
+  const above = { ...lines[43], id: 'late-above:0', startMs: 130000, endMs: 130000, text: 'Text inserted above the selected words. '.repeat(8) };
   // Move the pointer above the insertion: anchoring it instead of the selection would now move the selected line.
   await page.mouse.move(position.x, position.y - 100);
   const grownPreview = { ...preview, coveredUntilMs: 155000, words: [...preview.words, { text: 'preview-two', startMs: 154100, endMs: 154300 }] };
@@ -229,12 +231,12 @@ try {
   const tail = { ...active(0, 0), window: 'pending-selection-tail', windowStartMs: 138000, coveredUntilMs: 139000,
     words: [{ text: 'delta', startMs: 138100, endMs: 138300 }] };
   await show({ segments: lines, drafts: [tail], pending: [waiting] });
-  // Create an older row *after* the pending row, so map insertion order differs from DOM order.
-  const lateSelected = { ...lines[44], id: 'late-selected:0', startMs: 133500, endMs: 134500, text: 'Late selected row.' };
+  // A late line grows the paragraph immediately above the pending row.
+  const lateSelected = { ...lines[44], id: 'late-selected:0', startMs: 133000, endMs: 133100, text: 'Late selected row.' };
   const selectionHistory = [...lines, lateSelected];
   await show({ segments: selectionHistory, drafts: [tail], pending: [waiting] });
   await page.locator('#transcript').evaluate(box => {
-    const row = box.querySelector('[data-key="chunk:late-selected"]')!;
+    const row = box.querySelector('[data-key="chunk:line44"]')!;
     box.scrollTop += row.getBoundingClientRect().top - box.getBoundingClientRect().top - 100;
     const pending = box.querySelector('[data-key="chunk:selected-pending"]')!, range = document.createRange();
     range.setStart(row.querySelector('span[data-id]')!.firstChild!, 0);
@@ -270,7 +272,7 @@ try {
       deltaY: range.getBoundingClientRect().top - old.y };
   });
   assert.deepEqual(pendingHeld, { sameNode: true, sameHTML: true, sameText: true, sameRange: true, deltaY: 0 });
-  assert.equal(await page.locator('span[data-id^="selected-pending:"]').count(), 0, 'both final paragraphs of the held pending chunk are deferred');
+  assert.equal(await page.locator('span[data-id^="selected-pending:"]').count(), 0, 'both final segments of the held pending chunk are deferred');
   assert.equal(await page.locator('span[data-id="later-independent:0"]').count(), 1, 'unrelated final still renders during the pending handoff');
   assert.deepEqual(await visible(), afterWords, 'old pending and new previews/finals show every word exactly once');
   const pendingY = await page.locator('[data-key="chunk:selected-pending"]').evaluate(n => n.getBoundingClientRect().top);
@@ -282,7 +284,7 @@ try {
   assert.deepEqual(await visible(), afterWords, 'deferred pending-to-final handoff has no missing or repeated words');
   const sampled = await page.evaluate(() => { const state = (window as any).pendingSelectionFrames; state.observing = false; return state; });
   assert.deepEqual(sampled.errors, []);
-  results.push(`PASS selected pending row: multi-row selection survives, unrelated final/preview updates continue, deferred two-paragraph final lands once without a jump (${sampled.frames} painted frames)`);
+  results.push(`PASS selected pending row: multi-row selection survives, unrelated final/preview updates continue, deferred two-segment final lands once without a jump (${sampled.frames} painted frames)`);
 
   const allPreviewWords = [...waiting.words, ...grownTail.words, { text: 'zeta', startMs: 140100, endMs: 140300 }];
   await show({ segments: lines, drafts: [grownTail], pending: [{ ...waiting, coveredUntilMs: 141000, words: allPreviewWords }] });

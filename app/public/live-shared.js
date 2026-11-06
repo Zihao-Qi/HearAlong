@@ -1,16 +1,22 @@
 // Shared by the app page, the mini view and the server (M7 native mini window, docs/design/M7-native-mini.md §3): how transcript
 // lines group into paragraphs, and the problem notices' words, so both windows and the transcript say the same thing.
 
-/** Lines into paragraphs: a change of speaker, a 2 s pause or 45 s of speech starts a new one. Keyed by its first line. */
+/** A sentence ends only at the end of a line (possibly before closing quotes/brackets). */
+const sentenceEnd = text => /[.?!…][\p{Pe}\p{Pf}"']*$/u.test((text ?? '').trim());
+
+/** One open paragraph per speaker, keyed by its first line. Callers supply time-ordered lines and split at display gaps. */
 export function paragraphsOf(segments) {
-  const out = [];
+  const out = [], open = new Map();
   for (const segment of segments) {
-    const current = out.at(-1);
-    // Online meetings (segments carry a speaker): a change of speaker starts a new paragraph; lines of two sources overlap in time.
-    const labelled = 'speaker' in segment;
-    if (!current || (labelled && segment.speaker !== current.speaker) || segment.startMs - current.endMs >= 2000 || segment.startMs - current.startMs >= 45_000) {
-      out.push({ key: segment.id, startMs: segment.startMs, endMs: segment.endMs, segments: [segment], speaker: labelled ? segment.speaker : undefined });
-    } else { current.segments.push(segment); current.endMs = labelled ? Math.max(current.endMs, segment.endMs) : segment.endMs; }
+    const speaker = 'speaker' in segment ? segment.speaker : undefined;
+    const current = open.get(speaker);
+    const ended = current && sentenceEnd(current.segments.at(-1).text);
+    const length = current ? segment.startMs - current.startMs : 0;
+    if (!current || segment.startMs - current.endMs >= (ended ? 2000 : 10_000)
+      || length >= 60_000 || (length >= 45_000 && ended)) {
+      const paragraph = { key: segment.id, startMs: segment.startMs, endMs: segment.endMs, segments: [segment], speaker };
+      out.push(paragraph); open.set(speaker, paragraph);
+    } else { current.segments.push(segment); current.endMs = Math.max(current.endMs, segment.endMs); }
   }
   for (const p of out) p.signature = `${p.speaker ?? ''}#` + p.segments.map(s => `${s.id}:${s.revision}`).join('|');
   return out;

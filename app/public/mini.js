@@ -103,7 +103,8 @@ function render() {
   // coming above them, new lines, a paragraph above changing). A selection in the lines holds them too.
   const selection = selected();
   if (Math.abs($('m-scroll').scrollTop - view.setTop) >= 1) follow(atBottom()); // the user scrolled; its event has not come yet
-  const reading = view.follow && !selection ? null : topLine();
+  const range = selection?.getRangeAt(0);
+  const reading = range ? { range, y: range.getBoundingClientRect().top } : view.follow ? null : topLine();
   const statusKey = !recording ? 'none' : stopping ? 'stopping' : String(view.confirming);
   if (view.statusKey !== statusKey) {
     const status = $('m-status');
@@ -225,8 +226,10 @@ function topLine() {
 function settle(reading, selection) {
   if (!reading) toBottom();
   else {
-    const node = view.rows.get(reading.key);
-    if (node) setTop($('m-scroll').scrollTop + node.getBoundingClientRect().top - reading.y);
+    // An earlier, partly visible paragraph can grow while a later one is selected. Anchor the
+    // selected words, not that earlier row's top (which would let the selection drift).
+    const target = reading.range ?? view.rows.get(reading.key);
+    if (target) setTop($('m-scroll').scrollTop + target.getBoundingClientRect().top - reading.y);
   }
   view.reading = view.follow && !selection ? null : topLine();
   edges();

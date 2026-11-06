@@ -13,6 +13,7 @@ import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
 import { heldMicrophoneFinals } from './live-finals.ts';
 import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/capture-gaps.js';
+import { paragraphsOf } from '../public/live-shared.js';
 
 export type Mode = 'periodic' | 'manual' | 'questions';
 export type Meeting = { id: string; title: string; createdAt: number; mode: Mode; intervalSeconds: number; replay: string | null; correction: string | null;
@@ -650,30 +651,26 @@ export class MeetingStore {
   /** Both exports share entries and paragraph boundaries; only their presentation differs. */
   private transcriptParagraphs(id: string, mode: 'corrected' | 'raw', locale?: string, plain = false) {
     const prefix = (ms: number) => plain ? '' : `[${new Date(ms).toISOString().slice(11, 19)}] `;
-    // Online meetings (a tab source): Me/Them per paragraph, a new paragraph at each change of speaker, one fixed order.
+    // Exports use the same sentence-aware, per-speaker grouping as both transcript views.
     const { labelled, roleOf } = this.speakers(id);
     const segments = this.segments(id);
     if (labelled) segments.sort(compareSegments);
     const entries = [
       ...this.captureGaps(id).map(g => ({ at: g.atMs, end: g.atMs, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
-      ...segments.map(s => ({ at: s.startMs, end: s.endMs, text: mode === 'raw' ? s.originalText : s.text, speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })),
+      ...segments.map(s => ({ ...s, at: s.startMs, text: mode === 'raw' ? s.originalText : s.text, speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })),
       ...this.chunks(id).filter(c => c.status !== 'completed').map(c => ({ at: c.startMs, end: c.startMs, gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` })),
     ].sort((a, b) => a.at - b.at);
     const paragraphs: string[] = [];
-    let current: string[] = [];
-    let start = 0;
-    let last = -Infinity;
-    let speaker: Role | null = null;
-    const label = () => (speaker ? `${ROLE_LABEL[speaker]}: ` : '');
+    let run: (Segment & { speaker: Role | null })[] = [];
+    const flush = () => {
+      for (const p of paragraphsOf(run)) paragraphs.push(`${prefix(p.startMs)}${p.speaker ? `${ROLE_LABEL[p.speaker as Role]}: ` : ''}${p.segments.map(s => s.text).join(' ')}`);
+      run = [];
+    };
     for (const entry of entries) {
-      const changed = labelled && !('gap' in entry) && entry.speaker !== speaker;
-      if (current.length && ('gap' in entry || changed || entry.at - last >= 2000 || entry.at - start >= 45_000)) { paragraphs.push(`${prefix(start)}${label()}${current.join(' ')}`); current = []; }
-      if ('gap' in entry) { paragraphs.push(`${prefix(entry.at)}${entry.gap}`); continue; }
-      if (!current.length) { start = entry.at; speaker = entry.speaker; last = entry.end; }
-      current.push(entry.text);
-      last = labelled ? Math.max(last, entry.end) : entry.end; // overlapping sources: the latest end within this paragraph
+      if ('gap' in entry) { flush(); paragraphs.push(`${prefix(entry.at)}${entry.gap}`); }
+      else run.push(entry);
     }
-    if (current.length) paragraphs.push(`${prefix(start)}${label()}${current.join(' ')}`);
+    flush();
     return { labelled, paragraphs };
   }
   plainText(id: string): string {
