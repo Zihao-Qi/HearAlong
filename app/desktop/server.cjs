@@ -37,15 +37,40 @@ async function identifyListener(port) {
 function sameOwner(a, b) {
   return Boolean(a && b && a.pid === b.pid && a.uid === b.uid && a.started === b.started && a.executable === b.executable);
 }
-async function quitListener(config, owner, { identify = identifyListener, signal = (pid) => process.kill(pid, 'SIGTERM'), free, timeout = 10000 } = {}) {
-  if (!sameOwner(owner, await identify(config.port))) throw new Error('The other copy has changed. Try again before quitting it.');
-  signal(owner.pid); // Only the re-identified listener, never a process group or name match.
-  const deadline = Date.now() + timeout;
+// Remember requests for this launch, including across retries and refreshed conflict snapshots.
+// A second SIGTERM would bypass the other server's graceful recording drain.
+const quitRequests = new Set();
+// A process that execs another binary is still the same lifetime: do not signal it twice either.
+const ownerKey = owner => JSON.stringify([owner.pid, owner.uid, owner.started]);
+const quitRequested = owner => Boolean(owner && quitRequests.has(ownerKey(owner)));
+const conflict = message => Object.assign(new Error(message), { portConflict: true, owner: null });
+async function quitListener(config, owner, { identify = identifyListener, signal = (pid) => process.kill(pid, 'SIGTERM'), free,
+  timeout = 60000, onWaiting = () => {}, now = Date.now, sleep = delay } = {}) {
+  if (await free()) return;
+  if (!sameOwner(owner, await identify(config.port))) {
+    if (await free()) return;
+    throw conflict('The other copy has changed. Try again before quitting it.');
+  }
+  if (!quitRequested(owner)) {
+    quitRequests.add(ownerKey(owner));
+    try { signal(owner.pid); } // Only the re-identified listener, never a process group or name match.
+    catch (error) {
+      if (error.code === 'ESRCH') return; // Normal startup rechecks the port, including any replacement listener.
+      throw conflict('The other copy could not be asked to quit. Quit it, then try again.');
+    }
+  }
+  onWaiting();
+  const deadline = now() + timeout;
   do {
     if (await free()) return;
-    await delay(Math.min(200, Math.max(0, deadline - Date.now())));
-  } while (Date.now() < deadline);
-  throw new Error('The other copy has not freed the port yet. Quit it, then try again.');
+    if (!sameOwner(owner, await identify(config.port))) {
+      if (await free()) return;
+      throw conflict('The other copy has changed. Try again before quitting it.');
+    }
+    await sleep(Math.min(1000, Math.max(0, deadline - now())));
+  } while (now() < deadline);
+  if (await free()) return;
+  throw conflict('The other copy is still running after 60 seconds. Let it finish or quit it yourself, then try again.');
 }
 
 function logger(config) {
@@ -75,12 +100,14 @@ async function availablePort(config) {
   // Never adopt an existing server, even if it is another HearAlong.
   if (await portFree(config)) return;
   const owner = await identifyListener(config.port);
-  throw Object.assign(new Error(owner
-    ? 'Another copy of HearAlong is already running, so this one cannot start. Quit the other copy, then open HearAlong again.'
-    : `Another program is using port ${config.port}, which HearAlong needs. Quit that program, then open HearAlong again.`), { portConflict: true, owner });
+  const requested = quitRequested(owner);
+  throw Object.assign(new Error(requested
+    ? 'The other copy is still finishing its work… Try again when it has finished.'
+    : owner ? 'Another copy of HearAlong is already running, so this one cannot start. Quit the other copy, then open HearAlong again.'
+    : `Another program is using port ${config.port}, which HearAlong needs. Quit that program, then open HearAlong again.`), { portConflict: true, owner: requested ? null : owner });
 }
-async function quitOtherCopy(config, owner) {
-  await quitListener(config, owner, { free: () => portFree(config) });
+async function quitOtherCopy(config, owner, onWaiting) {
+  await quitListener(config, owner, { free: () => portFree(config), onWaiting });
 }
 function serverEnvironment(config, env = process.env) {
   const result = { ...env, PORT: String(config.port), MEETING_DATA_DIR: config.data,

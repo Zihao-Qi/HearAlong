@@ -1,5 +1,6 @@
 // Update guard end-to-end contract. Disposable code/public/data roots; never uses the user's server or models.
 // Usage: node --experimental-strip-types --import ./test/helpers/pi-env.ts scripts/update-check.ts [evidenceDir]
+import './check-env.ts';
 import assert from 'node:assert/strict';
 import { testBrowser } from './test-browser.ts';
 import { chromium, type Page } from 'playwright-core';
@@ -59,7 +60,7 @@ try {
   const source = await readFile(new URL('../src/server.ts', import.meta.url), 'utf8');
   const map = source.match(/const staticFiles:[\s\S]*?\n\s*};/)![0];
   const keys = [...map.matchAll(/'([^']+)':\s*\[/g)].map(m => m[1]).sort();
-  assert.deepEqual(keys, ['/', '/app.js', '/style.css', '/setup', '/setup.html', '/setup.js', '/setup.css', '/setup-ui.js', '/page-session.js', '/pcm-worklet.js', '/mini.html', '/mini.js', '/mini.css', '/live-shared.js', '/preview-composition.js', '/transcript-view.js', '/capture-clock.js', '/capture-gaps.js', '/plans.js', '/plans-fixtures.js', '/plans-fixtures-data.js', '/manifest.webmanifest', '/sw.js', '/starting.html', '/starting.css', '/starting.js', '/icons/icon-192.png', '/icons/icon-512.png', '/vendor/marked-15.0.12.umd.js', '/vendor/purify-3.2.6.min.js', '/vendor/katex-0.16.22.min.js'].sort());
+  assert.deepEqual(keys, ['/', '/app.js', '/style.css', '/setup', '/setup.html', '/setup.js', '/setup.css', '/setup-ui.js', '/page-session.js', '/pcm-worklet.js', '/mini.html', '/mini.js', '/mini.css', '/live-shared.js', '/preview-composition.js', '/transcript-view.js', '/listen.js', '/segments-poll.js', '/capture-clock.js', '/upload-retry.js', '/storage-error.js', '/recording-end.js', '/capture-gaps.js', '/plans.js', '/plans-fixtures.js', '/plans-fixtures-data.js', '/manifest.webmanifest', '/sw.js', '/starting.html', '/starting.css', '/starting.js', '/icons/icon-192.png', '/icons/icon-512.png', '/vendor/marked-15.0.12.umd.js', '/vendor/purify-3.2.6.min.js', '/vendor/katex-0.16.22.min.js'].sort());
   pass('staticFiles keys unchanged');
   for (const width of [1280, 390]) {
     const f = await fixture(`helper-${width}`);
@@ -137,32 +138,25 @@ try {
       await page.unroute('**/api/restart');
       await page.reload(); await visible(page);
 
-      // Real endpoint/shutdown. Observe the actual custom-scheme navigation at the OS boundary: the stand-in ignores it
-      // while the old helper is alive/quitting, and can start a replacement ONLY on a later launch request.
+      // Real endpoint/shutdown. Development waits for a manual npm start, never a custom-scheme helper launch.
       await page.waitForFunction(() => navigator.serviceWorker.controller?.state === 'activated');
       const cdp = await context.newCDPSession(page); await cdp.send('Page.enable');
-      let helperReadyAt = Infinity, ignored = 0, launches = 0;
+      let launches = 0;
       let replacement: Awaited<ReturnType<typeof startServer>> | undefined;
-      let starting: Promise<void> | undefined;
-      // Observe exit concurrently with restart navigation; waiting here would prevent the restart click below.
-      f.exited.then(() => { helperReadyAt = Date.now() + 4500; }).catch(error => { console.error(error); process.exitCode = 1; }); // several seconds of helper cleanup after exit
-      cdp.on('Page.frameRequestedNavigation', event => {
-        if (event.url !== 'meetingassistant://start') return;
-        launches++;
-        if (Date.now() < helperReadyAt) { ignored++; return; }
-        starting ??= startServer({ ...f.options, port: Number(new URL(f.app.url).port) }).then(app => { replacement = app; });
-      });
+      cdp.on('Page.frameRequestedNavigation', event => { if (event.url.startsWith('meetingassistant:')) launches++; });
       try {
         await page.locator('#update-restart').click();
-        await page.getByText('Starting HearAlong…', { exact: true }).waitFor({ timeout: 15_000 });
-        await page.waitForFunction(() => document.getElementById('detail')!.textContent!.includes('allow it'));
+        await page.getByText('HearAlong server is not running', { exact: true }).waitFor({ timeout: 15_000 });
+        assert.equal(await page.locator('#detail').textContent(), 'Start it with npm start from the app folder, then try again.');
         assert.equal(await page.locator('#update-bar').count(), 0, 'no update bar on the actual offline Starting page');
         await shot(page, `${width}-starting`);
+        await f.exited;
+        await new Promise(resolve => setTimeout(resolve, 4500));
+        replacement = await startServer({ ...f.options, port: Number(new URL(f.app.url).port) });
         await page.locator('#meeting-button').waitFor({ timeout: 16_000 }); await hidden(page);
-        assert.ok(ignored >= 1, 'old helper must ignore at least the first launch');
-        assert.ok(launches > ignored && replacement, 'replacement starts only on a post-cleanup launch');
-        await shot(page, `${width}-restarted`); pass(`${width}: real restart survives slow helper cleanup (${ignored} ignored / ${launches} launch requests)`);
-      } finally { await cdp.detach(); await starting; await replacement?.close(); }
+        assert.equal(launches, 0, 'no removed-helper launch attempts');
+        await shot(page, `${width}-restarted`); pass(`${width}: real restart waits for manual server start without a helper launch`);
+      } finally { await cdp.detach(); await replacement?.close(); }
     } catch (error) {
       const message = `FAIL ${width}: ${(error as Error).stack}`; results.push(message); console.error(message);
     } finally { await context.close(); await f.app.close(); }

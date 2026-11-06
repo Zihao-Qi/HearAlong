@@ -193,16 +193,28 @@ export async function startServer(options: {
         if ('error' in snapshot) throw snapshot.error;
         return snapshot.bytes.toString('utf8');
       };
+      let warned = false;
+      const rewrite = (path: string, source: string, marker: string, replacement: string) => {
+        if (source.split(marker).length !== 2) {
+          const message = `Packaged Chrome migration rewrite did not match exactly once: ${path}`;
+          if (process.env.NODE_TEST_CONTEXT) throw new Error(message);
+          if (!warned) { console.warn(message); warned = true; }
+          return source;
+        }
+        return source.replace(marker, () => replacement);
+      };
       for (const path of ['index.html', 'setup.html']) {
-        staticSnapshot.set(path, { bytes: Buffer.from(text(path).replace('<html lang="en">', `<html lang="en" data-chrome-upgrade="${notice}">`)) });
+        staticSnapshot.set(path, { bytes: Buffer.from(rewrite(path, text(path), '<html lang="en">', `<html lang="en" data-chrome-upgrade="${notice}">`)) });
       }
-      const offline = text('starting.html')
-        .replace('<link rel="stylesheet" href="/starting.css">', `<style>${text('starting.css')}</style>`)
-        .replace('Starting HearAlong…', 'HearAlong')
-        .replace('This takes a few seconds.', notice)
-        .replace('  <button id="retry" type="button" hidden>Try again</button>\n', '')
-        .replace('<script src="/starting.js"></script>', '');
-      staticSnapshot.set('sw.js', { bytes: Buffer.from(text('sw.js').replace("const OFFLINE_PAGE = '';", `const OFFLINE_PAGE = ${JSON.stringify(offline)};`)) });
+      let offline = text('starting.html');
+      for (const [marker, replacement] of [
+        ['<link rel="stylesheet" href="/starting.css">', `<style>${text('starting.css')}</style>`],
+        ['Starting HearAlong…', 'HearAlong'],
+        ['This takes a few seconds.', notice],
+        ['  <button id="retry" type="button" hidden>Try again</button>\n', ''],
+        ['<script src="/starting.js"></script>', ''],
+      ]) offline = rewrite('starting.html', offline, marker, replacement);
+      staticSnapshot.set('sw.js', { bytes: Buffer.from(rewrite('sw.js', text('sw.js'), "const OFFLINE_PAGE = '';", `const OFFLINE_PAGE = ${JSON.stringify(offline)};`)) });
     }
     const fingerprint = await CodeFingerprint.start(options.codeRoot ?? ROOT, publicRoot, options.clock ?? Date.now, options.fingerprint);
     const canRestart = (options.idleMs ?? Number(process.env.MEETING_IDLE_EXIT_S ?? 0) * 1000) > 0;

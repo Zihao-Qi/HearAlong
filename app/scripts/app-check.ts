@@ -1,5 +1,5 @@
 // Checks the installed-app parts in Chrome (M7): Chrome finds the page installable (manifest, icons, service worker), and with the
-// server stopped the app shows "Starting…" and loads by itself once the server is back. No model is called.
+// server stopped development explains npm start; packaged browsing explains the Mac app. No model is called.
 // Usage: node --experimental-strip-types scripts/app-check.ts
 import './check-env.ts';
 import { testBrowser } from './test-browser.ts';
@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startServer } from '../src/server.ts';
 import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
+import { until } from '../test/helpers/until.ts';
 
 const results: string[] = [];
 const check = (name: string, ok: boolean, detail = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`); };
@@ -40,16 +41,39 @@ try {
   check('the manifest has no errors', manifest.errors.length === 0, JSON.stringify(manifest.errors));
   check('the Wide/Compact switch is gone', await page.locator('#layout-switch').count() === 0);
 
-  // The server stops: reopening the app shows "Starting…"; when the server is back, the app loads by itself.
+  // The server stops: development asks for npm start, never tries to launch the removed helper.
+  const externalRequests: string[] = [];
+  page.on('request', request => { if (!request.url().startsWith(app.url)) externalRequests.push(request.url()); });
   await app.close();
   await page.goto(`http://127.0.0.1:${port}/`).catch(() => {});
-  await page.locator('text=Starting HearAlong').waitFor({ timeout: 20_000 });
-  check('server stopped: the app shows Starting…', true);
-  check('server stopped: the Starting page runs (asks Chrome to open the helper)', /allow it/.test(await page.locator('#detail').innerText()));
+  await page.getByText('HearAlong server is not running', { exact: true }).waitFor({ timeout: 20_000 });
+  check('development offline page explains npm start', await page.locator('#detail').innerText() === 'Start it with npm start from the app folder, then try again.');
+  check('development offline script has no helper launch', !(await readFile(join(publicRoot, 'starting.js'), 'utf8')).includes('meetingassistant:'));
   app = await startServer({ directory, port, publicRoot, setup, quick: null, heavy: null, recognizer: null, drafts: null });
   await page.locator('#meeting-button').waitFor({ timeout: 15_000 });
   check('development browser has no migration notice', await page.locator('#update-bar').isHidden());
   check('development worker keeps Starting behavior', !(await (await fetch(app.url + '/sw.js')).text()).includes(notice));
+  // An existing development cache can still contain the removed helper's script.
+  await page.evaluate(async () => {
+    await (await caches.open('starting-v2')).put('/starting.js', new Response('/* Fictional stale helper script */'));
+  });
+  await app.close();
+  await cp(new URL('../public/sw.js', import.meta.url), join(publicRoot, 'sw.js'));
+  app = await startServer({ directory, port, publicRoot, setup, quick: null, heavy: null, recognizer: null, drafts: null });
+  await page.reload();
+  await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration())!.update(); });
+  await until(() => page.evaluate(async () => {
+    const keys = await caches.keys();
+    const script = await (await caches.open('starting-v3')).match('/starting.js');
+    return keys.includes('starting-v3') && !keys.includes('starting-v2') && Boolean(script && (await script.text()).includes('npm start'));
+  }));
+  check('development worker refreshes the old helper cache', await page.evaluate(async () => (await (await caches.match('/starting.js'))!.text()).includes('npm start')));
+  await app.close();
+  await page.goto(`http://127.0.0.1:${port}/`);
+  await page.getByText('HearAlong server is not running', { exact: true }).waitFor();
+  check('updated development worker serves npm start offline', await page.locator('#detail').innerText() === 'Start it with npm start from the app folder, then try again.');
+  app = await startServer({ directory, port, publicRoot, setup, quick: null, heavy: null, recognizer: null, drafts: null });
+  await page.locator('#meeting-button').waitFor();
   await app.close();
   await cp(new URL('../public/sw.js', import.meta.url), join(publicRoot, 'sw.js'));
   process.env.HEARALONG_PACKAGED = '1';
@@ -59,8 +83,8 @@ try {
   await page.locator('#update-text').filter({ hasText: notice }).waitFor();
   check('packaged browser shows the migration line without controls', await page.locator('#update-bar button:visible').count() === 0);
   await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration())!.update(); });
-  await page.waitForFunction(async () => (await caches.keys()).length === 0);
-  check('normal sw.js update replaces the old worker and clears starting-v2', true);
+  await until(() => page.evaluate(async () => (await caches.keys()).length === 0));
+  check('normal sw.js update replaces the development worker and clears its caches', true);
   // A navigation must always reach the server, never an indefinitely cached shell.
   await page.reload();
   await page.locator('#meeting-button').waitFor();
@@ -89,6 +113,7 @@ try {
   check('offline page keeps its styling without the server', await page.locator('main').evaluate(e => getComputedStyle(e).maxWidth) === '440px');
   check('offline worker caches no app shell', (await page.evaluate(() => caches.keys())).length === 0);
   check('development source remains unchanged', (await readFile(new URL('../public/sw.js', import.meta.url), 'utf8')).includes("const OFFLINE_PAGE = '';"));
+  check('no external launch requests', externalRequests.length === 0, externalRequests.join(' | '));
   check('no page errors', errors.length === 0, errors.join(' | '));
 } catch (error) {
   check('the run finished', false, (error as Error).message.split('\n')[0]);

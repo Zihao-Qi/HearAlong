@@ -2,7 +2,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const origin = process.argv.find(arg => arg.startsWith('--hearalong-origin='))?.slice('--hearalong-origin='.length);
 const starting = process.argv.find(arg => arg.startsWith('--hearalong-starting='))?.slice('--hearalong-starting='.length);
-if (process.isMainFrame && location.href === starting) {
+// Sandboxed preloads cannot require node:url. This is its POSIX fileURLToPath
+// conversion: reject non-local URLs/encoded separators, then decode the path.
+function fileURLToPath(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'file:' || (url.hostname && url.hostname !== 'localhost') || /%2f/i.test(url.pathname)) throw new Error('Not a local file');
+  return decodeURIComponent(url.pathname.replace(/%(?![\da-f]{2})/gi, '%25'));
+}
+function isStarting() { try { return fileURLToPath(location.href) === starting; } catch { return false; } }
+if (process.isMainFrame && isStarting()) {
   // Keep startup actions private to this disk page, not the server's renderer.
   window.addEventListener('DOMContentLoaded', () => {
     const title = document.getElementById('title'), detail = document.getElementById('detail');

@@ -1,9 +1,9 @@
-// The installed app (M7): when the window opens and the local server is not running yet, show "Starting…" (which asks the helper
-// to start it) instead of Chrome's error page. Everything else goes to the server as usual; nothing of the app is cached.
+// Browser-only offline recovery: development explains npm start instead of Chrome's error page.
+// Everything else goes to the server as usual; no app shell is cached.
 // The packaged server embeds a self-contained migration page here. A changed sw.js
 // replaces starting-v2 through the normal update check, even with an existing registration.
 const OFFLINE_PAGE = '';
-const CACHE = 'starting-v2';
+const CACHE = 'starting-v3'; // Refresh development caches containing the removed helper's launch script.
 self.addEventListener('install', event => {
   if (OFFLINE_PAGE) { event.waitUntil(self.skipWaiting()); return; }
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['/starting.html', '/starting.css', '/starting.js', '/icons/icon-192.png'])).then(() => self.skipWaiting()));

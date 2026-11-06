@@ -2,7 +2,7 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage, ipcMain, shell, systemPreferences, powerSaveBlocker, dialog, screen, session } = require('electron');
 const { readFileSync, writeFileSync } = require('node:fs');
 const { join } = require('node:path');
-const { pathToFileURL } = require('node:url');
+const { fileURLToPath } = require('node:url');
 const { setTimeout: delay } = require('node:timers/promises');
 const { locations } = require('./locations.cjs');
 const { captureBinary, startCapture } = require('./capture.cjs');
@@ -26,12 +26,13 @@ function launch() {
   let main, mini, server, capture, tray, blocker, timer, pollBusy = false, live, background;
   let quitting = false, finished = false, askingQuit = false, failing = false, loaded = false, wasFrontmost = true;
   let focusCount = 0, startupBusy = false, startupError = null;
-  const startingURL = pathToFileURL(config.starting).href;
+  // Chromium leaves literal '%' unescaped in file URLs; preserve it before decoding the path.
+  const isStarting = url => { try { return fileURLToPath(url.replace(/%(?![\da-f]{2})/gi, '%25')) === config.starting; } catch { return false; } };
   const startupStatus = () => ({ message: startupError?.message, canQuitOther: Boolean(startupError?.owner), busy: startupBusy });
-  const sendStartup = () => { if (main?.webContents.getURL() === startingURL) main.webContents.send('hearalong:startup-status', startupStatus()); };
+  const sendStartup = () => { if (main && isStarting(main.webContents.getURL())) main.webContents.send('hearalong:startup-status', startupStatus()); };
   const frontmost = () => Boolean(main?.isFocused());
   const preferences = () => ({ preload: config.preload, contextIsolation: true, sandbox: true, nodeIntegration: false,
-    additionalArguments: [`--hearalong-origin=${config.origin}`, `--hearalong-starting=${startingURL}`] });
+    additionalArguments: [`--hearalong-origin=${config.origin}`, `--hearalong-starting=${config.starting}`] });
   const boundsFile = join(config.userData, 'window.json');
   function bounds() {
     try {
@@ -225,7 +226,7 @@ function launch() {
     });
     const trusted = event => event.senderFrame === event.sender.mainFrame && navigation(config.origin, event.senderFrame.url) === 'allow'
       && (event.sender === main?.webContents || event.sender === mini?.webContents);
-    const trustedStartup = event => event.sender === main?.webContents && event.senderFrame === event.sender.mainFrame && event.senderFrame.url === startingURL;
+    const trustedStartup = event => event.sender === main?.webContents && event.senderFrame === event.sender.mainFrame && isStarting(event.senderFrame.url);
     ipcMain.handle('hearalong:startup-status', event => {
       if (!trustedStartup(event)) throw new Error('Not allowed');
       return startupStatus();
@@ -261,8 +262,12 @@ function launch() {
     startupBusy = true;
     sendStartup();
     try {
-      if (quitOther && startupError?.owner) await quitOtherCopy(config, startupError.owner);
+      if (quitOther && startupError?.owner) await quitOtherCopy(config, startupError.owner, () => {
+        startupError.message = 'The other copy is still finishing its work…';
+        sendStartup();
+      });
       await availablePort(config);
+      if (quitting) return;
       startupError = null;
       server = startServer(config, log, (code) => {
         const decision = serverExit(code, quitting);

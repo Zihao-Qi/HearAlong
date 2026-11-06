@@ -204,12 +204,53 @@ test('port conflicts identify only an owned HearAlong executable, recheck before
   const owner = await identifyListener(stubborn.port);
   let signalled = false;
   for (const change of [{ pid: owner.pid + 1 }, { uid: owner.uid + 1 }, { started: 'changed' }, { executable: '/fictional/other' }]) {
-    await assert.rejects(quitListener(stubborn, owner, { identify: async () => ({ ...owner, ...change }), signal: () => { signalled = true; } }), /has changed/);
+    await assert.rejects(quitListener(stubborn, owner, { free: async () => false, identify: async () => ({ ...owner, ...change }), signal: () => { signalled = true; } }), /has changed/);
   }
   assert.equal(signalled, false);
   assert.equal(sameOwner(owner, null), false);
-  await assert.rejects(quitListener(stubborn, owner, { free: () => portFree(stubborn), timeout: 250 }), /has not freed the port/);
+  await assert.rejects(quitListener(stubborn, owner, { free: () => portFree(stubborn), timeout: 250 }), /still running after 60 seconds/);
   assert.equal(await portFree(stubborn), false);
+  await assert.rejects(availablePort(stubborn), (error: Error & { owner?: unknown }) => {
+    assert.equal(error.owner, null); assert.match(error.message, /still finishing/); return true;
+  });
   // No unrelated listener was signalled by any path.
   assert.equal(unrelated.child.exitCode, null); assert.equal(unrelated.child.signalCode, null);
+});
+
+test('quit recovery allows a long drain and never sends a second SIGTERM after timeout', async () => {
+  const owner = { pid: 101, uid: 501, started: 'fictional-long-drain', executable: '/fictional/HearAlong.app/Contents/MacOS/node' };
+  let clock = 0, signals = 0, waiting = 0;
+  const options = { identify: async () => owner, signal: () => { signals++; }, now: () => clock,
+    sleep: async (ms: number) => { clock += ms; }, onWaiting: () => { waiting++; } };
+  await quitListener({ port: 54321 }, owner, { ...options, free: async () => clock >= 25000 });
+  assert.equal(clock, 25000); assert.equal(signals, 1); assert.equal(waiting, 1);
+  // Even an explicit second request for the identical snapshot must only wait, not signal.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(quitListener({ port: 54321 }, owner, { ...options, free: async () => false }), (error: Error & { owner?: unknown }) => {
+      assert.match(error.message, /still running after 60 seconds/); assert.equal(error.owner, null); return true;
+    });
+  }
+  const executed = { ...owner, executable: '/fictional/HearAlong.app/Contents/MacOS/replacement' };
+  await assert.rejects(quitListener({ port: 54321 }, executed, { ...options, identify: async () => executed, free: async () => false }), /still running after 60 seconds/);
+  assert.equal(signals, 1);
+});
+
+test('quit recovery handles free ports, disappearing/replaced owners and ESRCH without stale kill controls', async () => {
+  const owner = { pid: 102, uid: 501, started: 'fictional-exit-race', executable: '/fictional/HearAlong.app/Contents/MacOS/node' };
+  let signals = 0;
+  await quitListener({ port: 54321 }, owner, { free: async () => true,
+    identify: async () => { throw new Error('Must not inspect a free port'); }, signal: () => { signals++; } });
+  for (const current of [null, { ...owner, started: 'replacement' }]) {
+    await assert.rejects(quitListener({ port: 54321 }, owner, { free: async () => false,
+      identify: async () => current, signal: () => { signals++; } }), (error: Error & { owner?: unknown }) => {
+      assert.match(error.message, /has changed/); assert.equal(error.owner, null); return true;
+    });
+  }
+  let probes = 0;
+  await quitListener({ port: 54321 }, owner, { free: async () => ++probes > 1,
+    identify: async () => null, signal: () => { signals++; } });
+  assert.equal(signals, 0);
+  await quitListener({ port: 54321 }, owner, { free: async () => false, identify: async () => owner,
+    signal: () => { signals++; throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' }); } });
+  assert.equal(signals, 1);
 });
