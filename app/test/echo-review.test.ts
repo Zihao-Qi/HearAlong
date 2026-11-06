@@ -11,6 +11,7 @@ import { LiveCapture } from '../src/live.ts';
 import { MeetingStore } from '../src/store.ts';
 import { SampleCaptureClock } from '../public/capture-clock.js';
 import { delayedAec } from './fixtures/delayed-aec.ts';
+import { observeEcho } from './helpers/observe-echo.ts';
 
 const frame = (wall: number, samples = 16000) => ({ pcm: new Float32Array(samples), timing: { captureWallMs: wall } });
 const bytes = (pcm: Float32Array) => Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -137,9 +138,9 @@ test('stale and permanently lagging references do not wait; timing loss retires 
   try {
     echo.reference('m', CALL, zeros(), { captureWallMs: 1000 });
     const pending = echo.microphone('m', MIC, 'a', zeros(), { captureWallMs: 1000 }); await echo.flush(MIC); await pending;
-    now = 3001; const start = performance.now();
-    const stale = echo.microphone('m', MIC, 'b', zeros(), { captureWallMs: 2000 }); if (stale) await stale;
-    assert.ok(performance.now() - start < 500); assert.equal(logs.length, 1); assert.match(logs[0], /stale/);
+    now = 3001;
+    assert.equal(echo.microphone('m', MIC, 'b', zeros(), { captureWallMs: 2000 }), null, 'stale fallback is synchronous, independent of worker retirement');
+    assert.equal(logs.length, 1); assert.match(logs[0], /stale/);
     echo.reference('m', CALL, zeros(), { captureWallMs: 3000 });
     const resumed = echo.microphone('m', MIC, 'c', zeros(), { captureWallMs: 3000 }); await echo.flush(MIC); await resumed;
     assert.equal(echo.stats().frames, 2);
@@ -171,16 +172,17 @@ test('a watchdog serviced after simulated whole-process sleep falls back raw wit
   } finally { await echo.close(); }
 });
 
-test('call ends first: retain and cancel the mic final second, then retire without waiting for future render', async () => {
-  const echo = new LiveEcho({ leadMs: 0, waitMs: 1500 });
+test('call ends first: retain and cancel the mic final second, then retire without waiting for future render', async t => {
+  const observed = observeEcho(t), echo = new LiveEcho({ leadMs: 0, workerScript: observed.workerScript });
   try {
     echo.reference('m', CALL, zeros(), { captureWallMs: 1000 }); echo.reference('m', CALL, zeros(), { captureWallMs: 2000 });
     const first = echo.microphone('m', MIC, 'a', zeros(), { captureWallMs: 1000 }); await echo.flush(MIC); await first;
     await echo.end('m', CALL);
     const mic = new Float32Array(16000); mic[15999] = 0.5;
     const tail = echo.microphone('m', MIC, 'b', bytes(mic), { captureWallMs: 2000 });
-    const start = performance.now(); await echo.flush(MIC); const out = await tail;
-    assert.ok(performance.now() - start < 500); assert.ok(out!.readFloatLE(15999 * 4) > 0.1);
+    const out = await tail;
+    observed.assertReleased('b', 'reference-ended');
+    assert.ok(out!.readFloatLE(15999 * 4) > 0.1);
     assert.equal(echo.stats().missingSamples, 0, 'call /end did not discard its final reference frame');
     const raw = echo.microphone('m', MIC, 'c', zeros(), { captureWallMs: 3000 }); if (raw) await raw;
     assert.equal(echo.buffered().sessions, 0);
@@ -220,20 +222,20 @@ test('more than ten total seconds of live-call missing reference logs once, even
   } finally { await echo.close(); }
 });
 
-for (const stop of ['end', 'close', 'abandon', 'inactive'] as const) test(`P1: ${stop} signals flush before seal; last microphone impulse survives without reference timeout`, async () => {
+for (const stop of ['end', 'close', 'abandon', 'inactive'] as const) test(`P1: ${stop} signals flush before seal; last microphone impulse survives without reference timeout`, async t => {
   const directory = await mkdtemp(join(tmpdir(), 'echo-review-seal-')), store = new MeetingStore(directory), meeting = store.createMeeting();
-  const logs: string[] = [], live = new LiveCapture(store, { echo: { leadMs: 0 }, log: line => logs.push(line) });
+  const observed = observeEcho(t), logs: string[] = [], live = new LiveCapture(store, { echo: { leadMs: 0, workerScript: observed.workerScript }, log: line => logs.push(line) });
   try {
-    await live.accept(meeting.id, CALL, 0, 0, zeros(), 'page', { captureWallMs: 1000 });
-    await live.accept(meeting.id, CALL, 1, 1000, zeros(), 'page', { captureWallMs: 2000 });
+    await live.accept(meeting.id, CALL, 0, 0, zeros(), 'call-page', { captureWallMs: 1000 });
+    await live.accept(meeting.id, CALL, 1, 1000, zeros(), 'call-page', { captureWallMs: 2000 });
     const input = new Float32Array(16000); input[15990] = 0.5;
-    await live.accept(meeting.id, MIC, 0, 0, bytes(input), 'page', { captureWallMs: 1000 });
-    const start = performance.now();
+    const saved = await live.accept(meeting.id, MIC, 0, 0, bytes(input), 'page', { captureWallMs: 1000 });
+    await observed.waitFor(event => event.event === 'microphone' && event.id === saved.id);
     if (stop === 'end') await live.end(meeting.id, MIC, 0);
     else if (stop === 'close') await live.close();
     else if (stop === 'abandon') await live.abandonPage('page');
     else await live.endIfInactive(meeting.id, MIC, () => true);
-    assert.ok(performance.now() - start < 1000, 'Stop must not wait for the 1.5-second reference/output timer');
+    observed.assertReleased(saved.id, 'flush');
     const chunk = store.chunks(meeting.id).find(chunk => chunk.source === MIC)!;
     const out = await readFile(store.resolvePath(chunk.path)); assert.equal(out.length, input.byteLength);
     assert.ok(out.readFloatLE(15990 * 4) > 0.1, 'last ten samples were flushed into sealed recognition audio');
