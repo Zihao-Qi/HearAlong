@@ -118,6 +118,10 @@ test('durable raw/dedup is unchanged, but previews and seal use cleaned PCM', as
     assert.ok((await readFile(store.resolvePath(chunk.path))).equals(pcm(0.2)), 'chunk contains cleaned audio');
     assert.equal(frame.hash, createHash('sha256').update(raw).digest('hex'));
     assert.equal(chunk.hash, createHash('sha256').update(pcm(0.2)).digest('hex'));
+    const original = store.originalAudio(chunk.id)!;
+    assert.ok((await readFile(store.resolvePath(original.path))).equals(raw), 'sealed cleaned mic retains its original window');
+    assert.equal(original.hash, frame.hash);
+    assert.deepEqual(await store.verifyAudioFiles(meeting.id), []);
     assert.equal(feeds.length, 2, 'one call feed and one cleaned mic feed, never a duplicate');
     assert.ok(Math.abs(feeds[1][0] - 0.2) < 1e-7);
     assert.equal(live.echoStats()!.frames, 1);
@@ -137,6 +141,7 @@ test('recovered frames seal raw, even when new call frames create an AEC session
     await live.end(meeting.id, mic, 1);
     const chunk = store.chunks(meeting.id).find(chunk => chunk.source === mic)!;
     assert.ok((await readFile(store.resolvePath(chunk.path))).equals(Buffer.concat([raw, pcm(0.2)])));
+    assert.ok((await readFile(store.resolvePath(store.originalAudio(chunk.id)!.path))).equals(Buffer.concat([raw, raw])), 'mixed recovery/live window retains all original samples');
   } finally { await live.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -202,6 +207,7 @@ test('a stuck worker cannot block a seal: unprocessed tail seals raw and logs on
     assert.ok(performance.now() - start < 2000);
     const chunk = store.chunks(meeting.id).find(chunk => chunk.source === mic)!;
     assert.ok((await readFile(store.resolvePath(chunk.path))).equals(Buffer.concat([raw, raw])));
+    assert.equal(store.originalAudio(chunk.id), undefined, 'literal-raw fallback does not duplicate the window');
     assert.equal(logs.length, 1);
   } finally { await live.close(); store.close(); await rm(directory, { recursive: true, force: true }); }
 });

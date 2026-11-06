@@ -24,8 +24,18 @@ No UI preference is involved. Native capture changes only improve timestamp meta
 - `LiveCapture` retains cleaned frames only in memory until seal. Ordered ready
   frames feed the draft; replay after a pause cut also uses cleaned frames.
   `MeetingStore.sealWindow` accepts a same-length processed window, hashes/writes
-  it using the existing atomic publication, then removes raw frame files as
-  before. There is no additional durable audio tree or schema migration.
+  it and, when samples differ from the original, also writes `<chunk>.raw.f32`
+  beside it (16 kHz mono float32). Both files are synced before one SQLite
+  transaction publishes the chunk, its `chunk_originals` path/hash, and the frame
+  links. Only then are raw frame files reclaimed. Pass-through windows need no
+  duplicate: their primary file already holds the original samples.
+- Originals are not recognition or playback sources. `MeetingStore.audioFiles`
+  lists them and `verifyAudioFiles` checks their hashes. Relocation, orphan
+  reconciliation, meeting deletion and generation-based audio retention include
+  them; removing audio clears their references in the same transaction. A crash
+  before publication leaves held raw frames and reclaimable unpublished files;
+  a crash afterward leaves both published windows and cleanup-only frame files.
+  Startup keeps leftover frames if an original is missing or damaged.
 
 ## Alignment and bounded fallback
 

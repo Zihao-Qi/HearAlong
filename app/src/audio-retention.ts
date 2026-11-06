@@ -177,6 +177,7 @@ export class AudioRetention {
         this.store.db.prepare('UPDATE meetings SET audioRemovedAt=?, audioRemovedAfter=? WHERE id=?').run(this.now(), audioRetentionLabel(this.options.setting()), m.id);
         this.store.db.prepare("UPDATE chunks SET path='' WHERE meetingId=?").run(m.id);
         this.store.db.prepare("UPDATE frames SET path='' WHERE meetingId=?").run(m.id);
+        this.store.db.prepare("UPDATE chunk_originals SET path='' WHERE meetingId=?").run(m.id);
         this.store.db.exec('COMMIT');
       } catch (error) { this.store.db.exec('ROLLBACK'); throw error; }
       await this.erase(m.id, m.audioGeneration);
