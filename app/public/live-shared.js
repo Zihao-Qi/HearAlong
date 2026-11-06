@@ -4,11 +4,20 @@
 /** A sentence ends only at the end of a line (possibly before closing quotes/brackets). */
 const sentenceEnd = text => /[.?!…][\p{Pe}\p{Pf}"']*$/u.test((text ?? '').trim());
 
-/** One open paragraph per speaker, keyed by its first line. Callers supply time-ordered lines and split at display gaps. */
-export function paragraphsOf(segments) {
+/** One open paragraph per speaker, keyed by its first line. Only gaps close all speakers;
+ * previews/missing chunks close their own speaker (the single open lane in unlabelled meetings). */
+export function paragraphsOf(segments, barriers = []) {
   const out = [], open = new Map();
-  for (const segment of segments) {
-    const speaker = 'speaker' in segment ? segment.speaker : undefined;
+  const entries = [...segments.map(segment => ({ segment, startMs: segment.startMs })),
+    ...barriers.map(barrier => ({ barrier, startMs: barrier.startMs }))]
+    .sort((a, b) => a.startMs - b.startMs || Number(Boolean(b.barrier?.all)) - Number(Boolean(a.barrier?.all))
+      || Number(Boolean(a.barrier)) - Number(Boolean(b.barrier)));
+  for (const entry of entries) {
+    if (entry.barrier) {
+      if (entry.barrier.all) open.clear(); else open.delete(entry.barrier.speaker ?? undefined);
+      continue;
+    }
+    const segment = entry.segment, speaker = segment.speaker ?? undefined;
     const current = open.get(speaker);
     const ended = current && sentenceEnd(current.segments.at(-1).text);
     const length = current ? segment.startMs - current.startMs : 0;
@@ -18,7 +27,10 @@ export function paragraphsOf(segments) {
       out.push(paragraph); open.set(speaker, paragraph);
     } else { current.segments.push(segment); current.endMs = Math.max(current.endMs, segment.endMs); }
   }
-  for (const p of out) p.signature = `${p.speaker ?? ''}#` + p.segments.map(s => `${s.id}:${s.revision}`).join('|');
+  for (const p of out) {
+    p.signature = `${p.speaker ?? ''}#` + p.segments.map(s => `${s.id}:${s.revision}`).join('|');
+    p.open = open.get(p.speaker) === p;
+  }
   return out;
 }
 /** The ids of a paragraph's lines, from its signature. */

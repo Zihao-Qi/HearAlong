@@ -210,12 +210,35 @@ function selected() {
   for (let i = 0; i < selection.rangeCount; i++) if (selection.getRangeAt(i).intersectsNode($('m-scroll'))) return selection;
   return null;
 }
-/** The first line showing at the top of the lines, and where its top is on screen. */
+/** Prefer a row starting inside the view; an open row partly above it can still grow.
+ * If no row starts inside, anchor the partly visible row's bottom rather than its offscreen top. */
 function topLine() {
-  const top = $('m-scroll').getBoundingClientRect().top;
-  for (const node of $('m-scroll').querySelectorAll('.ln')) {
-    const box = node.getBoundingClientRect();
-    if (box.bottom > top) return { key: node.dataset.key, y: box.top };
+  const pane = $('m-scroll').getBoundingClientRect();
+  const visible = [...$('m-scroll').querySelectorAll('.ln, .pending-ln')].filter(n => {
+    const rect = n.getBoundingClientRect(); return rect.bottom > pane.top && rect.top < pane.bottom;
+  });
+  const inside = visible.find(n => n.getBoundingClientRect().top >= pane.top), node = inside ?? visible[0];
+  if (!node) return null;
+  const edge = inside ? 'top' : 'bottom', rect = node.getBoundingClientRect();
+  const pending = node.querySelector('.pending-preview');
+  const range = pending && document.createRange();
+  if (range) range.selectNodeContents(pending);
+  return { key: node.dataset.key, edge, y: (range?.getBoundingClientRect() ?? rect)[edge],
+    chunkId: node.dataset.chunkId, text: pending?.textContent };
+}
+/** Locate an old pending stretch inside its now-final, possibly multi-line paragraph. */
+function mergedAnchor(reading) {
+  if (!reading.chunkId || !reading.text) return null;
+  const node = [...view.rows.values()].find(n => n.querySelector('.final')
+    && signatureLines(n.dataset.signature).some(id => id.startsWith(`${reading.chunkId}:`)));
+  const text = node?.querySelector('.final'), at = text?.textContent.indexOf(reading.text);
+  if (!text || at < 0) return null;
+  const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT), range = document.createRange();
+  let offset = at, end = at + reading.text.length, part, started = false;
+  while ((part = walker.nextNode())) {
+    if (!started && offset <= part.length) { range.setStart(part, offset); started = true; }
+    if (end <= part.length) { range.setEnd(part, end); return range; }
+    offset -= part.length; end -= part.length;
   }
   return null;
 }
@@ -228,22 +251,34 @@ function settle(reading, selection) {
   else {
     // An earlier, partly visible paragraph can grow while a later one is selected. Anchor the
     // selected words, not that earlier row's top (which would let the selection drift).
-    const target = reading.range ?? view.rows.get(reading.key);
-    if (target) setTop($('m-scroll').scrollTop + target.getBoundingClientRect().top - reading.y);
+    const target = reading.range ?? view.rows.get(reading.key) ?? mergedAnchor(reading);
+    if (target) setTop($('m-scroll').scrollTop + target.getBoundingClientRect()[reading.edge ?? 'top'] - reading.y);
   }
   view.reading = view.follow && !selection ? null : topLine();
   edges();
 }
 function renderFinals(wanted, selection) {
-  // Rows under a selection are left as they are (replacing or moving them would lose it); so are rows the server no longer
-  // sends. A paragraph sharing lines with any of them (the server regrouped them: a late line from the other side splits one)
-  // waits too, so no words show twice. All of them catch up once the selection is gone.
+  // Freeze selected rows and any removed final sharing their line ids, not unrelated removed pending rows.
+  // Otherwise completing an unselected pending stretch during a selection would show both preview and final.
   const held = node => Boolean(selection?.containsNode(node, true));
   const keep = new Set(wanted.map(w => w.key));
-  const frozen = new Set();
-  for (const [key, node] of view.rows) {
-    if (selection && (held(node) || !keep.has(key))) for (const id of signatureLines(node.dataset.signature)) frozen.add(id);
-    else if (!keep.has(key)) { node.remove(); view.rows.delete(key); }
+  const frozen = new Set(), pendingChunks = new Set();
+  for (const node of view.rows.values()) if (held(node)) {
+    for (const id of signatureLines(node.dataset.signature)) frozen.add(id);
+    if (node.dataset.chunkId) pendingChunks.add(node.dataset.chunkId);
+  }
+  for (const w of wanted) {
+    const ids = signatureLines(w.signature);
+    if (ids.some(id => [...pendingChunks].some(chunk => id.startsWith(`${chunk}:`)))) for (const id of ids) frozen.add(id);
+  }
+  const overlapsFrozen = node => signatureLines(node.dataset.signature).some(id => frozen.has(id))
+    || (node.dataset.chunkId && [...frozen].some(id => id.startsWith(`${node.dataset.chunkId}:`)));
+  // Regrouping can split a removed final across several new rows. Freeze the whole old final until release.
+  for (const node of view.rows.values()) if (!keep.has(node.dataset.key) && overlapsFrozen(node)) {
+    for (const id of signatureLines(node.dataset.signature)) frozen.add(id);
+  }
+  for (const [key, node] of view.rows) if (!keep.has(key) && !held(node) && !overlapsFrozen(node)) {
+    node.remove(); view.rows.delete(key);
   }
   const earlier = $('m-earlier'), log = $('m-finals');
   // The paragraphs said before the window first showed this recording go above the log, so it announces only new lines.
@@ -253,10 +288,17 @@ function renderFinals(wanted, selection) {
     let node = view.rows.get(w.key);
     if (node && held(node)) { before = node; return; }
     if (frozen.size && signatureLines(w.signature).some(id => frozen.has(id))) { if (node) before = node; return; }
-    if (!node || node.dataset.signature !== w.signature) {
+    const previousText = node?.lastChild.textContent ?? '';
+    const extendsRow = node && !w.pending && node.lastChild.classList.contains('final')
+      && w.signature.startsWith(`${node.dataset.signature}|`) && w.text.startsWith(previousText);
+    if (extendsRow) {
+      // role=log announces additions: append just the new words, leaving the old text node untouched.
+      node.lastChild.append(document.createTextNode(w.text.slice(previousText.length)));
+      node.dataset.signature = w.signature;
+    } else if (!node || node.dataset.signature !== w.signature) {
       const fresh = lineRow(w.speaker, w.label, w.text, w.pending ? 'pending-preview' : 'final');
       if (w.pending) { fresh.className = 'pending-ln'; fresh.setAttribute('aria-hidden', 'true'); }
-      Object.assign(fresh.dataset, { key: w.key, signature: w.signature, speaker: w.speaker ?? '' });
+      Object.assign(fresh.dataset, { key: w.key, signature: w.signature, speaker: w.speaker ?? '', chunkId: w.pending ? w.chunkId ?? '' : '' });
       if (node) node.replaceWith(fresh);
       view.rows.set(w.key, fresh);
       node = fresh;

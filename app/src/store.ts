@@ -169,6 +169,8 @@ export class MeetingStore {
   }
   private repairRecordingPaths() {
     this.transaction(() => {
+      // An older binary may have removed this meeting's audio without knowing about originals.
+      this.db.exec("UPDATE chunk_originals SET path='' WHERE path<>'' AND meetingId IN (SELECT id FROM meetings WHERE audioRemovedAt IS NOT NULL)");
       const absolutePaths = sep === '/' ? "path GLOB '/*'"
         : "(path GLOB '[A-Za-z]:[/\\\\]*' OR path GLOB '[/\\\\]*')";
       for (const table of ['frames', 'chunks', 'chunk_originals']) {
@@ -628,6 +630,9 @@ export class MeetingStore {
     const originals = new Map<string, Promise<boolean>>(); // Check each window once, not once per frame.
     await Promise.allSettled(sealed.map(async f => {
       if (!f.path || !f.windowPath) return;
+      // Sealed frame rows survive cleanup for admission dedup. Do not hash years of retained
+      // originals on every start when their frame files were already reclaimed.
+      await access(this.resolvePath(f.path));
       await access(this.resolvePath(f.windowPath));
       if (f.originalPath !== null) {
         if (!f.originalPath) return;
@@ -706,21 +711,17 @@ export class MeetingStore {
     const segments = this.segments(id);
     if (labelled) segments.sort(compareSegments);
     const entries = [
-      ...this.captureGaps(id).map(g => ({ at: g.atMs, end: g.atMs, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
-      ...segments.map(s => ({ ...s, at: s.startMs, text: mode === 'raw' ? s.originalText : s.text, speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })),
-      ...this.chunks(id).filter(c => c.status !== 'completed').map(c => ({ at: c.startMs, end: c.startMs, gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` })),
-    ].sort((a, b) => a.at - b.at);
-    const paragraphs: string[] = [];
-    let run: (Segment & { speaker: Role | null })[] = [];
-    const flush = () => {
-      for (const p of paragraphsOf(run)) paragraphs.push(`${prefix(p.startMs)}${p.speaker ? `${ROLE_LABEL[p.speaker as Role]}: ` : ''}${p.segments.map(s => s.text).join(' ')}`);
-      run = [];
-    };
-    for (const entry of entries) {
-      if ('gap' in entry) { flush(); paragraphs.push(`${prefix(entry.at)}${entry.gap}`); }
-      else run.push(entry);
-    }
-    flush();
+      ...this.captureGaps(id).map(g => ({ startMs: g.atMs, all: true, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
+      ...this.chunks(id).filter(c => c.status !== 'completed').map(c => ({ startMs: c.startMs,
+        speaker: labelled ? roleOf(c.source, c.startMs, c.startMs + c.seconds * 1000) ?? null : null,
+        gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` })),
+    ];
+    const grouped = paragraphsOf(segments.map(s => ({ ...s, text: mode === 'raw' ? s.originalText : s.text,
+      speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })), entries);
+    const paragraphs = [...grouped.map(p => ({ startMs: p.startMs, all: false,
+      text: `${prefix(p.startMs)}${p.speaker ? `${ROLE_LABEL[p.speaker as Role]}: ` : ''}${p.segments.map(s => s.text).join(' ')}` })),
+    ...entries.map(e => ({ startMs: e.startMs, all: 'all' in e && e.all, text: `${prefix(e.startMs)}${e.gap}` }))]
+      .sort((a, b) => a.startMs - b.startMs || Number(b.all) - Number(a.all)).map(e => e.text);
     return { labelled, paragraphs };
   }
   plainText(id: string): string {

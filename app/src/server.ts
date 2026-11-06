@@ -680,7 +680,7 @@ export async function startServer(options: {
     };
     /**
      * The recording now, for the mini view. `have` is the `paragraphsTag` of the page's last reply: the paragraphs it already holds
-     * (all but the last, which may still grow). While they are unchanged, only the paragraphs after them are sent, so a long
+     * (the prefix before any speaker's open paragraph). While they are unchanged, only the paragraphs after them are sent, so a long
      * meeting's transcript is sent once and then only what changed at its end.
      */
     const liveModel = async (have: string | null = null) => {
@@ -691,11 +691,13 @@ export async function startServer(options: {
       // The whole meeting's paragraphs, grouped as the transcript groups them; the mini view scrolls back through them.
       const lines = visible.map(s => ({ id: s.id, source: s.source, startMs: s.startMs, endMs: s.endMs, revision: s.revision, text: s.text, ...(labelled ? { speaker: speaker(s.source, s.startMs, s.endMs) } : {}) }));
       const previews = displayPreviews(meetingId, visible, heldChunks, speaker);
-      const { paragraphs: meeting, placements } = miniLog(lines, previews.drafts, previews.pending);
+      const { paragraphs: meeting, placements } = miniLog(lines, previews.drafts, previews.pending, appStore.captureGaps(meetingId));
       // Names the first n paragraphs as they are now, in this recording: any change among them (a correction, a line hidden)
       // changes it, and so does a new recording, even of the same meeting (a page that held the last one starts afresh).
       const session = liveView.sessionId();
       const tag = (n: number) => `${session}.${n}.${createHash('sha1').update(meeting.slice(0, n).map(p => `${p.key}/${p.signature}`).join('\n')).digest('base64url').slice(0, 16)}`;
+      const firstOpen = meeting.findIndex(p => p.open);
+      const cacheable = firstOpen < 0 ? meeting.length : firstOpen;
       const held = Number((have ?? '').split('.')[1]);
       const from = Number.isInteger(held) && held >= 0 && held <= meeting.length && have === tag(held) ? held : 0;
       const paragraphs = meeting.slice(from).map(p => ({ key: p.key, signature: p.signature, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
@@ -713,7 +715,7 @@ export async function startServer(options: {
       const newest = cards.find(c => c.type !== 'other') ?? cards[0];
       return {
         recording: { meetingId, session: liveView.sessionId(), clockMs: liveView.clockMs() ?? now.clockMs, stopping: liveView.stopping(), labelled,
-          paragraphs, paragraphsFrom: from, paragraphsTag: tag(Math.max(0, meeting.length - 1)), drafts: slots, pending: previews.pending.map(p => ({ ...p,
+          paragraphs, paragraphsFrom: from, paragraphsTag: tag(cacheable), drafts: slots, pending: previews.pending.map(p => ({ ...p,
             placements: placements.filter(r => r.chunkId === p.chunkId) })),
           card: newest ? { id: newest.id, type: newest.type, firstMs: newest.firstMs, text: newest.text } : null, notices: liveView.notices(now.sources) },
         mini: { native: liveView.native(), state: liveView.miniState() },

@@ -14,6 +14,7 @@ import { miniPreviewWords, miniLog } from '../public/preview-composition.js';
 import { checkFix3Page } from './m9a-fix3-page-cases.ts';
 import { checkFix4Page } from './m9a-fix4-page-cases.ts';
 import { checkOverlapPage } from './overlap-page-cases.ts';
+import { checkOverlapReviewPage } from './overlap-review-page-cases.ts';
 import { assertUniqueTranscriptKeys, watchTranscriptKeys, finishTranscriptKeyCheck } from './transcript-key-check.ts';
 // Repeat the same handoff/selection suite with a historical gap; only speech-only queries exclude the notice.
 const earlierGap = process.argv.includes('--earlier-gap') ? { atMs: 0, fromWallMs: 100000, toWallMs: 597000, reason: 'sleep' as const } : null;
@@ -150,9 +151,9 @@ try {
   const tiedState = { labelled: true, segments: tiedFinals, drafts: [], pending: [tiedPending] };
   await show(tiedState);
   const miniWords = async () => (await miniPage.locator('#m-scroll .final, #m-scroll .pending-preview, #m-drafts .draft bdi').allTextContents()).join(' ').trim().replace(/\s+/g, ' ');
-  assert.equal(await miniWords(), 'mic-zero tab-tie mic-two', 'equal-time pending follows the 0 s final and precedes the 2 s final');
+  assert.equal(await miniWords(), 'mic-zero mic-two tab-tie', 'tab pending does not split the open mic paragraph');
   assert.equal(await miniPage.locator('#m-scroll .pending-preview').count(), 1);
-  results.push('PASS mini equal-time tie: mic 0 s, tab pending 0 s, mic 2 s each render exactly once in total order');
+  results.push('PASS mini equal-time tie: mic lines stay together; tab pending appears once after the earlier-starting paragraph');
   nullMiniAnchor = true;
   await show(tiedState);
   assert.equal(await miniWords(), 'mic-zero mic-two tab-tie', 'a null beforeKey appends instead of dropping promoted text');
@@ -396,6 +397,7 @@ try {
   results.push('PASS dragging inside the unselectable live draft shows only the muted inline note');
   await checkFix3Page(page, show, results);
   await checkFix4Page(page, show, results, earlierGap ? [earlierGap] : []);
+  await checkOverlapReviewPage(context, app.url, results);
   results.push(`PASS ${await finishTranscriptKeyCheck(page)}; every M9a snapshot also has unique keys`);
   if (earlierGap) {
     assert.equal(await page.locator('#transcript .capture-gap').count(), 1, 'the historical gap stays rendered, not hidden for this suite');

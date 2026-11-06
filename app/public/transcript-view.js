@@ -59,27 +59,15 @@ export function transcriptRows(snapshot) {
   const rows = [];
   const gaps = mergeCaptureGaps(snapshot.captureGaps ?? []);
   const previews = composePreview(snapshot.drafts, snapshot.pending, snapshot.segments).flatMap(p => gapBoundedPreviews(p, gaps));
-  const entries = [
-    ...(snapshot.segments ?? []).map(s => ({ ...s, kind: 'final' })),
-    ...previews,
-    ...gaps.map(g => ({ startMs: g.atMs, kind: 'gap' })),
-  ].sort((a, b) => a.startMs - b.startMs || Number(b.kind === 'gap') - Number(a.kind === 'gap')
-    || Number(a.kind === 'pending') - Number(b.kind === 'pending'));
-  const seen = new Set();
-  let run = [];
-  const flush = () => {
-    for (const p of paragraphsOf(run)) {
-      const chunkId = chunkOf(p.key), first = !seen.has(chunkId);
-      rows.push({ ...p, key: first ? `chunk:${chunkId}` : `final:${p.key}`, chunkId, kind: 'final' });
-      seen.add(chunkId);
-    }
-    run = [];
-  };
-  for (const entry of entries) {
-    if (entry.kind === 'final') run.push(entry);
-    else flush();
+  const segments = snapshot.segments ?? [];
+  const firstInChunk = new Map();
+  for (const segment of segments) if (!firstInChunk.has(chunkOf(segment.id))) firstInChunk.set(chunkOf(segment.id), segment.id);
+  const barriers = [...previews.map(p => ({ startMs: p.startMs, speaker: snapshot.labelled ? p.speaker : undefined })),
+    ...gaps.map(g => ({ startMs: g.atMs, all: true }))];
+  for (const p of paragraphsOf(segments, barriers)) {
+    const chunkId = chunkOf(p.key), first = firstInChunk.get(chunkId) === p.key;
+    rows.push({ ...p, key: first ? `chunk:${chunkId}` : `final:${p.key}`, chunkId, kind: 'final' });
   }
-  flush();
   for (const preview of previews) {
     rows.push({ ...preview, key: preview.part === 'before' && preview.key === `pending:${preview.chunkId}` ? `chunk:${preview.chunkId}` : preview.key,
       segments: [], preview, speaker: snapshot.labelled ? preview.speaker : undefined });
@@ -131,16 +119,35 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
   };
   function anchor() {
     const rect = box.getBoundingClientRect();
-    const y = pointer && pointer.y > rect.top && pointer.y < rect.bottom ? pointer.y : rect.top + 12;
-    const x = pointer?.x ?? rect.left + Math.min(140, rect.width / 2);
+    const pointed = pointer && pointer.y > rect.top && pointer.y < rect.bottom && pointer.x > rect.left && pointer.x < rect.right;
+    const inside = [...box.children].find(n => n.getBoundingClientRect().top >= rect.top && n.getBoundingClientRect().top < rect.bottom);
+    const y = pointed ? pointer.y : inside ? inside.getBoundingClientRect().top + 12 : rect.top + 12;
+    const x = pointed ? pointer.x : rect.left + Math.min(140, rect.width / 2);
     const caret = document.caretRangeFromPoint?.(x, y);
     if (caret && box.contains(caret.startContainer) && caret.startContainer.nodeType === Node.TEXT_NODE) {
-      const range = caret.cloneRange();
+      const range = caret.cloneRange(), line = caret.startContainer.parentElement.closest('[data-id]');
       range.setEnd(range.startContainer, Math.min(range.startOffset + 1, range.startContainer.length));
-      return { range, y: range.getBoundingClientRect().top };
+      const node = caret.startContainer.parentElement.closest('.para');
+      if (line && node) {
+        const prefix = document.createRange(); prefix.selectNodeContents(line); prefix.setEnd(caret.startContainer, caret.startOffset);
+        return { range, y: range.getBoundingClientRect().top, node, nodeY: node.getBoundingClientRect().top,
+          segmentId: line.dataset.id, segmentY: line.getBoundingClientRect().top, offset: prefix.toString().length };
+      }
+      if (node) {
+        const model = displayed.get(node.dataset.key), preview = node.querySelector('.preview-text'), word = model?.preview?.words[0];
+        return { node, y: (preview ?? node).getBoundingClientRect().top, nodeY: (preview ?? node).getBoundingClientRect().top,
+          ids: model?.segments.map(s => s.id), at: word && midpoint(word), source: model?.preview?.source };
+      }
     }
-    const node = [...box.children].find(n => n.getBoundingClientRect().bottom > y);
-    return node ? { node, y: node.getBoundingClientRect().top } : null;
+    // Prefer a fully visible row over the top of a partly scrolled-off, still-growing paragraph.
+    const children = [...box.children];
+    const node = children.find(n => n.getBoundingClientRect().top >= y && n.getBoundingClientRect().top < rect.bottom)
+      ?? children.find(n => n.getBoundingClientRect().bottom > y);
+    if (!node) return null;
+    const model = displayed.get(node.dataset.key), preview = node.querySelector('.preview-text');
+    const word = model?.preview?.words[0], target = preview ?? node;
+    return { node, y: target.getBoundingClientRect().top, nodeY: target.getBoundingClientRect().top,
+      ids: model?.segments.map(s => s.id), at: word && midpoint(word), source: model?.preview?.source };
   }
   function noteAt(draft, event) {
     const row = displayed.get(draft.closest('.para').dataset.key);
@@ -182,7 +189,13 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     } else time.textContent = stamp(row.startMs);
     if (row.speaker) { const who = document.createElement('span'); who.className = 'speaker'; who.textContent = row.speaker; time.append(who); }
     const text = document.createElement('p');
-    for (const segment of row.segments) text.append(segmentNode(segment));
+    for (const segment of row.segments) {
+      const line = segmentNode(segment);
+      if (line.nodeType === Node.ELEMENT_NODE) {
+        line.classList.add('seg'); line.dataset.start = String(segment.startMs); line.dataset.end = String(segment.endMs);
+      }
+      text.append(line);
+    }
     if (row.kind === 'gap') text.textContent = row.gapText;
     if (row.preview) {
       const preview = document.createElement('span');
@@ -265,7 +278,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     const model = node && displayed.get(node.dataset.key);
     const word = model?.preview?.words[0];
     const reading = ranges.length ? { range: ranges[0].cloneRange(), y: ranges[0].getBoundingClientRect().top,
-      node, nodeY: node?.getBoundingClientRect().top, ids: model?.segments.map(s => s.id),
+      node, nodeY: (model?.preview ? node.querySelector('.preview-text') : node)?.getBoundingClientRect().top, ids: model?.segments.map(s => s.id),
       at: word && (word.startMs + word.endMs) / 2, source: model?.preview?.source } : selectionAnchor ?? anchor();
     const oldHeight = box.scrollHeight, oldTop = box.scrollTop;
     const incoming = transcriptRows(next);
@@ -304,17 +317,32 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     if (!extraBottom) heightFloor = 0;
     let anchored = false;
     if (reading) {
-      const rangeLive = reading.range?.startContainer.isConnected && reading.range.startContainer.nodeType === Node.TEXT_NODE;
-      const replacement = !reading.node?.isConnected && rows.find(r => r.segments.some(s => reading.ids?.includes(s.id)
-        || (reading.at !== undefined && coversTime(s, reading.at) && (!s.source || s.source === reading.source))));
-      const target = rangeLive ? reading.range : reading.node?.isConnected ? reading.node : replacement ? view.paragraphs.get(replacement.key) : null;
-      if (target) { scrollTo(box.scrollTop + target.getBoundingClientRect().top - (rangeLive ? reading.y : reading.nodeY ?? reading.y)); anchored = true; }
+      const rangeLive = reading.range?.startContainer.isConnected && (reading.range.startContainer.nodeType === Node.TEXT_NODE || ranges.length > 0);
+      const replacement = rows.flatMap(r => r.segments).find(s => s.id === reading.segmentId || reading.ids?.includes(s.id)
+        || (reading.at !== undefined && coversTime(s, reading.at) && (!s.source || s.source === reading.source)));
+      const line = replacement && [...box.querySelectorAll('[data-id]')].find(n => n.dataset.id === replacement.id);
+      let restored;
+      if (!rangeLive && line && reading.offset !== undefined) {
+        // fill() replaces text nodes, so rebuild the caret using its durable segment id and text offset.
+        const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+        let offset = reading.offset, text;
+        while ((text = walker.nextNode())) {
+          if (offset <= text.length) {
+            restored = document.createRange(); restored.setStart(text, offset);
+            restored.setEnd(text, Math.min(offset + 1, text.length)); break;
+          }
+          offset -= text.length;
+        }
+      }
+      const target = rangeLive ? reading.range : restored ?? (reading.segmentId || !reading.node?.isConnected ? line : null)
+        ?? (reading.node?.isConnected ? reading.node : null);
+      if (target) { scrollTo(box.scrollTop + target.getBoundingClientRect().top - (rangeLive || restored ? reading.y : reading.segmentY ?? reading.nodeY ?? reading.y)); anchored = true; }
     }
     if (heardMs === null && view.following && !preserve && !ranges.length) scrollTo(box.scrollHeight - box.clientHeight);
     else if (!anchored) scrollTo(oldTop);
     // Only a transcript interaction release may reconsider following; hidden geometry and timer renders cannot.
     if (released && !ranges.length && visible()) view.following = atBottom();
-    selectionAnchor = ranges.length ? { ...reading, y: reading.range.getBoundingClientRect().top, nodeY: reading.node?.getBoundingClientRect().top } : null;
+    selectionAnchor = ranges.length ? { ...reading, y: reading.range.getBoundingClientRect().top, nodeY: (reading.at !== undefined ? reading.node?.querySelector('.preview-text') : reading.node)?.getBoundingClientRect().top } : null;
     // Release flushes at the anchor. It follows again only if the reader is still at the actual bottom.
     if (heardMs !== null) view.hear(heardMs);
     if (oldHeight !== box.scrollHeight || rows.length) changed();
@@ -362,11 +390,18 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
   view.hear = ms => {
     observeScroll();
     heardMs = ms;
-    const heard = ms === null ? null : [...view.paragraphs.values()].findLast(n => n.dataset.kind === 'final'
-      && Number(n.dataset.start) <= ms && ms < Number(n.dataset.end));
+    let match, latest = -Infinity;
+    if (ms !== null) for (const node of box.children) if (node.dataset.kind === 'final') {
+      const lines = [...node.querySelectorAll('.seg')];
+      for (const span of lines.length ? lines : [node]) {
+        const start = Number(span.dataset.start), end = Number(span.dataset.end);
+        if (start <= ms && ms < end && start >= latest) { match = span; latest = start; }
+      }
+    }
+    const heard = match?.closest('.para');
     for (const node of view.paragraphs.values()) node.classList.toggle('heard', node === heard);
     if (!heard || blocked() || !visible() || Date.now() - userScrolledAt < 4000) return;
-    const rect = heard.getBoundingClientRect(), pane = box.getBoundingClientRect();
+    const rect = match.getBoundingClientRect(), pane = box.getBoundingClientRect();
     if (rect.top < pane.top || rect.bottom > pane.bottom) {
       scrollTo(box.scrollTop + rect.top - pane.top - Math.max(0, (box.clientHeight - rect.height) / 2));
       view.following = atBottom(); changed();

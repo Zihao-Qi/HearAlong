@@ -248,6 +248,51 @@ test('original paths survive relocation and old absolute-path repair', async () 
   } finally { await f.close(); await fs.rm(moved, { recursive: true, force: true }); }
 });
 
+test('startup does not read originals with no leftover frames; hashes a leftover window only once', async () => {
+  const f = await fixture(), readFile = fs.readFile;
+  try {
+    const { frame: second } = await f.store.addFrame(f.meeting.id, f.frame.source, 1, 1000, raw);
+    const chunk = await f.store.sealWindow(f.meeting.id, [f.frame, second], Buffer.concat([cleaned, cleaned]));
+    const original = f.store.originalAudio(chunk.id)!;
+    const reads: string[] = [];
+    fs.readFile = (async (...args: Parameters<typeof readFile>) => {
+      reads.push(String(args[0])); return readFile(...args);
+    }) as typeof readFile;
+    syncBuiltinESMExports();
+    await f.store.removeSealedFrameFiles();
+    assert.deepEqual(reads, [], 'retained originals are not scanned at startup after normal frame cleanup');
+    await fs.writeFile(f.store.resolvePath(f.frame.path), raw);
+    await fs.writeFile(f.store.resolvePath(second.path), raw);
+    await f.store.removeSealedFrameFiles();
+    assert.deepEqual(reads, [f.store.resolvePath(original.path)], 'one hash for the window, not one per leftover frame');
+    await assert.rejects(fs.access(f.store.resolvePath(second.path)));
+    await assert.rejects(fs.access(f.store.resolvePath(f.frame.path)));
+  } finally { fs.readFile = readFile; syncBuiltinESMExports(); await f.close(); }
+});
+
+test('opening after older-version audio removal clears stale original paths, preserving retained meetings', async () => {
+  const f = await fixture();
+  try {
+    const { chunk, original } = await seal(f);
+    const kept = f.store.createMeeting('Retained fictional lanterns');
+    const { frame } = await f.store.addFrame(kept.id, 'mic:kept', 0, 0, raw);
+    const other = await f.store.sealWindow(kept.id, [frame], cleaned);
+    const keep = f.store.originalAudio(other.id);
+    // Simulate the pre-sidecar binary: it clears only paths it knows, then erases all owned f32 files.
+    f.store.db.prepare("UPDATE chunks SET path='' WHERE meetingId=?").run(f.meeting.id);
+    f.store.db.prepare("UPDATE frames SET path='' WHERE meetingId=?").run(f.meeting.id);
+    f.store.db.prepare('UPDATE meetings SET audioRemovedAt=1 WHERE id=?').run(f.meeting.id);
+    await fs.rm(f.folder, { recursive: true });
+    assert.equal(f.store.originalAudio(chunk.id)!.path, original.path);
+    f.store.close(); f.store = new MeetingStore(f.directory);
+    assert.equal(f.store.originalAudio(chunk.id)!.path, '');
+    assert.deepEqual(f.store.audioFiles(f.meeting.id), []);
+    assert.deepEqual(await f.store.verifyAudioFiles(f.meeting.id), []);
+    assert.deepEqual(f.store.originalAudio(other.id), keep);
+    assert.deepEqual(await f.store.verifyAudioFiles(kept.id), []);
+  } finally { await f.close(); }
+});
+
 test('HTTP audio reads only cleaned chunks, even if the original sidecar is missing', async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), 'original-http-'));
   const app = await startServer({ directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null });

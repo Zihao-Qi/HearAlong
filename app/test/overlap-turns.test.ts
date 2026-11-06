@@ -77,7 +77,7 @@ test('plain text and both Markdown modes share the overlap grouping, including o
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test('server mini delta invalidates its cached prefix when an earlier speaker paragraph grows', async () => {
+test('server mini delta caches closed history before the earliest open speaker paragraph', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'overlap-mini-api-'));
   const app = await startServer({ directory, port: 0, quick: null, heavy: null, drafts: null, recognizer: {
     async transcribe() { return { text: '', words: [], backend: 'fixture', computeMs: 0, decodeMs: 0, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' }; }, close() {},
@@ -89,19 +89,22 @@ test('server mini delta invalidates its cached prefix when an earlier speaker pa
       const chunk = await app.store.addPcm(meeting.id, source, n, s.startMs, 16000, Buffer.alloc((s.endMs - s.startMs) * 64));
       app.store.completeChunk(chunk.id, { text: s.text, words: [], backend: 'fixture', computeMs: 0, decodeMs: 0, audioSeconds: chunk.seconds, processRssBytes: 0, timestampKind: 'none', retries: 0 });
     };
-    for (const line of overlapLines.slice(0, 2)) await add(line);
+    for (const line of overlapLines.slice(0, 2)) await add({ ...line, text: line.speaker === 'Me' ? 'Copper bells were counted.' : 'Blue pebbles were sorted.' });
+    const current = overlapLines.map(s => ({ ...s, startMs: s.startMs + 60000, endMs: s.endMs + 60000 }));
+    for (const line of current.slice(0, 2)) await add(line);
     const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
     const headers = { Cookie: cookie, Origin: app.url };
     const source = `mic:${randomUUID()}`;
     assert.equal((await fetch(`${app.url}/api/meetings/${meeting.id}/pcm`, { method: 'POST', body: Buffer.alloc(64000), headers: {
-      ...headers, 'Content-Type': 'application/octet-stream', 'X-Audio-Source': source, 'X-Sequence': '0', 'X-Sample-Rate': '16000', 'X-Start-Ms': '30000', 'X-Recording': randomUUID(),
+      ...headers, 'Content-Type': 'application/octet-stream', 'X-Audio-Source': source, 'X-Sequence': '0', 'X-Sample-Rate': '16000', 'X-Start-Ms': '90000', 'X-Recording': randomUUID(),
     } })).status, 201);
     const before = (await (await fetch(`${app.url}/api/live`, { headers })).json()).recording;
-    assert.equal(before.paragraphs.length, 2);
-    for (const line of overlapLines.slice(2)) await add(line);
+    assert.equal(before.paragraphs.length, 4);
+    assert.equal(Number(before.paragraphsTag.split('.')[1]), 2, 'both open speakers stay outside the cached prefix');
+    for (const line of current.slice(2)) await add(line);
     const after = (await (await fetch(`${app.url}/api/live?have=${encodeURIComponent(before.paragraphsTag)}`, { headers })).json()).recording;
-    assert.equal(after.paragraphsFrom, 0, 'the old first paragraph is no longer a reusable prefix');
-    assert.deepEqual(after.paragraphs.map((p: { key: string }) => p.key), before.paragraphs.map((p: { key: string }) => p.key));
+    assert.equal(after.paragraphsFrom, 2, 'growing Me before Them does not invalidate the closed history');
+    assert.deepEqual(after.paragraphs.map((p: { key: string }) => p.key), before.paragraphs.slice(2).map((p: { key: string }) => p.key));
     assert.deepEqual(after.paragraphs.map((p: { text: string }) => p.text), overlapText);
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
