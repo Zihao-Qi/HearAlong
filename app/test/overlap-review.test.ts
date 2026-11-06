@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { paragraphsOf } from '../public/live-shared.js';
+import { paragraphsOf, paragraphCachePrefix } from '../public/live-shared.js';
 import { transcriptRows } from '../public/transcript-view.js';
 import { miniLog, type Preview, type PendingPreview } from '../public/preview-composition.js';
 import { MeetingStore } from '../src/store.ts';
@@ -32,8 +32,10 @@ test('shared barriers: capture gap closes all speakers, own-speaker barrier leav
   assert.deepEqual(texts(paragraphsOf(lines, [{ startMs: 2500, speaker: 'Them' }])), ['The purple lanterns glowed.', 'Our wooden turtles', 'floated.']);
   assert.deepEqual(texts(paragraphsOf(lines, [{ startMs: 2500, all: true }])), lines.map(s => s.text));
   const ps = paragraphsOf(lines);
-  assert.deepEqual(ps.map(p => p.open), [true, true]);
-  assert.deepEqual(paragraphsOf(lines, [{ startMs: 8000, speaker: 'Me' }]).map(p => p.open), [false, true]);
+  assert.equal(paragraphCachePrefix(ps, 8000), 0);
+  const closedByPreview = paragraphsOf(lines, [{ startMs: 8000, speaker: 'Me' }]);
+  assert.equal(paragraphCachePrefix(closedByPreview, 8000), 0, 'a temporary preview barrier does not make the preceding paragraph cacheable');
+  assert.equal(paragraphCachePrefix(ps, 30000), ps.length, 'old speaker lanes do not stay mutable forever');
 });
 
 test('correction splits an earlier paragraph without moving a later paragraph key to another line of its chunk', () => {
@@ -45,7 +47,7 @@ test('correction splits an earlier paragraph without moving a later paragraph ke
   assert.equal(before.at(-1)!.key, after.at(-1)!.key);
 });
 
-for (const labelled of [true, false]) test(`failed export chunk closes its own lane (labelled=${labelled})`, async () => {
+for (const status of ['failed', 'queued', 'running', 'cancelled'] as const) for (const labelled of [true, false]) test(`${status} chunk splits screen and exports identically (labelled=${labelled})`, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'overlap-review-export-')), store = new MeetingStore(directory);
   try {
     const meeting = store.createMeeting('Fictional lantern market'), seq = new Map<string, number>();
@@ -57,11 +59,13 @@ for (const labelled of [true, false]) test(`failed export chunk closes its own l
     for (const s of entries) {
       const source = labelled ? s.source : 'mic:garden', n = seq.get(source) ?? 0; seq.set(source, n + 1);
       const c = await store.addPcm(meeting.id, source, n, s.startMs, 16000, Buffer.alloc(32000));
-      if (s.id === 'failed') store.setStatus(c.id, 'failed', '', 'Fictional timeout');
+      if (s.id === 'failed') store.setStatus(c.id, status, '', 'Fictional timeout');
       else store.completeChunk(c.id, { text: s.text, words: [], backend: 'fixture', computeMs: 0, decodeMs: 0, audioSeconds: 0.5, processRssBytes: 0, timestampKind: 'none' });
     }
     for (const mode of ['raw', 'corrected'] as const) {
-      const md = store.markdown(meeting.id, mode);
+      const exported = store.markdown(meeting.id, mode);
+      assert.ok(exported.includes(`[${status}: Fictional timeout]`), 'keep the unavailable chunk notice in exports');
+      const md = exported.replace(`[${status}: Fictional timeout]`, '[failed: Fictional timeout]');
       if (labelled) {
         assert.match(md, /Me: The purple lanterns glowed\./);
         assert.match(md, /Them: Our wooden turtles\n\n\[00:00:02\] \[failed: Fictional timeout\]\n\n\[00:00:07\] Them: floated\./);
@@ -70,5 +74,13 @@ for (const labelled of [true, false]) test(`failed export chunk closes its own l
       }
     }
     assert.equal(store.plainText(meeting.id).includes('Me: The purple lanterns glowed.'), labelled);
+    const segments = store.segments(meeting.id).map(s => ({ ...s,
+      ...(labelled ? { speaker: s.source.startsWith('tab:') ? 'Them' : 'Me' } : {}) }));
+    const barriers = store.chunkParagraphBarriers(meeting.id);
+    const main = texts(transcriptRows({ labelled, segments, paragraphBarriers: barriers }).filter(p => p.kind === 'final'));
+    const mini = texts(miniLog(segments, [], [], [], barriers).paragraphs);
+    const exported = store.plainText(meeting.id).trim().split('\n\n').slice(1).filter(p => !p.startsWith('[')).map(p => p.replace(/^(Me|Them): /, ''));
+    assert.deepEqual(main, exported);
+    assert.deepEqual(mini, exported);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });

@@ -214,12 +214,15 @@ function selected() {
  * If no row starts inside, anchor the partly visible row's bottom rather than its offscreen top. */
 function topLine() {
   const pane = $('m-scroll').getBoundingClientRect();
-  const visible = [...$('m-scroll').querySelectorAll('.ln, .pending-ln')].filter(n => {
-    const rect = n.getBoundingClientRect(); return rect.bottom > pane.top && rect.top < pane.bottom;
-  });
-  const inside = visible.find(n => n.getBoundingClientRect().top >= pane.top), node = inside ?? visible[0];
+  let node, rect, edge = 'bottom';
+  for (const row of $('m-scroll').querySelectorAll('.ln, .pending-ln')) {
+    const bounds = row.getBoundingClientRect();
+    if (bounds.top >= pane.bottom) break;
+    if (bounds.bottom <= pane.top) continue;
+    if (!node) { node = row; rect = bounds; }
+    if (bounds.top >= pane.top) { node = row; rect = bounds; edge = 'top'; break; }
+  }
   if (!node) return null;
-  const edge = inside ? 'top' : 'bottom', rect = node.getBoundingClientRect();
   const pending = node.querySelector('.pending-preview');
   const range = pending && document.createRange();
   if (range) range.selectNodeContents(pending);

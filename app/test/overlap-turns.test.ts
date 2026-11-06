@@ -96,7 +96,7 @@ test('server mini delta caches closed history before the earliest open speaker p
     const headers = { Cookie: cookie, Origin: app.url };
     const source = `mic:${randomUUID()}`;
     assert.equal((await fetch(`${app.url}/api/meetings/${meeting.id}/pcm`, { method: 'POST', body: Buffer.alloc(64000), headers: {
-      ...headers, 'Content-Type': 'application/octet-stream', 'X-Audio-Source': source, 'X-Sequence': '0', 'X-Sample-Rate': '16000', 'X-Start-Ms': '90000', 'X-Recording': randomUUID(),
+      ...headers, 'Content-Type': 'application/octet-stream', 'X-Audio-Source': source, 'X-Sequence': '0', 'X-Sample-Rate': '16000', 'X-Start-Ms': '65000', 'X-Recording': randomUUID(),
     } })).status, 201);
     const before = (await (await fetch(`${app.url}/api/live`, { headers })).json()).recording;
     assert.equal(before.paragraphs.length, 4);

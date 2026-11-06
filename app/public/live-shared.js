@@ -27,11 +27,14 @@ export function paragraphsOf(segments, barriers = []) {
       out.push(paragraph); open.set(speaker, paragraph);
     } else { current.segments.push(segment); current.endMs = Math.max(current.endMs, segment.endMs); }
   }
-  for (const p of out) {
-    p.signature = `${p.speaker ?? ''}#` + p.segments.map(s => `${s.id}:${s.revision}`).join('|');
-    p.open = open.get(p.speaker) === p;
-  }
+  for (const p of out) p.signature = `${p.speaker ?? ''}#` + p.segments.map(s => `${s.id}:${s.revision}`).join('|');
   return out;
+}
+/** Cache only before any paragraph that could still join not-yet-final speech. A preview
+ * barrier is temporary, while an inactive speaker's last paragraph eventually becomes stable. */
+export function paragraphCachePrefix(paragraphs, horizon) {
+  const firstMutable = paragraphs.findIndex(p => p.endMs + 10_000 > horizon && p.startMs + 60_000 > horizon);
+  return firstMutable < 0 ? paragraphs.length : firstMutable;
 }
 /** The ids of a paragraph's lines, from its signature. */
 export function signatureLines(signature) {

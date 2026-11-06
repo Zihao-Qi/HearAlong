@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import type { BrowserContext } from 'playwright-core';
 import { miniLog, type Preview, type PendingPreview } from '../public/preview-composition.js';
 import type { DisplaySegment } from '../public/transcript-view.js';
+import type { ParagraphBarrier } from '../public/live-shared.js';
 
 const segment = (id: string, startMs: number, text: string, speaker = 'Me'): DisplaySegment & { source: string } => ({ id, startMs, endMs: startMs + 1000,
   text, revision: 0, speaker, source: speaker === 'Me' ? 'mic:review' : 'tab:review' });
@@ -14,7 +15,8 @@ export async function checkOverlapReviewPage(context: BrowserContext, url: strin
   // The dashboard installs its offline service worker; these wire fixtures must not be intercepted by it.
   const isolated = await context.browser()!.newContext({ serviceWorkers: 'block' });
   const page = await isolated.newPage(), mini = await isolated.newPage(), errors: string[] = [];
-  let state: { segments: ReturnType<typeof segment>[]; drafts: Preview[]; pending: PendingPreview[] } = { segments: [], drafts: [], pending: [] };
+  let state: { segments: ReturnType<typeof segment>[]; drafts: Preview[]; pending: PendingPreview[]; paragraphBarriers: ParagraphBarrier[] }
+    = { segments: [], drafts: [], pending: [], paragraphBarriers: [] };
   try {
     page.on('pageerror', error => errors.push(error.message));
     mini.on('pageerror', error => errors.push(error.message));
@@ -27,18 +29,18 @@ window.paint=s=>window.view.render({...s,labelled:true});window.ready=true;
     await page.goto(url + '/overlap-review-fixture'); await page.waitForFunction(() => (window as any).ready);
     await mini.setViewportSize({ width: 360, height: 330 });
     await mini.route('**/api/live*', route => {
-      const log = miniLog(state.segments, state.drafts, state.pending);
+      const log = miniLog(state.segments, state.drafts, state.pending, [], state.paragraphBarriers);
       return route.fulfill({ json: { recording: { meetingId: 'review', session: 1, clockMs: 0, labelled: true,
         paragraphsFrom: 0, paragraphsTag: '', paragraphs: log.paragraphs.map(p => ({ ...p, text: p.segments.map(s => s.text).join(' ') })),
         pending: state.pending.map(p => ({ ...p, placements: log.placements.filter(r => r.chunkId === p.chunkId) })), drafts: [], notices: [], card: null }, mini: { state: 'open' } } });
     });
     await mini.goto(url + '/mini.html');
-    const paint = async (segments: typeof state.segments, pending: PendingPreview[] = [], drafts: Preview[] = []) => {
-      state = { segments, pending, drafts };
+    const paint = async (segments: typeof state.segments, pending: PendingPreview[] = [], drafts: Preview[] = [], paragraphBarriers: ParagraphBarrier[] = []) => {
+      state = { segments, pending, drafts, paragraphBarriers };
       await page.evaluate(s => (window as any).paint(s), state);
       await mini.evaluate(async () => { await (window as any).miniRefresh(); });
       await mini.waitForFunction(expected => JSON.stringify([...document.querySelectorAll('#m-scroll .final')].map(n => n.textContent)) === expected,
-        JSON.stringify(miniLog(segments, drafts, pending).paragraphs.map(p => p.segments.map(s => s.text).join(' '))));
+        JSON.stringify(miniLog(segments, drafts, pending, [], paragraphBarriers).paragraphs.map(p => p.segments.map(s => s.text).join(' '))));
     };
     const history = Array.from({ length: 15 }, (_, i) => segment(`review-history-${i}:0`, i * 4000, `Fictional copper lantern ${i} was stored.`));
     const tails = Array.from({ length: 12 }, (_, i) => segment(`review-tail-${i}:0`, 200000 + i * 4000, `Blue wooden turtle ${i} arrived.`));
@@ -155,6 +157,40 @@ window.paint=s=>window.view.render({...s,labelled:true});window.ready=true;
     });
     assert.ok(Math.abs(restoredCaret - caret.top) <= 1, `replaced caret drift ${restoredCaret - caret.top}px`);
     results.push('PASS review: paragraph refill restores the reading caret by segment id after preceding text grows (<=1 px)');
+
+    // Non-final chunks must split exactly their own lane even when there are no grey words to act as a barrier.
+    const split = [segment('barrier-me:0', 100000, 'Mint toy wagons', 'Me'), segment('barrier-them:0', 101000, 'Copper birds wait', 'Them'),
+      segment('barrier-me-end:0', 103000, 'rolled.', 'Me'), segment('barrier-them-end:0', 105000, 'here.', 'Them')];
+    await paint(split, [], [], [{ startMs: 102000, speaker: 'Me' }]);
+    const expectedSplit = ['Mint toy wagons', 'Copper birds wait here.', 'rolled.'];
+    assert.deepEqual(await page.locator('#box .para p').allTextContents().then(xs => xs.map(x => x.trim())), expectedSplit);
+    assert.deepEqual(await mini.locator('#m-scroll .final').allTextContents(), expectedSplit);
+    await paint(split);
+    assert.deepEqual(await page.locator('#box .para p').allTextContents().then(xs => xs.map(x => x.trim())), ['Mint toy wagons rolled.', 'Copper birds wait here.']);
+    results.push('PASS second review: chunk barriers without previews split only their own lane in main/mini, and regroup when finalized');
+
+    // Bound mini geometry work: a refresh while reading at the top must not measure the far-offscreen history/tail.
+    const manyTails = Array.from({ length: 250 }, (_, i) => segment(`scan-tail-${i}:0`, 200000 + i * 4000, `Fictional blue parcel ${i} arrived.`));
+    await paint([...history, first, other, ...manyTails]);
+    await mini.evaluate(() => {
+      const pane = document.getElementById('m-scroll')!; pane.scrollTop = 0; pane.dispatchEvent(new Event('scroll'));
+      const original = Element.prototype.getBoundingClientRect, measured = new Set<string>();
+      (window as any).miniScan = { original, measured };
+      Element.prototype.getBoundingClientRect = function () {
+        if (this.matches('.ln, .pending-ln') && this.closest('#m-scroll')) measured.add((this as HTMLElement).dataset.key!);
+        return original.call(this);
+      };
+    });
+    await mini.evaluate(async () => { await (window as any).miniRefresh(); });
+    const scan = await mini.evaluate(() => {
+      const { original, measured } = (window as any).miniScan;
+      Element.prototype.getBoundingClientRect = original;
+      return { measured: [...measured] as string[], total: document.querySelectorAll('#m-scroll .ln').length };
+    });
+    assert.ok(scan.total > 250);
+    assert.ok(scan.measured.length < 20, `mini measured ${scan.measured.length} of ${scan.total} rows at the top`);
+    assert.equal(scan.measured.includes('scan-tail-249:0'), false);
+    results.push(`PASS second review: mini anchor refresh measures ${scan.measured.length} of ${scan.total} rows, not every offscreen row`);
 
     // Paragraph timelines overlap, but gaps between a speaker's lines do not own another speaker's audio.
     const heard = [segment('heard-me:0', 0, 'Purple toy ships', 'Me'), segment('heard-them:0', 2000, 'Copper moons.', 'Them'),

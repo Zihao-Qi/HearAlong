@@ -63,7 +63,7 @@ export function transcriptRows(snapshot) {
   const firstInChunk = new Map();
   for (const segment of segments) if (!firstInChunk.has(chunkOf(segment.id))) firstInChunk.set(chunkOf(segment.id), segment.id);
   const barriers = [...previews.map(p => ({ startMs: p.startMs, speaker: snapshot.labelled ? p.speaker : undefined })),
-    ...gaps.map(g => ({ startMs: g.atMs, all: true }))];
+    ...gaps.map(g => ({ startMs: g.atMs, all: true })), ...(snapshot.paragraphBarriers ?? [])];
   for (const p of paragraphsOf(segments, barriers)) {
     const chunkId = chunkOf(p.key), first = firstInChunk.get(chunkId) === p.key;
     rows.push({ ...p, key: first ? `chunk:${chunkId}` : `final:${p.key}`, chunkId, kind: 'final' });

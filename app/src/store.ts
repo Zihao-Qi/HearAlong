@@ -8,7 +8,7 @@ import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
 import { buildSegments, wordSegments, type Timing } from './segments.ts';
 import { echoWords, type EchoWord } from './echo-words.ts';
 import type { Recognition } from './recognizer.ts';
-import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Role, type Speakers } from './speakers.ts';
+import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Speakers } from './speakers.ts';
 import { detectFrameCaptureGaps, type CaptureTiming } from './capture-gaps.ts';
 import { CaptureConflict } from './capture-error.ts';
 import { heldMicrophoneFinals } from './live-finals.ts';
@@ -703,6 +703,14 @@ export class MeetingStore {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return source;
   }
+  /** Non-final chunks split only their own speaker's paragraph in every transcript surface. */
+  chunkParagraphBarriers(id: string) {
+    const { labelled, roleOf } = this.speakers(id);
+    return this.chunks(id).filter(c => c.status !== 'completed').map(c => {
+      const role = labelled ? roleOf(c.source, c.startMs, c.startMs + c.seconds * 1000) : null;
+      return { startMs: c.startMs, speaker: role ? ROLE_LABEL[role] : null, gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` };
+    });
+  }
   /** Both exports share entries and paragraph boundaries; only their presentation differs. */
   private transcriptParagraphs(id: string, mode: 'corrected' | 'raw', locale?: string, plain = false) {
     const prefix = (ms: number) => plain ? '' : `[${new Date(ms).toISOString().slice(11, 19)}] `;
@@ -712,14 +720,14 @@ export class MeetingStore {
     if (labelled) segments.sort(compareSegments);
     const entries = [
       ...this.captureGaps(id).map(g => ({ startMs: g.atMs, all: true, gap: plain ? `[${captureGapText(g, locale, false)}]` : `*${captureGapText(g, locale)}*` })),
-      ...this.chunks(id).filter(c => c.status !== 'completed').map(c => ({ startMs: c.startMs,
-        speaker: labelled ? roleOf(c.source, c.startMs, c.startMs + c.seconds * 1000) ?? null : null,
-        gap: `[${c.status}: ${c.error ?? 'not transcribed'}]` })),
+      ...this.chunkParagraphBarriers(id),
     ];
-    const grouped = paragraphsOf(segments.map(s => ({ ...s, text: mode === 'raw' ? s.originalText : s.text,
-      speaker: labelled ? roleOf(s.source, s.startMs, s.endMs) ?? null : null })), entries);
+    const grouped = paragraphsOf(segments.map(s => {
+      const role = labelled ? roleOf(s.source, s.startMs, s.endMs) : null;
+      return { ...s, text: mode === 'raw' ? s.originalText : s.text, speaker: role ? ROLE_LABEL[role] : null };
+    }), entries);
     const paragraphs = [...grouped.map(p => ({ startMs: p.startMs, all: false,
-      text: `${prefix(p.startMs)}${p.speaker ? `${ROLE_LABEL[p.speaker as Role]}: ` : ''}${p.segments.map(s => s.text).join(' ')}` })),
+      text: `${prefix(p.startMs)}${p.speaker ? `${p.speaker}: ` : ''}${p.segments.map(s => s.text).join(' ')}` })),
     ...entries.map(e => ({ startMs: e.startMs, all: 'all' in e && e.all, text: `${prefix(e.startMs)}${e.gap}` }))]
       .sort((a, b) => a.startMs - b.startMs || Number(b.all) - Number(a.all)).map(e => e.text);
     return { labelled, paragraphs };
