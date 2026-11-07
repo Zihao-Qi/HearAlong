@@ -1911,6 +1911,7 @@ function startRename(selectAll = true) {
   const field = $('meeting-name');
   field.value = status?.meetings.find(m => m.id === meetingId)?.title ?? '';
   field.dataset.owner = meetingId;
+  field.dataset.opened = field.value; // notes may rename the meeting meanwhile; an untouched field must not undo that
   $('meeting-button').hidden = true;
   field.hidden = false;
   field.focus();
@@ -1925,7 +1926,7 @@ async function finishRename(save) {
   if (hadFocus) $('meeting-button').focus(); // keyboard users continue from the name
   const title = field.value.trim();
   const owner = field.dataset.owner;
-  if (!save || !title || !owner || title === status?.meetings.find(m => m.id === owner)?.title) return;
+  if (!save || !title || !owner || title === field.dataset.opened.trim() || title === status?.meetings.find(m => m.id === owner)?.title) return;
   await send(`/api/meetings/${owner}`, 'PATCH', { title });
   await refreshStatus();
 }
@@ -1942,7 +1943,7 @@ $('new-meeting').onclick = guarded(async () => {
   const projectId = menuProjectId();
   closeMeetingMenu();
   const stamp = new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const meeting = await post('/api/meetings', { title: `Meeting ${stamp}`, ...(projectId ? { projectId } : {}) });
+  const meeting = await post('/api/meetings', { title: `Meeting ${stamp}`, titleSource: 'default', ...(projectId ? { projectId } : {}) });
   selectMeeting(meeting.id);
   await refreshStatus();
   log('Created a new meeting. Recording has not started.');
