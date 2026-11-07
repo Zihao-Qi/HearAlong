@@ -34,6 +34,33 @@ for (const echo of [false, true]) test(`live mic final is held then ${echo ? 'ne
   assert.deepEqual(f.display(11000).segments.map(s => s.id), echo ? ['call:0'] : ['mic:0', 'call:0']);
 });
 
+test('a short Me line waits for its held neighbour, so no published Me line disappears later', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'hearalong-live-short-'));
+  const store = new MeetingStore(directory), meeting = store.createMeeting('Fictional lantern call');
+  t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
+  const sentence = 'the paper lantern is ready for the garden party under copper trees'.split(' ');
+  // Meeting times: one word every 400 ms from `at`, each lasting 300 ms.
+  const said = (at: number, list: string[]) => list.map((text, i) => ({ text, startMs: at + i * 400, endMs: at + i * 400 + 300 }));
+  const complete = (id: string, startMs: number, list: { text: string; startMs: number; endMs: number }[]) => store.completeChunk(id, {
+    text: list.map(w => w.text).join(' '), words: list.map(w => ({ text: w.text, t0Ms: w.startMs - startMs, t1Ms: w.endMs - startMs })),
+    backend: 'fixture', computeMs: 1, decodeMs: 0, audioSeconds: 6, processRssBytes: 0, timestampKind: 'word' } as never);
+  // The call says "Okay." at 1900, then the sentence from 2600; its first block (0–5.4 s) holds only the first seven words.
+  const call = [{ text: 'Okay.', startMs: 1900, endMs: 2200 }, ...said(2600, sentence)];
+  const callA = await store.addPcm(meeting.id, 'app:call', 0, 0, 16000, Buffer.alloc(4 * 16000 * 5.4));
+  const callB = await store.addPcm(meeting.id, 'app:call', 1, 5400, 16000, Buffer.alloc(4 * 16000 * 6));
+  complete(callA.id, 0, call.filter(w => w.startMs < 5400));
+  // The mic hears it 100 ms later: "Okay." (2000–2300, a line of its own) and the sentence (2700–7400).
+  const mic = await store.addPcm(meeting.id, 'mic:room', 0, 0, 16000, Buffer.alloc(4 * 16000 * 12));
+  complete(mic.id, 0, call.map(w => ({ ...w, startMs: w.startMs + 100, endMs: w.endMs + 100 })));
+  const shown = () => store.displaySegments(meeting.id, ['app:call'], Date.now()).segments.filter(s => s.source === 'mic:room').map(s => s.text);
+  assert.deepEqual(store.segments(meeting.id).filter(s => s.source === 'mic:room').map(s => s.text), ['Okay.', sentence.join(' ')],
+    'two lines; neither is an echo yet, since the call has said only seven of the twelve words');
+  assert.deepEqual(shown(), [], '"Okay." is held with the sentence, although the call has passed its own end plus three seconds');
+  complete(callB.id, 5400, call.filter(w => w.startMs >= 5400));
+  assert.deepEqual(store.segments(meeting.id).filter(s => s.source === 'mic:room'), [], 'both are echoes once the call catches up');
+  assert.deepEqual(shown(), []);
+});
+
 test('live hold expires at exactly eight seconds when call recognition stalls', async t => {
   const f = await fixture(t);
   assert.equal(f.display(17999).segments.length, 0);

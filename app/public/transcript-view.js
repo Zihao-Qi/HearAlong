@@ -3,6 +3,12 @@ import { composePreview, coversTime, overlapsTime, midpoint } from './preview-co
 import { captureGapText, mergeCaptureGaps } from './capture-gaps.js';
 
 const chunkOf = id => id.includes(':') ? id.slice(0, id.lastIndexOf(':')) : id;
+// MIN_WORD_MS in src/word-ends.ts: finals are capped there, preview words are not, so a preview word before a pause lasts through it.
+// A capped final word is only cut back to at least this long, so the point below, at most 200 ms after the word's start, falls
+// inside that word's capped end and before a next line that starts after a pause.
+const MIN_WORD_MS = 400;
+/** The time a preview word hands off to the final line that replaces it, independent of any pause absorbed into its end. */
+export const handoffAt = word => (word.startMs + Math.min(word.endMs, word.startMs + MIN_WORD_MS)) / 2;
 /** Split only after ownership/composition. Gap boundaries are display barriers, never recognizer or seal boundaries. */
 function gapBoundedPreviews(preview, gaps) {
   // A historical gap is not a boundary for an otherwise unrelated M9a lane. Only gaps that split word
@@ -136,7 +142,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
       if (node) {
         const model = displayed.get(node.dataset.key), preview = node.querySelector('.preview-text'), word = model?.preview?.words[0];
         return { node, y: (preview ?? node).getBoundingClientRect().top, nodeY: (preview ?? node).getBoundingClientRect().top,
-          ids: model?.segments.map(s => s.id), at: word && midpoint(word), source: model?.preview?.source };
+          ids: model?.segments.map(s => s.id), at: word && handoffAt(word), source: model?.preview?.source };
       }
     }
     // Prefer a fully visible row over the top of a partly scrolled-off, still-growing paragraph.
@@ -147,7 +153,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     const model = displayed.get(node.dataset.key), preview = node.querySelector('.preview-text');
     const word = model?.preview?.words[0], target = preview ?? node;
     return { node, y: target.getBoundingClientRect().top, nodeY: target.getBoundingClientRect().top,
-      ids: model?.segments.map(s => s.id), at: word && midpoint(word), source: model?.preview?.source };
+      ids: model?.segments.map(s => s.id), at: word && handoffAt(word), source: model?.preview?.source };
   }
   function noteAt(draft, event) {
     const row = displayed.get(draft.closest('.para').dataset.key);
@@ -159,7 +165,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
       index = Math.max(0, text.split(/\s+/).filter(Boolean).length - (/\s$/.test(text) ? 0 : 1));
     }
     const word = row.preview.words[Math.min(index, row.preview.words.length - 1)];
-    return { key: row.key, source: row.preview.source, at: (word.startMs + word.endMs) / 2, until: Infinity };
+    return { key: row.key, source: row.preview.source, at: handoffAt(word), until: Infinity };
   }
   function syncDraftNote() {
     const showing = draftNote && ((down && draftDrag?.moved && draftDrag.inside)
@@ -237,7 +243,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
         continue;
       }
       const segments = row.segments.filter(s => !ids.has(s.id) && !chunks.has(chunkOf(s.id)));
-      const words = row.preview?.words.filter(w => !owns(row.preview.source, (w.startMs + w.endMs) / 2));
+      const words = row.preview?.words.filter(w => !owns(row.preview.source, handoffAt(w)));
       if (!segments.length && !words?.length) continue;
       if (segments.length === row.segments.length && (!words || words.length === row.preview.words.length) && !heldKeys.has(row.key)) { remaining.push(row); continue; }
       const preview = words?.length ? { ...row.preview, words, text: words.map(w => w.text).join(' '), startMs: words[0].startMs, endMs: words.at(-1).endMs } : null;
@@ -254,7 +260,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     for (const old of displayed.values()) if (old.preview && !heldKeys.has(old.key)) {
       const p = old.preview;
       const words = p.words.filter(w => {
-        const at = (w.startMs + w.endMs) / 2;
+        const at = handoffAt(w);
         return !owns(p.source, at) && deferred.some(s => sameSource(p, s) && coversTime(s, at))
           && !remaining.some(r => r.preview?.source === p.source && coversWord(r.preview, at));
       });
@@ -279,7 +285,7 @@ export function createTranscriptView(box, { segmentNode, listen = () => {}, chan
     const word = model?.preview?.words[0];
     const reading = ranges.length ? { range: ranges[0].cloneRange(), y: ranges[0].getBoundingClientRect().top,
       node, nodeY: (model?.preview ? node.querySelector('.preview-text') : node)?.getBoundingClientRect().top, ids: model?.segments.map(s => s.id),
-      at: word && (word.startMs + word.endMs) / 2, source: model?.preview?.source } : selectionAnchor ?? anchor();
+      at: word && handoffAt(word), source: model?.preview?.source } : selectionAnchor ?? anchor();
     const oldHeight = box.scrollHeight, oldTop = box.scrollTop;
     const incoming = transcriptRows(next);
     const rows = frozen.size ? aroundSelection(incoming, [...box.children].filter(node => frozen.has(node.dataset.key)).map(node => displayed.get(node.dataset.key))) : incoming;

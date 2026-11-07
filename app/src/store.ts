@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { dataRelativeRecordingPath, repairedRecordingPath } from './recording-paths.ts';
 import { CHUNK_SECONDS } from './audio.ts';
 import { deleteMeeting, inspectMeetingDeletion } from './delete-meeting.ts';
-import { buildSegments, wordSegments, type Timing } from './segments.ts';
+import { buildSegments, wordSegments, EARLIER_SHORT_SENTENCE_PAUSE_MS, type Timing } from './segments.ts';
 import { echoWords, type EchoWord } from './echo-words.ts';
 import type { Recognition } from './recognizer.ts';
 import { ROLE_LABEL, compareSegments, rolesFor, echoesFor, type Speakers } from './speakers.ts';
@@ -306,7 +306,9 @@ export class MeetingStore {
     }
     // Normalize SQLite's row objects once; cloning ordinary records is much cheaper on every poll.
     const all = (this.db.prepare('SELECT * FROM segments WHERE meetingId=? ORDER BY startMs, ord').all(meetingId) as Segment[]).map(s => ({ ...s }));
-    const byChunk = new Map<string, ReturnType<typeof wordSegments>>();
+    type Parts = ReturnType<typeof wordSegments>;
+    // Lines saved before the current short-sentence rule may group differently; that grouping is built only on a mismatch.
+    const byChunk = new Map<string, { group: (shortPauseMs?: number) => Parts; current: Parts; earlier?: Parts }>();
     const wordsFor = (segment: Segment): EchoWord[] | undefined => {
       if (segment.timing !== 'word') return undefined;
       let parts = byChunk.get(segment.chunkId);
@@ -315,16 +317,22 @@ export class MeetingStore {
         if (!chunk) return undefined;
         let metrics: Partial<Recognition> = {};
         try { metrics = chunk.metrics ? JSON.parse(chunk.metrics) : {}; } catch { /* Legacy malformed metrics: use whole text. */ }
-        try {
-          parts = wordSegments(chunk.seconds * 1000, Array.isArray(metrics.words) ? metrics.words : undefined).map(p => ({ ...p,
-            words: p.words?.map(w => ({ ...w, t0Ms: w.t0Ms + chunk.startMs, t1Ms: w.t1Ms + chunk.startMs })) }));
-        } catch { parts = []; } // Invalid legacy word records cannot make a transcript unreadable.
+        const group = (shortPauseMs?: number): Parts => {
+          try {
+            return wordSegments(chunk.seconds * 1000, Array.isArray(metrics.words) ? metrics.words : undefined, shortPauseMs).map(p => ({ ...p,
+              words: p.words?.map(w => ({ ...w, t0Ms: w.t0Ms + chunk.startMs, t1Ms: w.t1Ms + chunk.startMs })) }));
+          } catch { return []; } // Invalid legacy word records cannot make a transcript unreadable.
+        };
+        parts = { group, current: group() };
         byChunk.set(chunk.id, parts);
       }
-      const part = parts[segment.ord];
-      if (!part?.words || echoWords(part.text).join(' ') !== echoWords(segment.text).join(' ')
-        || Math.abs(part.words[0].t0Ms - segment.startMs) > 1 || Math.abs(part.words.at(-1)!.t1Ms - segment.endMs) > 1) return undefined;
-      return part.words.map(w => ({ text: w.text, startMs: w.t0Ms, endMs: w.t1Ms }));
+      const matches = (part: Parts[number] | undefined) => Boolean(part?.words
+        && echoWords(part.text).join(' ') === echoWords(segment.text).join(' ')
+        && Math.abs(part.words[0].t0Ms - segment.startMs) <= 1 && Math.abs(part.words.at(-1)!.t1Ms - segment.endMs) <= 1);
+      let part = parts.current[segment.ord];
+      if (!matches(part)) part = (parts.earlier ??= parts.group(EARLIER_SHORT_SENTENCE_PAUSE_MS))[segment.ord];
+      if (!matches(part)) return undefined;
+      return part.words!.map(w => ({ text: w.text, startMs: w.t0Ms, endMs: w.t1Ms }));
     };
     const result = { version: this.transcriptVersion, external, roles: speakers.cacheKey, capture: captureKey(all), all,
       echoes: echoesFor(all, speakers, s => wordsFor(s as Segment)), wordsFor };

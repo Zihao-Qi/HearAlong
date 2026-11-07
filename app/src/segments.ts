@@ -6,6 +6,9 @@ export type DraftSegment = { startMs: number; endMs: number; text: string; timin
 type Timed = { text: string; t0Ms: number; t1Ms: number };
 
 const PAUSE_MS = 700; // Maximum inter-word pause for a grouped sentence.
+// A 1–2 word sentence ("Okay.") stays with the next one unless this pause follows it. Word ends no longer absorb the silence after
+// them (word-ends.ts), so short pauses that used to be hidden are visible; at 150 ms they turned many short sentences into their own rows.
+const SHORT_SENTENCE_PAUSE_MS = 400;
 const SOFT_WORDS = 30; // past this, end at the next comma
 const HARD_WORDS = 45;
 
@@ -34,7 +37,13 @@ function usable(items: Timed[] | undefined, windowMs: number): Timed[] | null {
   return out.length ? out : null;
 }
 
-function sentences(words: Timed[], keepWords = false): DraftSegment[] {
+/** Whether publication would use these word times (rather than fall back to native segments) in a window of this length. */
+export const usableTimes = (items: Timed[] | undefined, windowMs: number) => usable(items, windowMs) !== null;
+
+/** The short-sentence pause that saved lines published before SHORT_SENTENCE_PAUSE_MS; reconstruction of those chunks needs it. */
+export const EARLIER_SHORT_SENTENCE_PAUSE_MS = 150;
+
+function sentences(words: Timed[], keepWords = false, shortPauseMs = SHORT_SENTENCE_PAUSE_MS): DraftSegment[] {
   const out: DraftSegment[] = [];
   let current: Timed[] = [];
   const flush = () => {
@@ -48,17 +57,20 @@ function sentences(words: Timed[], keepWords = false): DraftSegment[] {
     if (!next) return;
     const gap = next.t0Ms - word.t1Ms;
     const ends = /[.?!]["')\]]*$/.test(word.text) && !/^\d+\.$/.test(word.text);
-    if ((ends && (current.length >= 3 || gap >= 150)) || gap >= PAUSE_MS
+    if ((ends && (current.length >= 3 || gap >= shortPauseMs)) || gap >= PAUSE_MS
       || (current.length >= SOFT_WORDS && /[,;:]$/.test(word.text)) || current.length >= HARD_WORDS) flush();
   });
   flush(); // The chunk tail is always published, however short.
   return out;
 }
 
-/** Reconstruct the original per-segment words from chunk.metrics.words, with the same clamping/grouping as publication. */
-export function wordSegments(windowMs: number, words: Word[] | undefined): DraftSegment[] {
+/**
+ * Reconstruct the original per-segment words from chunk.metrics.words, with the same clamping/grouping as publication.
+ * `shortPauseMs` reproduces lines saved under an earlier short-sentence rule.
+ */
+export function wordSegments(windowMs: number, words: Word[] | undefined, shortPauseMs = SHORT_SENTENCE_PAUSE_MS): DraftSegment[] {
   const valid = usable(words, windowMs);
-  return valid ? sentences(valid, true) : [];
+  return valid ? sentences(valid, true, shortPauseMs) : [];
 }
 
 /**

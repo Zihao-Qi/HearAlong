@@ -33,7 +33,7 @@ import type { EchoOptions } from './echo-audio.ts';
 import { captureDiscontinuities } from './capture-gaps.ts';
 import { LiveView, type MiniAction } from './live-view.ts';
 import { ROLE_LABEL, compareSegments, isRemote } from './speakers.ts';
-import { filterPreviewEchoes } from './preview-echo.ts';
+import { callFinalsFromMs, filterPreviewEchoes } from './preview-echo.ts';
 import { AppCaptureControl } from './app-capture.ts';
 import { SegmentsTag } from './segments-tag.ts';
 import { searchRoots } from './materials.ts';
@@ -707,9 +707,10 @@ export async function startServer(options: {
       if (!callSources.length) return display;
       const recording = capture.recordingNow();
       const clockMs = recording?.meetingId === meetingId ? recording.clockMs : appStore.audioEndMs(meetingId);
+      const failed = new Set(chunks.filter(c => c.status === 'failed' || c.status === 'cancelled').map(c => c.id));
+      const fromMs = callFinalsFromMs(display.drafts, display.pending.filter(p => !failed.has(p.chunkId)), clockMs);
       return filterPreviewEchoes(display.drafts, display.pending, callSources,
-        appStore.recentCallWords(meetingId, new Set(callSources), clockMs - 10000), clockMs,
-        new Set(chunks.filter(c => c.status === 'failed' || c.status === 'cancelled').map(c => c.id)));
+        appStore.recentCallWords(meetingId, new Set(callSources), fromMs), clockMs, failed);
     };
     /**
      * The recording now, for the mini view. `have` is the `paragraphsTag` of the page's last reply: the paragraphs it already holds

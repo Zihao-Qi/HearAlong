@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filterPreviewEchoes } from '../src/preview-echo.ts';
+import { callFinalsFromMs, filterPreviewEchoes } from '../src/preview-echo.ts';
 import type { Draft, PendingDraft } from '../src/drafts.ts';
 
 const draft = (source: string, text: string, startMs = 10000): Draft => ({ meetingId: 'fictional', source, window: source, windowStartMs: startMs,
@@ -26,13 +26,45 @@ test('genuine mic speech, no live call, and short replies remain unchanged', () 
   }
 });
 
-test('pending mic tails compare against recent call final words, but not finals older than ten seconds', () => {
+test('pending mic tails compare against call final words from the last ten seconds or their own window, whichever is earlier', () => {
   const mic = draft('mic:room', 'The paper lantern is ready');
   const pending: PendingDraft = { ...mic, chunkId: 'fictional', cutMs: 13000 };
   const recent = mic.words.map(w => ({ ...w }));
   assert.deepEqual(filterPreviewEchoes([], [pending], ['app:call'], recent, 13000).pending, []);
-  assert.deepEqual(filterPreviewEchoes([], [pending], ['app:call'], recent, 25000).pending, [pending]);
+  assert.deepEqual(filterPreviewEchoes([], [pending], ['app:call'], recent, 25000).pending, [], 'the mic window is still pending');
   assert.deepEqual(filterPreviewEchoes([], [pending], [], recent, 13000).pending, [pending]);
+  assert.equal(callFinalsFromMs([], [], 25000), 15000);
+  assert.equal(callFinalsFromMs([draft('mic:room', 'x', 20000)], [pending], 25000), 7000, 'three seconds before the earliest mic window');
+  assert.equal(callFinalsFromMs([draft('app:call', 'x', 1000)], [], 25000), 15000, 'call blocks do not extend it');
+});
+
+test('a call line that ended long before the ten-second horizon still hides its echo in a mic window that is still pending', () => {
+  // The call said it at 2000–2490 and its final words end there; the mic window opened at 3000 and is still pending at 16000.
+  const callFinals = draft('app:call', 'The paper lantern is ready', 2000).words;
+  const mic = draft('mic:room', 'The paper lantern is ready', 3000);
+  const pending: PendingDraft = { ...mic, chunkId: 'mic-window', cutMs: 16000 };
+  const fromMs = callFinalsFromMs([], [pending], 16000);
+  assert.equal(fromMs, 0);
+  const finals = callFinals.filter(w => w.endMs >= fromMs);
+  assert.equal(finals.length, 5, 'the store lookback includes the call line');
+  assert.deepEqual(filterPreviewEchoes([], [pending], ['app:call'], finals, 16000).pending, [], 'the echoed mic preview stays hidden');
+  const active = { ...mic, coveredUntilMs: 16000 };
+  assert.equal(filterPreviewEchoes([active], [], ['app:call'], finals, 16000).drafts[0].text, '', 'also while the window is open');
+  const later = draft('mic:room', 'The paper lantern is ready', 9000);
+  assert.equal(filterPreviewEchoes([later], [], ['app:call'], finals, 16000).drafts[0].text, later.text,
+    'a later mic window does not reach back to the call line');
+});
+
+test('a long open mic window is compared from its first checked word, not from its opening', () => {
+  const phrase = 'The paper lantern is ready';
+  const callFinals = draft('app:call', phrase, 1000).words;
+  // The mic window opened at 0 but stayed silent until the user said the same phrase at 19 s.
+  const mic = { ...draft('mic:room', phrase, 19000), windowStartMs: 0, committedUntilMs: 0, coveredUntilMs: 21000 };
+  assert.equal(callFinalsFromMs([mic], [], 22000), 12000, 'the window start no longer reaches back');
+  assert.equal(filterPreviewEchoes([mic], [], ['app:call'], callFinals, 22000).drafts[0].text, phrase, 'the genuine phrase stays visible');
+  const pending: PendingDraft = { ...mic, chunkId: 'mic-window', cutMs: 21000 };
+  assert.deepEqual(filterPreviewEchoes([], [pending], ['app:call'], callFinals, 22000).pending, [pending]);
+  assert.equal(callFinalsFromMs([draft('mic:room', 'okay then', 0)], [], 25000), 15000, 'a block under three words can never be an echo');
 });
 
 test('call pending and active words form one meeting-ordered reference, microphone checks its last twenty normalized words', () => {
