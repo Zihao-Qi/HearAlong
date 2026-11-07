@@ -149,6 +149,7 @@ async function main() {
     ['echo-page', check('echo-page-check', join(out, 'echo-page'))],
     ['browser-smoke', check('browser-smoke', join(out, 'browser-smoke'))],
     ['mini-check', check('mini-check', audio, audio, join(out, 'mini'))],
+    ['mini-gap', check('mini-gap-check', join(out, 'mini-gap'))],
     ['m9a', check('m9a-page-check', join(out, 'm9a'))],
     ['app-check', check('app-check')],
     ['capture-resilience', check('capture-resilience-check', join(out, 'capture'))],
