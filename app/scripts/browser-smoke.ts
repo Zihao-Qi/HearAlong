@@ -371,14 +371,14 @@ try {
   await page.keyboard.type('Cancelled workshop title');
   await page.keyboard.press('Escape');
   assert.equal(app.store.meetings()[0].title, 'Lantern workshop handover', 'Escape keeps the old name');
-  assert.equal(app.store.meetings()[0].titleSource, 'user', 'a typed name is the user\'s');
+  assert.equal(app.store.meetings()[0].autoTitle, null, 'a typed name is the user\'s');
   // The notes' title arrives while the name field is open: the header and list follow, what the user typed stays.
   await page.locator('#meeting-button').click();
   await page.locator('#new-meeting').click();
   await page.locator('#meeting-name').waitFor();
   const dated = app.store.meetings()[0];
   assert.match(dated.title, /^Meeting /);
-  assert.equal(dated.titleSource, 'default', 'the page says its dated name is made up');
+  assert.equal(dated.autoTitle, dated.title, 'the page says its dated name is made up');
   await page.keyboard.type('Lantern');
   const renamedByNotes = async (title: string) => {
     assert.equal(app.store.titleFromNotes(dated.id, title), true);
@@ -389,18 +389,21 @@ try {
   assert.equal(await page.locator('#meeting-name').inputValue(), 'Lantern', 'the open field keeps what the user is typing');
   assert.equal(await page.evaluate(() => document.activeElement?.id), 'meeting-name');
   await page.keyboard.press('Escape');
-  assert.deepEqual([app.store.meeting(dated.id).title, app.store.meeting(dated.id).titleSource], ['Fictional lantern parade route', 'ai']);
+  assert.deepEqual([app.store.meeting(dated.id).title, app.store.meeting(dated.id).autoTitle], ['Fictional lantern parade route', 'Fictional lantern parade route']);
   // Opened and left untouched while the notes rename it again: leaving the field must not restore the older name.
   await page.locator('#meeting-button').dblclick();
   await renamedByNotes('Fictional lantern parade and rack');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(500);
-  assert.deepEqual([app.store.meeting(dated.id).title, app.store.meeting(dated.id).titleSource], ['Fictional lantern parade and rack', 'ai']);
+  assert.deepEqual([app.store.meeting(dated.id).title, app.store.meeting(dated.id).autoTitle], ['Fictional lantern parade and rack', 'Fictional lantern parade and rack']);
+  // Edited back to the very name it opened with, on purpose, after the notes renamed it: that is the user's choice and is saved.
   await page.locator('#meeting-button').dblclick();
-  await page.keyboard.type('My lantern notes');
+  await renamedByNotes('Fictional lantern parade and route');
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('Fictional lantern parade and rack');
   await page.keyboard.press('Enter');
-  await page.locator('#meeting-title', { hasText: 'My lantern notes' }).waitFor();
-  assert.equal(app.store.meeting(dated.id).titleSource, 'user');
+  await page.locator('#meeting-title', { hasText: 'Fictional lantern parade and rack' }).waitFor();
+  assert.deepEqual([app.store.meeting(dated.id).title, app.store.meeting(dated.id).autoTitle], ['Fictional lantern parade and rack', null]);
   assert.equal(app.store.titleFromNotes(dated.id, 'Fictional lantern recap'), false, 'notes never rename a user\'s name');
 
   const report = { browser: 'Chromium, headless, isolated profile', physicalMicrophoneAccessed: false, cloudRequests: false,

@@ -116,7 +116,7 @@ test('a v0.1.0 folder survives upgrade and a second start without losing saved d
       const { audioDoneAt: _done, ...savedMeeting } = meeting;
       assert.deepEqual(pick(detail.meeting, Object.keys(savedMeeting)), savedMeeting);
       assert.equal(detail.meeting.audioRemovedAt, null);
-      assert.equal(detail.meeting.titleSource, 'user', 'a v0.1.0 name the app did not make up stays the user\'s, so notes never rename it');
+      assert.equal(detail.meeting.autoTitle, null, 'a v0.1.0 name the app did not make up stays the user\'s, so notes never rename it');
       assert.equal(detail.meeting.audioEmpty, 0);
       assert.equal(detail.project?.id ?? null, meeting.projectId);
       assert.deepEqual(detail.materials, expected.materials[meeting.id], 'material ids, scopes, labels, kinds and original external paths');
