@@ -84,15 +84,17 @@ export function parseLiveArgs(argv: string[]): LiveArgs {
   return { session, mic, from, fromSec: clockToSeconds(from), minutes, label, allowDirty };
 }
 
-export type CallArgs = { pairs: number[]; blocks: number; smoke: boolean; label: string | null; allowDirty: boolean };
-const CALL_USAGE = 'Usage: npm run bench:call -- [--pairs 1,2,3,4,5] [--smoke] [--run-label text] [--allow-dirty]';
+export type CallArgs = { pairs: number[]; blocks: number; smoke: boolean; condition: 'echo' | 'control' | 'both'; label: string | null; allowDirty: boolean };
+const CALL_USAGE = 'Usage: npm run bench:call -- [--pairs 1,2,3,4,5] [--condition echo|control|both] [--smoke] [--run-label text] [--allow-dirty]';
 
 /**
  * Pairs are 1-based indices into PAIRS (default all five). Each pair plays 6 blocks of 20 s (two of each talk state).
+ * `--condition both` (the default) runs each pair twice: with the simulated echo, and as a control with no echo on the microphone.
  * `--smoke` is the short development run: one pair (the first given, default pair 1) and one block of each talk state.
  */
 export function parseCallArgs(argv: string[], pairCount: number): CallArgs {
   let pairs: number[] | null = null, smoke = false, allowDirty = false, label: string | null = null;
+  let condition: CallArgs['condition'] = 'both';
   const seen = new Set<string>();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -102,12 +104,16 @@ export function parseCallArgs(argv: string[], pairCount: number): CallArgs {
     if (arg === '--allow-dirty') allowDirty = true;
     else if (arg === '--smoke') smoke = true;
     else if (arg === '--run-label') label = take(argv, ++i, arg);
-    else if (arg === '--pairs') {
+    else if (arg === '--condition') {
+      const value = take(argv, ++i, arg);
+      if (value !== 'echo' && value !== 'control' && value !== 'both') throw new Error('--condition must be echo, control or both.');
+      condition = value;
+    } else if (arg === '--pairs') {
       const list = take(argv, ++i, arg).split(',').map(item => item.trim());
       if (!list.every(item => /^\d+$/.test(item) && Number(item) >= 1 && Number(item) <= pairCount)) throw new Error(`--pairs takes numbers from 1 to ${pairCount}.`);
       pairs = [...new Set(list.map(Number))];
     } else throw new Error(`Unknown argument: ${arg}\n${CALL_USAGE}`);
   }
   const chosen = pairs ?? Array.from({ length: pairCount }, (_, i) => i + 1);
-  return { pairs: smoke ? chosen.slice(0, 1) : chosen, blocks: smoke ? 3 : 6, smoke, label, allowDirty };
+  return { pairs: smoke ? chosen.slice(0, 1) : chosen, blocks: smoke ? 3 : 6, smoke, condition, label, allowDirty };
 }

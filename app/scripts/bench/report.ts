@@ -29,7 +29,7 @@ export function loadResults(files: string[]): BenchResult[] {
 export function cohortKey(run: BenchResult): string | null {
   if (!run.modelIdentity || run.logicalCores === undefined || run.dirty === undefined || !run.nodeVersion || (run.kind !== 'live' && !run.condition)) return null;
   const set = (values: string[]) => [...new Set(values)].sort();
-  const condition = run.kind === 'call' ? [set(run.condition.pairs), run.condition.blocks, run.condition.smoke, run.condition.room]
+  const condition = run.kind === 'call' ? [run.condition.mode, set(run.condition.pairs), run.condition.blocks, run.condition.smoke, run.condition.room]
     : run.kind !== 'live'
       ? [set(run.condition!.sessions), set(run.condition!.mics)]
       : [run.meetingId, run.mic, run.fromSec, run.minutes];
@@ -78,7 +78,8 @@ function renderCallRuns(runs: CallFile[]): string {
   let index = 0;
   for (const [key, group] of cohorts(runs)) {
     const legacy = key.startsWith('legacy:'), example = group[0], finished = group.filter(run => !run.error);
-    lines.push('', legacy ? '### Legacy' : `### Call cohort ${++index}`, '', `${group.length} ${group.length === 1 ? 'run' : 'runs'}; ${finished.length} finished.`, '',
+    const mode = example.condition.mode === 'echo' ? 'with echo' : 'control, no echo';
+    lines.push('', legacy ? '### Legacy' : `### Call cohort ${++index} — ${mode}`, '', `${group.length} ${group.length === 1 ? 'run' : 'runs'}; ${finished.length} finished.`, '',
       `Normalizer: ${example.normalizer ?? 'hearalong-1'}. Scoring commit: ${example.scoringCommit ?? example.commit}; scoring dirty: ${example.scoringDirty ?? example.dirty ?? 'unknown'}.`, '',
       `Condition: ${example.condition.blocks} blocks of 20 s per pair${example.condition.smoke ? ' (smoke run)' : ''}; room ${example.condition.room}; pairs ${example.condition.pairs.join(', ')}.`, '',
       ...provenanceTable(group));
@@ -99,7 +100,8 @@ function renderCallRuns(runs: CallFile[]): string {
     lines.push('', '#### Them (call source)', '', ...markdownTable(['Run', 'Far alone WER (echo-only blocks)', 'Double-talk WER'],
       group.map(run => [n(run), wer(run.totals.score.echoOnly.them), wer(run.totals.score.doubleTalk.them)])));
     if (!legacy) lines.push('', aggregate('Them WER, far alone', finished.filter(r => r.totals.score.echoOnly.them.referenceWords).map(r => r.totals.score.echoOnly.them.wer), formatPercent));
-    lines.push('', '#### Lag during a call', '', 'Spoken to visible, as in the live benchmark, per source, with preview growth counted per source. Samples pooled across finished pairs. Lines first shown after Stop, while the run closes, can be missed.', '', ...callLagTable(group, n, run => run.totals.lag));
+    lines.push('', '#### Lag during a call', '', 'Spoken to visible, as in the live benchmark, per source, with preview growth counted per source. Samples pooled across finished pairs. The run waits after Stop until every chunk is final and the page shows every final line, so tail lines are included.', '', ...callLagTable(group, n, run => run.totals.lag),
+      '', ...markdownTable(['Run', 'Me finals first shown after Stop', 'Them finals first shown after Stop'], group.map(run => [n(run), run.totals.afterStop.me, run.totals.afterStop.them])));
     if (!legacy) lines.push('', aggregate('Me preview p50', finished.filter(r => r.totals.lag.me.preview.n).map(r => r.totals.lag.me.preview.p50), formatLagValue),
       aggregate('Me final p50', finished.filter(r => r.totals.lag.me.final.n).map(r => r.totals.lag.me.final.p50), formatLagValue),
       aggregate('Them preview p50', finished.filter(r => r.totals.lag.them.preview.n).map(r => r.totals.lag.them.preview.p50), formatLagValue),
@@ -117,7 +119,46 @@ function renderCallRuns(runs: CallFile[]): string {
     lines.push('', '##### Diagnostic: reached server to available on server', '', 'LagMeter on the segments snapshot, from each source\'s PCM upload HTTP 201, pooled across finished pairs. A final counts when the line reaches the snapshot, which can be before the page shows it.', '',
       ...callLagTable(group, n, run => run.totals.diagnostic));
   }
+  lines.push(...renderCallControl(runs));
   return lines.join('\n');
+}
+
+/** Me WER with echo beside the control (no echo) from the same run, matched by batch, cohort by cohort. Never pooled across modes. */
+function renderCallControl(runs: CallFile[]): string[] {
+  const pairsOf = new Map<string, { echo: CallFile[]; control: CallFile[] }>();
+  for (const run of runs) {
+    const key = cohortKey({ ...run, condition: { ...run.condition, mode: 'echo' } });
+    if (!key) continue;
+    const entry = pairsOf.get(key) ?? { echo: [], control: [] };
+    entry[run.condition.mode].push(run); pairsOf.set(key, entry);
+  }
+  const lines: string[] = [];
+  const wer = (score: { referenceWords: number; wer: number }) => score.referenceWords > 0 ? formatPercent(score.wer) : 'n/a';
+  const diff = (a: { referenceWords: number; wer: number }, b: { referenceWords: number; wer: number }) =>
+    a.referenceWords && b.referenceWords && Number.isFinite(a.wer - b.wer) ? `${a.wer >= b.wer ? '+' : ''}${((a.wer - b.wer) * 100).toFixed(2)} pts` : 'n/a';
+  let index = 0;
+  for (const { echo, control } of pairsOf.values()) {
+    const matched = echo.flatMap(e => { const c = control.find(item => item.condition.batch === e.condition.batch); return c && !e.error && !c.error ? [{ e, c }] : []; })
+      .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt));
+    if (!matched.length) continue;
+    const example = matched[0].e.condition;
+    lines.push('', `### Echo against control ${++index}`, '', `Me WER with the simulated echo and in the control (the same microphone without echo, AEC still running), from the same runs. ${example.blocks} blocks per pair${example.smoke ? ' (smoke run)' : ''}; pairs ${example.pairs.join(', ')}. The difference is echo minus control, in percentage points.`, '',
+      ...markdownTable(['Batch', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
+        matched.map(({ e, c }) => { const a = e.totals.score, b = c.totals.score; return [e.condition.batch, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me),
+          wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]; })));
+    const differences = (state: 'nearOnly' | 'doubleTalk') => matched.filter(({ e, c }) => e.totals.score[state].me.referenceWords && c.totals.score[state].me.referenceWords)
+      .map(({ e, c }) => e.totals.score[state].me.wer - c.totals.score[state].me.wer);
+    const points = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)} pts`;
+    lines.push('', aggregate('near-only difference', differences('nearOnly'), points), aggregate('double-talk difference', differences('doubleTalk'), points));
+    lines.push('', '#### Per pair', '', ...markdownTable(['Batch', 'Pair', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
+      matched.flatMap(({ e, c }) => e.pairs.flatMap(pe => {
+        const pc = c.pairs.find(item => item.pair === pe.pair);
+        if (!pc || pe.error || pc.error) return [];
+        const a = pe.score, b = pc.score;
+        return [[e.condition.batch, pe.pair, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me), wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]];
+      }))));
+  }
+  return lines;
 }
 
 const STATE_NAMES = { echoOnly: 'Echo only', nearOnly: 'Near only', doubleTalk: 'Double talk' } as const;

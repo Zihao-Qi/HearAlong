@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Breakdown } from './breakdown.ts';
 import type { WerResult } from './wer.ts';
-import { TALK_STATES, type CallScore } from './call-mix.ts';
+import { TALK_STATES, type CallCondition, type CallScore } from './call-mix.ts';
 
 export type MachineInfo = {
   commit: string;
@@ -114,6 +114,10 @@ export type CallAec = { micFrames: number; aecFrames: number; failures: number; 
 export type CallPairResult = {
   name: string; pair: string; delayMs: number; gainDb: number; audioSeconds: number; error: string | null;
   failedChunks: number; unfinishedChunks: number; score: CallScore; lag: CallLag; diagnostic: CallLag; aec: CallAec;
+  /** Finals first shown after the audio ended (Stop), per source. */
+  afterStop: { me: number; them: number };
+  /** The wait after settling: every chunk terminal, then every final line of the segments view on the page. */
+  settle: { waitedMs: number; chunksTerminal: boolean; expected: number; missing: number };
   timebase: { micZeroMs: number; callZeroMs: number; clockOffsetMs: number | null; callStartMs: number | null };
 };
 export type CallFile = MachineInfo & {
@@ -124,10 +128,11 @@ export type CallFile = MachineInfo & {
   error: string | null;
   failedChunks: number;
   unfinishedChunks: number;
-  condition: { pairs: string[]; blocks: number; smoke: boolean; room: string };
+  /** `mode` is part of the cohort key, so echo and control runs never pool. `batch` pairs the two files written by one run. */
+  condition: { mode: CallCondition; batch: string; pairs: string[]; blocks: number; smoke: boolean; room: string };
   pairs: CallPairResult[];
   /** Finished pairs only: summed counts, pooled lag samples. */
-  totals: { pairs: number; score: CallScore; lag: CallLag; diagnostic: CallLag; aec: { micFrames: number; aecFrames: number; failures: number; notices: number } };
+  totals: { pairs: number; score: CallScore; lag: CallLag; diagnostic: CallLag; afterStop: { me: number; them: number }; aec: { micFrames: number; aecFrames: number; failures: number; notices: number } };
 };
 export type BenchResult = WerFile | LiveFile | IhmFile | CallFile;
 
@@ -136,7 +141,7 @@ export function fileStamp(date = new Date()): string {
 }
 
 /** `wer-<stamp>.json`, with a numeric suffix if that name is already taken. */
-export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm' | 'call', date = new Date()): string {
+export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm' | 'call-echo' | 'call-control', date = new Date()): string {
   const base = `${prefix}-${fileStamp(date)}`;
   let path = join(directory, `${base}.json`);
   for (let n = 2; existsSync(path); n++) path = join(directory, `${base}-${n}.json`);
@@ -232,10 +237,11 @@ function parseCall(row: Record<string, unknown>): CallFile {
   return {
     ...machine(row), kind: 'call', createdAt: needString(row.createdAt, 'createdAt'), runLabel: label(row.runLabel), model: needString(row.model, 'model'), error: errorOf(row.error),
     failedChunks: needCount(row.failedChunks, 'failedChunks'), unfinishedChunks: needCount(row.unfinishedChunks, 'unfinishedChunks'),
-    condition: { pairs: condition.pairs.map(item => needString(item, 'condition.pairs')), blocks: needCount(condition.blocks, 'condition.blocks'),
+    condition: { mode: condition.mode === 'echo' || condition.mode === 'control' ? condition.mode : bad('condition.mode must be "echo" or "control"'),
+      batch: needString(condition.batch, 'condition.batch'), pairs: condition.pairs.map(item => needString(item, 'condition.pairs')), blocks: needCount(condition.blocks, 'condition.blocks'),
       smoke: needBoolean(condition.smoke, 'condition.smoke'), room: needString(condition.room, 'condition.room') },
     pairs: row.pairs.map((item, index) => parseCallPair(item, `pairs[${index}]`)),
-    totals: { pairs: needCount(totals.pairs, 'totals.pairs'), score: parseCallScore(totals.score, 'totals.score'), lag: parseCallLag(totals.lag, 'totals.lag'), diagnostic: parseCallLag(totals.diagnostic, 'totals.diagnostic'),
+    totals: { pairs: needCount(totals.pairs, 'totals.pairs'), score: parseCallScore(totals.score, 'totals.score'), lag: parseCallLag(totals.lag, 'totals.lag'), diagnostic: parseCallLag(totals.diagnostic, 'totals.diagnostic'), afterStop: parseAfterStop(totals.afterStop, 'totals.afterStop'),
       aec: { micFrames: needCount(aec.micFrames, 'totals.aec.micFrames'), aecFrames: needCount(aec.aecFrames, 'totals.aec.aecFrames'),
         failures: needCount(aec.failures, 'totals.aec.failures'), notices: needCount(aec.notices, 'totals.aec.notices') } },
   };
@@ -249,6 +255,9 @@ function parseCallPair(value: unknown, at: string): CallPairResult {
     name: needString(row.name, `${at}.name`), pair: needString(row.pair, `${at}.pair`), delayMs: needNumber(row.delayMs, `${at}.delayMs`), gainDb: needNumber(row.gainDb, `${at}.gainDb`),
     audioSeconds: needNumber(row.audioSeconds, `${at}.audioSeconds`), error: errorOf(row.error),
     failedChunks: needCount(row.failedChunks, `${at}.failedChunks`), unfinishedChunks: needCount(row.unfinishedChunks, `${at}.unfinishedChunks`),
+    afterStop: parseAfterStop(row.afterStop, `${at}.afterStop`),
+    settle: (() => { const v = record(row.settle, `${at}.settle`); return { waitedMs: needNumber(v.waitedMs, `${at}.settle.waitedMs`), chunksTerminal: needBoolean(v.chunksTerminal, `${at}.settle.chunksTerminal`),
+      expected: needCount(v.expected, `${at}.settle.expected`), missing: needCount(v.missing, `${at}.settle.missing`) }; })(),
     score: parseCallScore(row.score, `${at}.score`), lag: parseCallLag(row.lag, `${at}.lag`), diagnostic: parseCallLag(row.diagnostic, `${at}.diagnostic`),
     aec: { micFrames: needCount(aec.micFrames, `${at}.aec.micFrames`), aecFrames: needCount(aec.aecFrames, `${at}.aec.aecFrames`), failures: needCount(aec.failures, `${at}.aec.failures`),
       referenceCoverage: nullable(aec.referenceCoverage, `${at}.aec.referenceCoverage`), meanWaitMs: nullable(aec.meanWaitMs, `${at}.aec.meanWaitMs`),
@@ -256,6 +265,11 @@ function parseCallPair(value: unknown, at: string): CallPairResult {
     timebase: { micZeroMs: needNumber(timebase.micZeroMs, `${at}.timebase.micZeroMs`), callZeroMs: needNumber(timebase.callZeroMs, `${at}.timebase.callZeroMs`),
       clockOffsetMs: nullable(timebase.clockOffsetMs, `${at}.timebase.clockOffsetMs`), callStartMs: nullable(timebase.callStartMs, `${at}.timebase.callStartMs`) },
   };
+}
+
+function parseAfterStop(value: unknown, at: string): { me: number; them: number } {
+  const row = record(value, at);
+  return { me: needCount(row.me, `${at}.me`), them: needCount(row.them, `${at}.them`) };
 }
 
 function parseCallLag(value: unknown, at: string): CallLag {

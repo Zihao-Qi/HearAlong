@@ -126,12 +126,15 @@ export function speakerEcho(far: Float32Array, delayMs: number, taps: Tap[] = ro
   return echo;
 }
 
+export type CallCondition = 'echo' | 'control';
 /**
  * The microphone: near speech plus the speaker echo at `gainDb` below the near speech power (whole-file powers, as in aec-run.ts),
  * plus white noise at -65 dBFS from a fixed seed. Everything (including the far source sent as the call) is scaled together so the
- * loudest sample is at most 0.9: no clipping, and the echo, noise and speech ratios stay as set.
+ * loudest sample of the echo mix is at most 0.9: no clipping, and the echo, noise and speech ratios stay as set.
+ * The `control` condition is the same microphone with the echo left out (echo gain zero): the same near speech, noise and common
+ * scale, and the same call source, so the two conditions differ only by the echo.
  */
-export function mixMicrophone(near: Float32Array, far: Float32Array, pair: Pick<CallPair, 'delayMs' | 'gainDb'>, seed: number) {
+export function mixMicrophone(near: Float32Array, far: Float32Array, pair: Pick<CallPair, 'delayMs' | 'gainDb'>, seed: number, condition: CallCondition = 'echo') {
   if (near.length !== far.length) throw new Error('Near and far audio must have the same length.');
   const echo = speakerEcho(far, pair.delayMs);
   const echoPower = power(echo), nearPower = power(near);
@@ -140,13 +143,15 @@ export function mixMicrophone(near: Float32Array, far: Float32Array, pair: Pick<
   const mic = new Float32Array(near.length);
   let peak = 0;
   for (let i = 0; i < mic.length; i++) {
-    mic[i] = near[i] + echo[i] * echoScale + (random() * 2 - 1) * noise;
-    peak = Math.max(peak, Math.abs(mic[i]), Math.abs(near[i]), Math.abs(far[i]));
+    const dry = near[i] + (random() * 2 - 1) * noise, wet = dry + echo[i] * echoScale;
+    mic[i] = condition === 'echo' ? wet : dry;
+    peak = Math.max(peak, Math.abs(wet), Math.abs(dry), Math.abs(near[i]), Math.abs(far[i]));
   }
   const commonScale = peak > 0.9 ? 0.9 / peak : 1;
   const call = new Float32Array(far.length);
   for (let i = 0; i < mic.length; i++) { mic[i] *= commonScale; call[i] = far[i] * commonScale; }
-  return { mic, call, room: { version: ROOM_VERSION, delayMs: pair.delayMs, gainDb: pair.gainDb, echoScale, commonScale, noiseDbfs: -65 + 20 * Math.log10(commonScale) } };
+  return { mic, call, room: { version: ROOM_VERSION, condition, delayMs: pair.delayMs, gainDb: pair.gainDb, echoScale: condition === 'echo' ? echoScale : 0, commonScale,
+    noiseDbfs: -65 + 20 * Math.log10(commonScale) } };
 }
 
 /** Plain 16-bit PCM mono WAV, the format the rehearsal's fake microphone plays. */
@@ -241,6 +246,8 @@ export function scoreCall(input: { layout: Layout; timebase: Timebase; nearWords
   const text = (items: Line[], visible = true) => items.filter(line => !visible || shown.has(line.id)).map(line => line.text).join(' ');
   const refText = (words: ReferenceWord[], block: number) => words.filter(word => wordBlock(layout, word) === block).map(word => word.text).join(' ');
   const result = { outside, straddling } as CallScore;
+  const firstBlock = new Map<string, number>();
+  perBlock.forEach((item, block) => { for (const line of item.me) if (!firstBlock.has(line.id)) firstBlock.set(line.id, block); });
   for (const state of TALK_STATES) {
     const blocks = perBlock.flatMap((lines, block) => stateOf(block) === state ? [{ block, ...lines }] : []);
     const me = corpusWer(blocks.map(item => ({ reference: refText(input.nearWords, item.block), hypothesis: text(item.me) })));
@@ -255,8 +262,10 @@ export function scoreCall(input: { layout: Layout; timebase: Timebase; nearWords
       return leakOf(farWords, matched, meWords);
     };
     const hidden = blocks.map(item => hiddenGenuine(refText(input.nearWords, item.block), item.me, shown))
-      .reduce((sum, item) => ({ lines: sum.lines + item.lines, words: sum.words + item.words, genuine: sum.genuine + item.genuine,
+      .reduce((sum, item) => ({ lines: sum.lines, words: sum.words + item.words, genuine: sum.genuine + item.genuine,
         recognizedGenuine: sum.recognizedGenuine + item.recognizedGenuine }), emptyHidden());
+    // A hidden line split across blocks counts once, in the first block (in time) that holds part of it.
+    hidden.lines = [...firstBlock].filter(([id, block]) => !shown.has(id) && stateOf(block) === state).length;
     result[state] = { me, meRaw, them, leak: leak(true), leakRaw: leak(false), hidden };
   }
   return result;

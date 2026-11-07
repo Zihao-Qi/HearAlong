@@ -10,7 +10,9 @@ import type { EchoOptions } from '../src/echo-audio.ts';
 import { clock, loadWav, parseArgs, validateRunFiles, writeTrimmed } from './rehearsal-input.ts';
 
 /** bench:call only: a stand-in for the native capture helper. It connects before navigation; Start goes through the real call menu. */
-export type BenchCallApp = { app: { id: string; name: string }; connect(url: string): Promise<void>; anchor(at: number): void };
+export type BenchCallApp = { app: { id: string; name: string }; connect(url: string): Promise<void>; anchor(at: number): void;
+  /** After every chunk is terminal, with the page still open: lets the run wait until the page shows the final lines. */
+  settled?(page: Page, meetingId: string): Promise<void> };
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
@@ -224,6 +226,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
         ? app.jobs?.waitUntilTerminal(Date.now() + benchmark.terminalTimeoutMs).catch(error => { errors.push(error instanceof Error ? error.message : String(error)); })
         : app.jobs?.wait();
       await Promise.race([settlement, new Promise<void>(resolve => { releaseSettlement = resolve; })]);
+      if (!cancelled && meetingId && !page.isClosed()) await benchmark?.callApp?.settled?.(page, meetingId);
     }
   } catch (error) {
     if (!cancelled && page && !page.isClosed()) console.error('Rehearsal failure:', await page.locator('#log').textContent().catch(() => 'page unavailable'));
