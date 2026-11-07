@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Breakdown } from './breakdown.ts';
 import type { WerResult } from './wer.ts';
+import { TALK_STATES, type CallScore } from './call-mix.ts';
 
 export type MachineInfo = {
   commit: string;
@@ -105,14 +106,37 @@ export type LiveFile = MachineInfo & {
 };
 
 export type IhmFile = Omit<WerFile, 'kind'> & { kind: 'ihm'; legacyTotals: WerResult; clips: number; transcriptsFile: string };
-export type BenchResult = WerFile | LiveFile | IhmFile;
+
+/** Spoken to visible (headline) or reached server to available (diagnostic), per source. */
+export type CallLag = { me: { preview: CountSummary; final: CountSummary }; them: { preview: CountSummary; final: CountSummary } };
+/** What the server exposes about AEC: its frame counter and wait totals (`capture.echoStats()`), and its once-per-recording raw notices. */
+export type CallAec = { micFrames: number; aecFrames: number; failures: number; referenceCoverage: number | null; meanWaitMs: number | null; maxWaitMs: number | null; notices: string[] };
+export type CallPairResult = {
+  name: string; pair: string; delayMs: number; gainDb: number; audioSeconds: number; error: string | null;
+  failedChunks: number; unfinishedChunks: number; score: CallScore; lag: CallLag; diagnostic: CallLag; aec: CallAec;
+  timebase: { micZeroMs: number; callZeroMs: number; clockOffsetMs: number | null; callStartMs: number | null };
+};
+export type CallFile = MachineInfo & {
+  kind: 'call';
+  createdAt: string;
+  runLabel: string | null;
+  model: string;
+  error: string | null;
+  failedChunks: number;
+  unfinishedChunks: number;
+  condition: { pairs: string[]; blocks: number; smoke: boolean; room: string };
+  pairs: CallPairResult[];
+  /** Finished pairs only: summed counts, pooled lag samples. */
+  totals: { pairs: number; score: CallScore; lag: CallLag; diagnostic: CallLag; aec: { micFrames: number; aecFrames: number; failures: number; notices: number } };
+};
+export type BenchResult = WerFile | LiveFile | IhmFile | CallFile;
 
 export function fileStamp(date = new Date()): string {
   return date.toISOString().replace(/[:.]/g, '-');
 }
 
 /** `wer-<stamp>.json`, with a numeric suffix if that name is already taken. */
-export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm', date = new Date()): string {
+export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm' | 'call', date = new Date()): string {
   const base = `${prefix}-${fileStamp(date)}`;
   let path = join(directory, `${base}.json`);
   for (let n = 2; existsSync(path); n++) path = join(directory, `${base}-${n}.json`);
@@ -124,7 +148,8 @@ export function parseResult(value: unknown): BenchResult {
   if (row.kind === 'wer') return validateCompletion(parseWer(row));
   if (row.kind === 'live') return validateCompletion(parseLive(row));
   if (row.kind === 'ihm') return validateCompletion({ ...parseWer(row), kind: 'ihm', legacyTotals: parseScore(row.legacyTotals, 'legacyTotals'), clips: needCount(row.clips, 'clips'), transcriptsFile: needString(row.transcriptsFile, 'transcriptsFile') });
-  throw new Error('Invalid benchmark result: kind must be "wer", "live", or "ihm".');
+  if (row.kind === 'call') return validateCompletion(parseCall(row));
+  throw new Error('Invalid benchmark result: kind must be "wer", "live", "ihm", or "call".');
 }
 
 export function chunkCompletionError(failed: number, unfinished: number): string | null {
@@ -133,6 +158,7 @@ export function chunkCompletionError(failed: number, unfinished: number): string
 
 /** Also applied by the report to programmatically supplied runs, not only parsed JSON. */
 export function validateCompletion<T extends BenchResult>(run: T): T {
+  if (run.kind === 'call') return { ...run, error: run.error || chunkCompletionError(run.failedChunks, run.unfinishedChunks) || (run.totals.pairs === 0 ? 'No pair finished.' : null) };
   const failed = run.kind !== 'live' ? run.sessions.reduce((n, s) => n + s.failedChunks, 0) : run.failedChunks ?? 0;
   const unfinished = run.kind !== 'live' ? run.sessions.reduce((n, s) => n + (s.unfinishedChunks ?? 0), 0) : run.unfinishedChunks ?? 0;
   const error = run.error || chunkCompletionError(failed, unfinished) || (run.kind === 'live' && run.final.n === 0 ? 'No final samples were observed.' : null);
@@ -197,6 +223,63 @@ function parseLive(row: Record<string, unknown>): LiveFile {
       speechWorker: { cpu: summary(speechWorker.cpu, 'resources.speechWorker.cpu'), rssBytes: summary(speechWorker.rssBytes, 'resources.speechWorker.rssBytes') },
     },
   };
+}
+
+function parseCall(row: Record<string, unknown>): CallFile {
+  const condition = record(row.condition, 'condition'), totals = record(row.totals, 'totals'), aec = record(totals.aec, 'totals.aec');
+  if (!Array.isArray(condition.pairs) || !condition.pairs.length) bad('condition.pairs must be a nonempty array');
+  if (!Array.isArray(row.pairs)) bad('pairs must be an array');
+  return {
+    ...machine(row), kind: 'call', createdAt: needString(row.createdAt, 'createdAt'), runLabel: label(row.runLabel), model: needString(row.model, 'model'), error: errorOf(row.error),
+    failedChunks: needCount(row.failedChunks, 'failedChunks'), unfinishedChunks: needCount(row.unfinishedChunks, 'unfinishedChunks'),
+    condition: { pairs: condition.pairs.map(item => needString(item, 'condition.pairs')), blocks: needCount(condition.blocks, 'condition.blocks'),
+      smoke: needBoolean(condition.smoke, 'condition.smoke'), room: needString(condition.room, 'condition.room') },
+    pairs: row.pairs.map((item, index) => parseCallPair(item, `pairs[${index}]`)),
+    totals: { pairs: needCount(totals.pairs, 'totals.pairs'), score: parseCallScore(totals.score, 'totals.score'), lag: parseCallLag(totals.lag, 'totals.lag'), diagnostic: parseCallLag(totals.diagnostic, 'totals.diagnostic'),
+      aec: { micFrames: needCount(aec.micFrames, 'totals.aec.micFrames'), aecFrames: needCount(aec.aecFrames, 'totals.aec.aecFrames'),
+        failures: needCount(aec.failures, 'totals.aec.failures'), notices: needCount(aec.notices, 'totals.aec.notices') } },
+  };
+}
+
+function parseCallPair(value: unknown, at: string): CallPairResult {
+  const row = record(value, at), aec = record(row.aec, `${at}.aec`), timebase = record(row.timebase, `${at}.timebase`);
+  const nullable = (item: unknown, name: string) => item === null ? null : needNumber(item, name);
+  if (!Array.isArray(aec.notices)) bad(`${at}.aec.notices must be an array`);
+  return {
+    name: needString(row.name, `${at}.name`), pair: needString(row.pair, `${at}.pair`), delayMs: needNumber(row.delayMs, `${at}.delayMs`), gainDb: needNumber(row.gainDb, `${at}.gainDb`),
+    audioSeconds: needNumber(row.audioSeconds, `${at}.audioSeconds`), error: errorOf(row.error),
+    failedChunks: needCount(row.failedChunks, `${at}.failedChunks`), unfinishedChunks: needCount(row.unfinishedChunks, `${at}.unfinishedChunks`),
+    score: parseCallScore(row.score, `${at}.score`), lag: parseCallLag(row.lag, `${at}.lag`), diagnostic: parseCallLag(row.diagnostic, `${at}.diagnostic`),
+    aec: { micFrames: needCount(aec.micFrames, `${at}.aec.micFrames`), aecFrames: needCount(aec.aecFrames, `${at}.aec.aecFrames`), failures: needCount(aec.failures, `${at}.aec.failures`),
+      referenceCoverage: nullable(aec.referenceCoverage, `${at}.aec.referenceCoverage`), meanWaitMs: nullable(aec.meanWaitMs, `${at}.aec.meanWaitMs`),
+      maxWaitMs: nullable(aec.maxWaitMs, `${at}.aec.maxWaitMs`), notices: aec.notices.map(item => needString(item, `${at}.aec.notices`)) },
+    timebase: { micZeroMs: needNumber(timebase.micZeroMs, `${at}.timebase.micZeroMs`), callZeroMs: needNumber(timebase.callZeroMs, `${at}.timebase.callZeroMs`),
+      clockOffsetMs: nullable(timebase.clockOffsetMs, `${at}.timebase.clockOffsetMs`), callStartMs: nullable(timebase.callStartMs, `${at}.timebase.callStartMs`) },
+  };
+}
+
+function parseCallLag(value: unknown, at: string): CallLag {
+  const row = record(value, at), me = record(row.me, `${at}.me`), them = record(row.them, `${at}.them`);
+  return { me: { preview: summary(me.preview, `${at}.me.preview`), final: summary(me.final, `${at}.me.final`) },
+    them: { preview: summary(them.preview, `${at}.them.preview`), final: summary(them.final, `${at}.them.final`) } };
+}
+
+function parseCallScore(value: unknown, at: string): CallScore {
+  const row = record(value, at), outside = record(row.outside, `${at}.outside`);
+  const leak = (item: unknown, name: string) => {
+    const l = record(item, name);
+    return { farWords: needCount(l.farWords, `${name}.farWords`), matched: needCount(l.matched, `${name}.matched`), meWords: needCount(l.meWords, `${name}.meWords`), rate: needNumber(l.rate, `${name}.rate`) };
+  };
+  const result = { outside: { meWords: needCount(outside.meWords, `${at}.outside.meWords`), themWords: needCount(outside.themWords, `${at}.outside.themWords`), lines: needCount(outside.lines, `${at}.outside.lines`) },
+    straddling: needCount(row.straddling, `${at}.straddling`) } as CallScore;
+  for (const state of TALK_STATES) {
+    const name = `${at}.${state}`, item = record(row[state], name), hidden = record(item.hidden, `${name}.hidden`);
+    result[state] = { me: parseScore(item.me, `${name}.me`), meRaw: parseScore(item.meRaw, `${name}.meRaw`), them: parseScore(item.them, `${name}.them`),
+      leak: leak(item.leak, `${name}.leak`), leakRaw: leak(item.leakRaw, `${name}.leakRaw`),
+      hidden: { lines: needCount(hidden.lines, `${name}.hidden.lines`), words: needCount(hidden.words, `${name}.hidden.words`), genuine: needCount(hidden.genuine, `${name}.hidden.genuine`),
+        recognizedGenuine: needCount(hidden.recognizedGenuine, `${name}.hidden.recognizedGenuine`) } };
+  }
+  return result;
 }
 
 function machine(row: Record<string, unknown>): MachineInfo {

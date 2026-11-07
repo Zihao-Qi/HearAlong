@@ -5,19 +5,13 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { benchPaths, decodeXml, reference, referenceText, type ReferenceWord } from './ami.ts';
 import { planIhm } from './ihm.ts';
+import { PAIRS } from './call-mix.ts';
 import { corpusWer, normalize, wer } from './wer.ts';
 import { decodeChunk, SAMPLE_RATE } from '../../src/audio.ts';
 import { LocalRecognizer } from '../../src/recognizer.ts';
 import { AEC_VERSION, alignedCall, cancelEcho, energySummary, estimateDelay, f32Bytes, newOutputDirectory, power, transcribeF32, trialModel, type Range, type Transcript } from '../aec-trial.ts';
 
 type Source = { meeting: string; speaker: string };
-const PAIRS: { near: Source; far: Source; delayMs: number; gainDb: number }[] = [
-  { near: { meeting: 'ES2004a', speaker: 'B' }, far: { meeting: 'IS1009a', speaker: 'A' }, delayMs: 30, gainDb: -6 },
-  { near: { meeting: 'IS1009a', speaker: 'D' }, far: { meeting: 'TS3003a', speaker: 'A' }, delayMs: 50, gainDb: -8 },
-  { near: { meeting: 'TS3003a', speaker: 'D' }, far: { meeting: 'EN2002a', speaker: 'C' }, delayMs: 70, gainDb: -9 },
-  { near: { meeting: 'EN2002a', speaker: 'B' }, far: { meeting: 'ES2004b', speaker: 'D' }, delayMs: 100, gainDb: -10 },
-  { near: { meeting: 'ES2004b', speaker: 'A' }, far: { meeting: 'IS1009b', speaker: 'C' }, delayMs: 120, gainDb: -12 },
-];
 const SECONDS = 120, BLOCK = 20, N = SECONDS * SAMPLE_RATE;
 const FAR_BLOCKS = [0, 2, 3, 5], NEAR_BLOCKS = [1, 2, 4, 5];
 const ECHO_ONLY: Range[] = [{ start: 0, end: 20 }, { start: 60, end: 80 }];
