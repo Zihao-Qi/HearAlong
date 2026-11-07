@@ -152,25 +152,26 @@ test('wall-to-meeting offsets use the median frame; the helper starts at the sam
 });
 
 test('call flags: five pairs of six blocks by default; --smoke is one pair and one block of each state', () => {
-  assert.deepEqual(parseCallArgs([], 5), { pairs: [1, 2, 3, 4, 5], blocks: 6, smoke: false, label: null, allowDirty: false });
-  assert.deepEqual(parseCallArgs(['--smoke'], 5), { pairs: [1], blocks: 3, smoke: true, label: null, allowDirty: false });
-  assert.deepEqual(parseCallArgs(['--smoke', '--pairs', '3,2', '--run-label', 'x', '--allow-dirty'], 5), { pairs: [3], blocks: 3, smoke: true, label: 'x', allowDirty: true });
+  assert.deepEqual(parseCallArgs([], 5), { pairs: [1, 2, 3, 4, 5], blocks: 6, smoke: false, condition: 'both', label: null, allowDirty: false });
+  assert.deepEqual(parseCallArgs(['--smoke'], 5), { pairs: [1], blocks: 3, smoke: true, condition: 'both', label: null, allowDirty: false });
+  assert.deepEqual(parseCallArgs(['--smoke', '--pairs', '3,2', '--condition', 'control', '--run-label', 'x', '--allow-dirty'], 5), { pairs: [3], blocks: 3, smoke: true, condition: 'control', label: 'x', allowDirty: true });
+  assert.throws(() => parseCallArgs(['--condition', 'none'], 5), /echo, control or both/);
   assert.throws(() => parseCallArgs(['--pairs', '6'], 5), /1 to 5/);
   assert.throws(() => parseCallArgs(['--smoke', '--smoke'], 5), /Repeated/);
   assert.throws(() => parseCallArgs(['--minutes', '1'], 5), /Unknown/);
 });
 
 const point = (value: number, n = 4) => ({ mean: value, p50: value, p95: value, max: value, n });
-function callRun(createdAt = '2026-01-02T00:00:00Z', error: string | null = null): CallFile {
+function callRun(createdAt = '2026-01-02T00:00:00Z', error: string | null = null, mode: 'echo' | 'control' = 'echo', runScore = score): CallFile {
   const lag = { me: { preview: point(3000), final: point(9000) }, them: { preview: point(2500), final: point(11000) } };
   const pair = { name: 'pair-1', pair: 'FictionA.B+FictionB.A', delayMs: 30, gainDb: -6, audioSeconds: 70, error, failedChunks: 0, unfinishedChunks: 0,
-    score, lag, diagnostic: lag, aec: { micFrames: 70, aecFrames: 68, failures: 0, referenceCoverage: 0.99, meanWaitMs: 1000, maxWaitMs: 1040, notices: [] },
+    score: runScore, lag, diagnostic: lag, afterStop: { me: 2, them: 1 }, settle: { waitedMs: 800, chunksTerminal: true, expected: 20, missing: 0 }, aec: { micFrames: 70, aecFrames: 68, failures: 0, referenceCoverage: 0.99, meanWaitMs: 1000, maxWaitMs: 1040, notices: [] },
     timebase: { micZeroMs: -31, callZeroMs: -11, clockOffsetMs: 0.5, callStartMs: 1500 } };
   return { commit: 'fictional-commit', dirty: false, nodeVersion: 'v22.0.0', logicalCores: 8, macos: '99.0', chip: 'Fictional Chip', ramBytes: 16 * 2 ** 30,
     normalizer: 'hearalong-2', scoringCommit: 'fictional-commit', scoringDirty: false,
     model: 'fiction.gguf', modelIdentity: { basename: 'fiction.gguf', sha256: 'a'.repeat(64), bytes: 3 }, createdAt, runLabel: null, error,
-    kind: 'call', failedChunks: 0, unfinishedChunks: 0, condition: { pairs: ['1:FictionA.B+FictionB.A'], blocks: 3, smoke: true, room: ROOM_VERSION },
-    pairs: [pair], totals: { pairs: error ? 0 : 1, score: sumCallScores(error ? [] : [score]), lag, diagnostic: lag, aec: { micFrames: 70, aecFrames: 68, failures: 0, notices: 0 } } };
+    kind: 'call', failedChunks: 0, unfinishedChunks: 0, condition: { mode, batch: createdAt, pairs: ['1:FictionA.B+FictionB.A'], blocks: 3, smoke: true, room: ROOM_VERSION },
+    pairs: [pair], totals: { pairs: error ? 0 : 1, score: sumCallScores(error ? [] : [runScore]), lag, diagnostic: lag, afterStop: { me: 2, them: 1 }, aec: { micFrames: 70, aecFrames: 68, failures: 0, notices: 0 } } };
 }
 
 test('call results round-trip through JSON and render in their own section, idempotently', () => {
@@ -184,7 +185,8 @@ test('call results round-trip through JSON and render in their own section, idem
   assert.equal(renderBench(once, runs), once);
   const [main, call] = once.split('<!-- bench-call:begin -->');
   assert.match(main, /not yet measured/);
-  assert.match(call, /### Call cohort 1/);
+  assert.match(call, /### Call cohort 1 — with echo/);
+  assert.match(call, /\| 1 \| 2 \| 1 \|/, 'finals first shown after Stop');
   assert.match(call, /3 runs; 2 finished/);
   assert.match(call, /Run 1 stopped early: pair-1: fictional failure/);
   assert.match(call, /Median Me double-talk WER across 2 eligible runs: 75\.00%/);
@@ -195,4 +197,41 @@ test('call results round-trip through JSON and render in their own section, idem
   const plain = '<!-- bench:begin -->\nold\n<!-- bench:end -->';
   assert.equal(renderBench(plain, []), '<!-- bench:begin -->\nnot yet measured\n<!-- bench:end -->', 'a document without the call section is left as it was');
   assert.throws(() => renderBench(plain, [callRun()]), /bench-call:begin/);
+});
+
+test('the control is the same microphone without the echo: same speech, noise and scale', () => {
+  const n = 16000, near = new Float32Array(n), far = new Float32Array(n);
+  for (let i = 0; i < n; i++) { near[i] = 2 * Math.sin(i / 9); far[i] = Math.sin(i / 5); }
+  const echo = mixMicrophone(near, far, { delayMs: 30, gainDb: -6 }, 9), control = mixMicrophone(near, far, { delayMs: 30, gainDb: -6 }, 9, 'control');
+  assert.equal(control.room.commonScale, echo.room.commonScale);
+  assert.equal(control.room.echoScale, 0); assert.equal(control.room.condition, 'control');
+  assert.deepEqual(control.call, echo.call);
+  const noise = control.mic.map((value, i) => value - near[i] * control.room.commonScale);
+  assert.ok(Math.max(...noise.map(Math.abs)) < 1e-3, 'only the -65 dBFS noise is left');
+  assert.ok(power(echo.mic.map((value, i) => value - control.mic[i])) > 0.01, 'the echo mix differs by the echo');
+});
+
+test('a hidden Me line split across blocks counts once, in its first block', () => {
+  const split: Line = { ...me('S', 'harbor reef tide', 44), endMs: 1000 + 51000, words: [{ text: 'harbor', startMs: 1000 + 44000, endMs: 1000 + 44500 },
+    { text: 'reef', startMs: 1000 + 45000, endMs: 1000 + 45500 }, { text: 'tide', startMs: 1000 + 50000, endMs: 1000 + 50500 }] };
+  const result = scoreCall({ layout, timebase, nearWords, farWords, lines: [split], shown: new Set() });
+  assert.equal(result.nearOnly.hidden.lines, 1);
+  assert.equal(result.doubleTalk.hidden.lines, 0);
+  assert.equal(result.nearOnly.hidden.words + result.doubleTalk.hidden.words, 3);
+  assert.equal(sumCallScores([result]).doubleTalk.hidden.lines + sumCallScores([result]).nearOnly.hidden.lines, 1);
+});
+
+test('echo and control never share a cohort; the report sets them side by side by batch', () => {
+  const worse = sumCallScores([score]);
+  const control = { ...score, doubleTalk: { ...score.doubleTalk, me: { ...score.doubleTalk.me, wer: 0.5, hits: 2, substitutions: 2, deletions: 0 } } };
+  const doc = '<!-- bench:begin -->\n<!-- bench:end -->\n<!-- bench-call:begin -->\n<!-- bench-call:end -->\n';
+  const runs = [callRun('2026-01-02T00:00:00Z'), callRun('2026-01-02T00:00:00Z', null, 'control', control), callRun('2026-01-05T00:00:00Z', null, 'control', control)];
+  const out = renderBench(doc, runs);
+  assert.match(out, /### Call cohort 1 — control, no echo\n\n2 runs/);
+  assert.match(out, /### Call cohort 2 — with echo\n\n1 run;/);
+  assert.equal(worse.doubleTalk.me.wer, 0.75);
+  assert.match(out, /### Echo against control 1/);
+  assert.match(out, /\| 2026-01-02T00:00:00Z \| 0\.00% \| 0\.00% \| \+0\.00 pts \| 75\.00% \| 50\.00% \| \+25\.00 pts \|/);
+  assert.match(out, /Median double-talk difference across 1 eligible run: \+25\.00 pts/);
+  assert.equal((out.match(/### Echo against control/g) ?? []).length, 1, 'the unmatched control batch adds no comparison');
 });
