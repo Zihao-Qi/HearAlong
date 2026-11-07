@@ -5,9 +5,10 @@ import assert from 'node:assert/strict';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { resolve, join } from 'node:path';
-import { chromium, type BrowserContext, type Page } from 'playwright-core';
+import { chromium, type BrowserContext, type CDPSession, type Page, type Response } from 'playwright-core';
 import { testBrowser } from './test-browser.ts';
 import { miniLog, type PendingPreview } from '../public/preview-composition.js';
+import { stamp } from '../public/live-shared.js';
 
 type FixtureWindow = Window & typeof globalThis & { miniRefresh: () => Promise<void> };
 type Case = { name: string; kind: 'row' | 'viewport' | 'render' | 'anchor' | 'anchor-top' | 'merge' | 'before-render' | 'following' | 'bottom' | 'back' | 'one-pixel'; amount?: number; up?: number };
@@ -32,7 +33,9 @@ const anchorLog = miniLog(anchorFinals, [], [anchorPending]);
 assert.equal(anchorLog.placements.length, 1);
 assert.equal(anchorLog.placements[0].beforeKey, null);
 const anchorParagraphs = anchorLog.paragraphs.map(p => ({ key: p.key, signature: p.signature, speaker: p.speaker ?? null, text: p.segments.map(s => s.text).join(' ') }));
-let final = false, tallPending = false;
+let final = false, tallPending = false, liveRequests = 0, heldPolls = 0;
+let holdNextLive: ((release: () => void) => void) | undefined;
+const clockMs = (request: number) => 152_000 + request * 60_000;
 const model = () => ({ recording: { meetingId: 'fictional-seeds', session: 1, clockMs: 152_000, stopping: false, labelled: true,
   paragraphs: [...(tallPending ? anchorParagraphs : paragraphs), ...(final ? [{ key: 'tail-final', signature: '#tail:0', speaker: 'Them', text: tallPending ? longText : 'Fictional seed tray ready.' }] : [])],
   paragraphsFrom: 0, paragraphsTag: final ? 'final' : 'pending',
@@ -40,9 +43,19 @@ const model = () => ({ recording: { meetingId: 'fictional-seeds', session: 1, cl
   drafts: [{ speaker: 'Me', text: 'Fictional marigold preview.' }, { speaker: 'Them', text: 'Fictional aster preview.' }], card: null, notices: [] } });
 const server = createServer((req, res) => {
   const path = new URL(req.url!, 'http://127.0.0.1').pathname;
-  const body = path === '/api/live' ? JSON.stringify(model()) : assets.get(path);
-  res.writeHead(body ? 200 : 404, { 'Content-Type': path === '/api/live' ? 'application/json' : path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html' });
-  res.end(body ?? '');
+  const reply = path === '/api/live' ? ++liveRequests : 0;
+  const value = model();
+  value.recording.clockMs = clockMs(reply); // unique visible acknowledgement that this reply finished render()
+  const body = reply ? JSON.stringify(value) : assets.get(path);
+  res.writeHead(body ? 200 : 404, { 'Content-Type': reply ? 'application/json' : path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html',
+    ...(reply ? { 'X-Mini-Reply': String(reply) } : {}) });
+  if (reply && holdNextLive) {
+    const hold = holdNextLive;
+    holdNextLive = undefined;
+    heldPolls++;
+    hold(() => { if (!res.writableEnded) res.end(body); });
+    res.flushHeaders(); // refresh() is now busy parsing a deliberately unfinished poll body
+  } else res.end(body ?? '');
 });
 
 function scrollSnapshot() {
@@ -53,8 +66,61 @@ function scrollSnapshot() {
     pending: s.querySelectorAll('.pending-ln').length, paneTop: pane.top, paneBottom: pane.bottom,
     tail: { key: tail.dataset.key, height: tail.getBoundingClientRect().height, top: tail.getBoundingClientRect().top, bottom: tail.getBoundingClientRect().bottom } };
 }
-// Two bounded animation frames deliver scroll/resize events; no spin or CPU pressure.
-function frames() { return new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r()))); }
+const frameWorlds = new WeakMap<Page, { session: CDPSession; id: number }>();
+// Fake-clock rAF callbacks do not wait for Chromium's rendering/scroll-event delivery. Keep the
+// original two native frame waits in an isolated world, where the page's clock shim is not installed.
+async function frames(page: Page) {
+  let world = frameWorlds.get(page);
+  if (!world) {
+    const session = await page.context().newCDPSession(page);
+    const { frameTree } = await session.send('Page.getFrameTree');
+    const { executionContextId: id } = await session.send('Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: 'mini-gap-native-frames' });
+    world = { session, id };
+    frameWorlds.set(page, world);
+  }
+  const result = await world.session.send('Runtime.evaluate', { contextId: world.id, awaitPromise: true, returnByValue: true,
+    expression: `(() => {
+      if (!requestAnimationFrame.toString().includes('[native code]')) throw new Error('Native rAF required');
+      return new Promise(resolve => requestAnimationFrame(a => requestAnimationFrame(b => resolve([a, b]))));
+    })()` });
+  assert.equal(result.exceptionDetails, undefined, 'native frame wait must not throw');
+  const times = result.result.value as number[];
+  assert.equal(times.length, 2, 'both native animation-frame callbacks must run while app timers are paused');
+}
+const liveReply = (response: Response) => new URL(response.url()).pathname === '/api/live';
+async function rendered(page: Page, reply: Response) {
+  await reply.finished();
+  // HTTP completion alone is not enough: tick() updates this marker inside render(), whose synchronous
+  // completion/finally runs before the locator can observe it. Thus refresh() has also cleared busy.
+  await page.getByText(stamp(clockMs(Number(reply.headers()['x-mini-reply']))), { exact: true }).waitFor();
+}
+async function refresh(page: Page) {
+  const before = liveRequests;
+  await page.evaluate(() => (window as FixtureWindow).miniRefresh());
+  assert.equal(liveRequests, before + 1, 'each explicit refresh must start one /api/live request');
+  assert.equal(await page.locator('.clock').textContent(), stamp(clockMs(liveRequests)), 'explicit refresh must finish render');
+}
+async function intervalPoll(page: Page) {
+  const before = liveRequests;
+  const reply = page.waitForResponse(liveReply);
+  await page.clock.fastForward(1000); // runs the unchanged setInterval(refresh, 1000), not miniRefresh()
+  await rendered(page, await reply);
+  assert.equal(liveRequests, before + 1, 'one interval tick must complete one /api/live request');
+}
+async function afterHeldPoll(page: Page, action: () => Promise<void>) {
+  let release: (() => void) | undefined;
+  holdNextLive = value => { release = value; };
+  try {
+    const response = page.waitForResponse(liveReply);
+    await page.clock.fastForward(1000);
+    const reply = await response;
+    assert.ok(release, 'the automatic poll body must be held before attempting the action');
+    release();
+    release = undefined;
+    await rendered(page, reply);
+    await action(); // the clock is paused, so no other interval can start between draining and acting
+  } finally { holdNextLive = undefined; release?.(); }
+}
 function shrinkRow(amount: number) {
   const row = document.querySelector<HTMLElement>('#m-scroll .pending-ln')!;
   row.style.height = `${row.getBoundingClientRect().height - amount}px`;
@@ -85,7 +151,7 @@ try {
     { name: '1px scroll up keeps following', kind: 'one-pixel', up: 1 },
   ];
   for (const test of cases) {
-    final = false; tallPending = ['anchor', 'anchor-top', 'merge'].includes(test.kind);
+    final = false; liveRequests = 0; heldPolls = 0; tallPending = ['anchor', 'anchor-top', 'merge'].includes(test.kind);
     const context: BrowserContext = await browser.newContext({ viewport: { width: 360, height: 268 } });
     context.setDefaultTimeout(5000);
     const page: Page = await context.newPage();
@@ -97,10 +163,14 @@ try {
       return state;
     };
     try {
+      await page.clock.install({ time: new Date('2025-01-01T00:00:00Z') });
+      await page.clock.pauseAt(new Date('2025-01-02T00:00:00Z')); // before goto: no app timers exist yet
+      const initial = page.waitForResponse(liveReply);
       await page.goto(`http://127.0.0.1:${address.port}/mini.html`);
+      await rendered(page, await initial);
       await page.locator('#m-scroll .pending-ln').waitFor();
       await page.waitForFunction(() => { const s = document.getElementById('m-scroll')!; return s.scrollHeight > s.clientHeight + 100; });
-      await page.evaluate(frames);
+      await frames(page);
       if (test.kind !== 'following') {
         await page.evaluate(({ kind, up }) => {
           const s = document.getElementById('m-scroll')!;
@@ -109,7 +179,7 @@ try {
             : s.scrollHeight - s.clientHeight - (up ?? 3);
         }, test);
       }
-      await page.evaluate(frames);
+      await frames(page);
       const before = await observe('before action');
       const following = ['following', 'bottom', 'back', 'one-pixel'].includes(test.kind);
       assert.equal(before.back, !['following', 'one-pixel'].includes(test.kind), 'initial follow state');
@@ -122,26 +192,30 @@ try {
       } else if (test.kind === 'before-render') {
         // Resolve live JSON and force layout in the same microtask chain as render(), before a scroll event can run.
         // This exercises render's pre-update reconciliation separately from the scroll handler.
-        const clamp = await page.evaluate(async amount => {
-          const fetch = window.fetch;
-          let movement: { before: number; after: number } | undefined;
-          window.fetch = async (...args) => {
-            const response = await fetch(...args), json = response.json.bind(response);
-            response.json = async () => {
-              const body = await json(), s = document.getElementById('m-scroll')!;
-              const row = s.querySelector<HTMLElement>('.pending-ln')!, before = s.scrollTop;
-              row.style.height = `${row.getBoundingClientRect().height - amount}px`;
-              row.style.overflow = 'hidden';
-              movement = { before, after: s.scrollTop }; // force the clamp before render consumes this reply
-              return body;
+        await afterHeldPoll(page, async () => {
+          const requests = liveRequests;
+          const clamp = await page.evaluate(async amount => {
+            const fetch = window.fetch;
+            let movement: { before: number; after: number } | undefined;
+            window.fetch = async (...args) => {
+              const response = await fetch(...args), json = response.json.bind(response);
+              response.json = async () => {
+                const body = await json(), s = document.getElementById('m-scroll')!;
+                const row = s.querySelector<HTMLElement>('.pending-ln')!, before = s.scrollTop;
+                row.style.height = `${row.getBoundingClientRect().height - amount}px`;
+                row.style.overflow = 'hidden';
+                movement = { before, after: s.scrollTop }; // force the clamp before render consumes this reply
+                return body;
+              };
+              return response;
             };
-            return response;
-          };
-          try { await (window as FixtureWindow).miniRefresh(); }
-          finally { window.fetch = fetch; }
-          return movement;
-        }, test.amount!);
-        assert.ok(clamp && clamp.after < clamp.before, 'must clamp before render');
+            try { await (window as FixtureWindow).miniRefresh(); }
+            finally { window.fetch = fetch; }
+            return movement;
+          }, test.amount!);
+          assert.ok(clamp && clamp.after < clamp.before, 'must clamp before render');
+          assert.equal(liveRequests, requests + 1, 'before-render refresh must start one /api/live request');
+        });
       } else if (test.kind === 'viewport') {
         await page.evaluate(amount => {
           const latest = document.getElementById('m-latest')!;
@@ -149,28 +223,31 @@ try {
           latest.style.flexBasis = `${latest.getBoundingClientRect().height - amount}px`;
         }, test.amount!);
       } else if (test.kind === 'render' || test.kind === 'merge') {
-        final = true;
-        await page.evaluate(() => (window as FixtureWindow).miniRefresh());
+        await afterHeldPoll(page, async () => {
+          final = true;
+          await refresh(page);
+        });
       } else if (test.kind === 'bottom') {
         await page.locator('#m-scroll').focus();
         await page.keyboard.press('End'); // genuine keyboard input: top increases to reach bottom
-        await page.waitForFunction(() => document.getElementById('m-latest')!.hidden);
+        await frames(page);
+        await page.locator('#m-latest').waitFor({ state: 'hidden' });
       } else if (test.kind === 'back') {
         await page.locator('#m-back').click();
       }
-      await page.evaluate(frames);
+      await frames(page);
       await observe('after action');
       // Repeated explicit settles AND two ordinary one-second polls, with no model changes for the anchor cases.
       for (let i = 0; i < 3; i++) {
-        await page.evaluate(() => (window as FixtureWindow).miniRefresh());
-        await page.evaluate(frames);
+        if (i === 0 && (test.kind === 'anchor' || test.kind === 'anchor-top')) await afterHeldPoll(page, () => refresh(page));
+        else await refresh(page);
+        await frames(page);
         await observe(`settle ${i + 1}`);
       }
       if (test.kind === 'anchor' || test.kind === 'anchor-top') {
         for (let i = 0; i < 2; i++) {
-          const reply = await page.waitForResponse(r => new URL(r.url()).pathname === '/api/live');
-          await reply.finished();
-          await page.evaluate(frames);
+          await intervalPoll(page);
+          await frames(page);
           await observe(`poll ${i + 1}`);
         }
       }
@@ -191,12 +268,16 @@ try {
       }
       if (test.kind === 'render' || test.kind === 'merge') assert.equal(observations.at(-1)!.state.pending, 0, 'pending row must be replaced');
       assert.deepEqual(errors, []);
+      const anchor = test.kind === 'anchor' || test.kind === 'anchor-top';
+      const held = anchor || ['before-render', 'render', 'merge'].includes(test.kind);
+      assert.equal(heldPolls, held ? 1 : 0, 'controlled in-flight poll must have been exercised');
+      assert.equal(liveRequests, anchor ? 7 : held ? 6 : 4, 'every claimed action/settle/poll must make its own request');
       const gaps = observations.map(o => o.state.gap);
-      summaries.push({ name: test.name, passed: true, gaps, observations });
-      console.log(`PASS ${test.name} — gaps ${gaps.join(', ')}`);
+      summaries.push({ name: test.name, passed: true, gaps, observations, liveRequests, heldPolls });
+      console.log(`PASS ${test.name} — gaps ${gaps.join(', ')}; requests ${liveRequests}, held polls ${heldPolls}`);
     } catch (error) {
       failures.push(error);
-      summaries.push({ name: test.name, passed: false, error: String(error), observations, errors });
+      summaries.push({ name: test.name, passed: false, error: String(error), observations, errors, liveRequests, heldPolls });
       console.error(`FAIL ${test.name} — ${String(error)}`);
     } finally { await context.close(); }
   }
