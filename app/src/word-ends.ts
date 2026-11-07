@@ -1,5 +1,6 @@
 // End times of local recognizer words, so a word does not last through the silence after it.
 import type { Pass, Word } from './recovery.ts';
+import { usableTimes } from './segments.ts';
 
 /**
  * The local recognizer (Parakeet TDT) ends a word with its last token, and that token's duration absorbs the blank frames
@@ -47,19 +48,17 @@ export function capWordEnd<T extends Word>(word: T): T {
   return word.t1Ms > end ? { ...word, t1Ms: end } : word;
 }
 
-// `usable()` in segments.ts skips words without text, and falls back to the native segments when word times are broken.
 const spoken = (word: Word) => typeof word.text === 'string' && word.text.trim() !== '';
-const timed = (word: Word) => Number.isFinite(word.t0Ms) && Number.isFinite(word.t1Ms) && word.t1Ms >= word.t0Ms;
 
 /**
- * One recognition pass with capped word ends. A native segment ends at most at the latest capped end of the spoken words that
- * start inside it; a segment with no such words keeps its end. Segments are shortened only when every spoken word is well
- * timed (finite, end not before start): otherwise the segments may be all publication has, and their ends stay as recognized.
+ * One recognition pass (of a `windowMs` long window) with capped word ends. A native segment ends at most at the latest capped
+ * end of the spoken words that start inside it; a segment with no such words keeps its end. Segments are shortened only when
+ * publication would use the word times (`usableTimes`): otherwise the segments are what it publishes, with their ends as recognized.
  */
-export function capPass(pass: Pass): Pass {
+export function capPass(pass: Pass, windowMs: number): Pass {
   const words = pass.words.map(capWordEnd);
+  if (!pass.segments || !usableTimes(words, windowMs)) return { ...pass, words };
   const spokenWords = words.filter(spoken);
-  if (!pass.segments || !spokenWords.every(timed)) return { ...pass, words };
   const segments = pass.segments.map(segment => {
     if (!Number.isFinite(segment.t0Ms) || !Number.isFinite(segment.t1Ms)) return segment;
     let end = -Infinity;

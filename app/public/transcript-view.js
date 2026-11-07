@@ -3,10 +3,12 @@ import { composePreview, coversTime, overlapsTime, midpoint } from './preview-co
 import { captureGapText, mergeCaptureGaps } from './capture-gaps.js';
 
 const chunkOf = id => id.includes(':') ? id.slice(0, id.lastIndexOf(':')) : id;
-// MAX_WORD_MS in src/word-ends.ts: finals are capped there, preview words are not, so a preview word before a pause lasts through it.
-const MAX_WORD_MS = 1200;
+// MIN_WORD_MS in src/word-ends.ts: finals are capped there, preview words are not, so a preview word before a pause lasts through it.
+// A capped final word is only cut back to at least this long, so the point below, at most 200 ms after the word's start, falls
+// inside that word's capped end and before a next line that starts after a pause.
+const MIN_WORD_MS = 400;
 /** The time a preview word hands off to the final line that replaces it, independent of any pause absorbed into its end. */
-export const handoffAt = word => (word.startMs + Math.min(word.endMs, word.startMs + MAX_WORD_MS)) / 2;
+export const handoffAt = word => (word.startMs + Math.min(word.endMs, word.startMs + MIN_WORD_MS)) / 2;
 /** Split only after ownership/composition. Gap boundaries are display barriers, never recognizer or seal boundaries. */
 function gapBoundedPreviews(preview, gaps) {
   // A historical gap is not a boundary for an otherwise unrelated M9a lane. Only gaps that split word

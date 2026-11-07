@@ -37,6 +37,9 @@ function usable(items: Timed[] | undefined, windowMs: number): Timed[] | null {
   return out.length ? out : null;
 }
 
+/** Whether publication would use these word times (rather than fall back to native segments) in a window of this length. */
+export const usableTimes = (items: Timed[] | undefined, windowMs: number) => usable(items, windowMs) !== null;
+
 /** The short-sentence pause that saved lines published before SHORT_SENTENCE_PAUSE_MS; reconstruction of those chunks needs it. */
 export const EARLIER_SHORT_SENTENCE_PAUSE_MS = 150;
 

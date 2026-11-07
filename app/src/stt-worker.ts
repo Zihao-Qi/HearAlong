@@ -46,7 +46,7 @@ async function handleMessage(job: any) {
       if (pass.aborted || pass.truncated) throw new Error('The recognizer returned incomplete audio processing.');
       timestampKind = pass.timestampKind;
       return capPass({ text: pass.text.trim(), words: pass.words.map(w => ({ text: w.text, t0Ms: w.t0Ms, t1Ms: w.t1Ms })),
-        segments: pass.segments.map(s => ({ text: s.text, t0Ms: s.t0Ms, t1Ms: s.t1Ms })) });
+        segments: pass.segments.map(s => ({ text: s.text, t0Ms: s.t0Ms, t1Ms: s.t1Ms })) }, (part.length / SAMPLE_RATE) * 1000);
     });
     send({ kind: 'result', id: job.id, result: {
       text: result.text, backend: model.backend, computeMs: performance.now() - start, decodeMs,

@@ -5,14 +5,29 @@ import { echoWords, commonWords, type EchoWord } from './echo-words.ts';
 const RECENT_FINALS_MS = 10000;
 const SLACK_MS = 3000;
 
+type MicBlock = { source: string; windowStartMs: number; words: { text: string; startMs: number }[] };
+
 /**
- * The earliest call-final end that can still matter: the last ten seconds, extended back to cover the earliest open or pending mic
- * window (a window stays open or pending 16–24 s, and call words now end when they are spoken, not at the next word).
+ * The words a mic block is judged by (its last twenty), and the earliest call time they are compared with: three seconds before
+ * the later of the window start and the first checked word. Undefined when the block can never be judged an echo.
  */
-export function callFinalsFromMs(drafts: { source: string; windowStartMs: number }[], pending: { source: string; windowStartMs: number }[],
-  clockMs: number): number {
+function checked(block: MicBlock): { own: string[]; fromMs: number } | undefined {
+  if (!block.source.startsWith('mic:')) return undefined;
+  const tokens = block.words.flatMap(w => echoWords(w.text).map(text => ({ text, startMs: w.startMs }))).slice(-20);
+  if (tokens.length < 3) return undefined;
+  return { own: tokens.map(t => t.text), fromMs: Math.max(block.windowStartMs, tokens[0].startMs) - SLACK_MS };
+}
+
+/**
+ * The earliest call-final end that can still matter: the last ten seconds, extended back to cover the checked words of every open or
+ * pending mic window (a window stays open or pending 16–24 s, and call words now end when they are spoken, not at the next word).
+ */
+export function callFinalsFromMs(drafts: MicBlock[], pending: MicBlock[], clockMs: number): number {
   let from = clockMs - RECENT_FINALS_MS;
-  for (const block of [...drafts, ...pending]) if (block.source.startsWith('mic:')) from = Math.min(from, block.windowStartMs - SLACK_MS);
+  for (const block of [...drafts, ...pending]) {
+    const judged = checked(block);
+    if (judged) from = Math.min(from, judged.fromMs);
+  }
   return from;
 }
 
@@ -29,13 +44,13 @@ export function filterPreviewEchoes<D extends Omit<Draft, 'meetingId'>, P extend
     ...callRuns.flatMap(run => run.words)].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
   // Each original block owns its own decision. A matching newer tail must not hide older, unrelated speech.
   const echoed = (block: D | P): boolean => {
-    if (!block.source.startsWith('mic:')) return false;
-    const own = block.words.flatMap(w => echoWords(w.text)).slice(-20);
-    if (own.length < 3) return false;
+    const judged = checked(block);
+    if (!judged) return false;
+    const { own, fromMs: from } = judged;
     let end = block.coveredUntilMs;
     for (const word of block.words) end = Math.max(end, word.endMs);
     if ('cutMs' in block) end = Math.max(end, block.cutMs);
-    const from = block.windowStartMs - SLACK_MS, until = end + SLACK_MS;
+    const until = end + SLACK_MS;
     const nearby = reference.filter(w => w.endMs >= from && w.startMs <= until).flatMap(w => echoWords(w.text));
     return commonWords(own, nearby) * 5 >= own.length * 4;
   };

@@ -55,6 +55,18 @@ test('a call line that ended long before the ten-second horizon still hides its 
     'a later mic window does not reach back to the call line');
 });
 
+test('a long open mic window is compared from its first checked word, not from its opening', () => {
+  const phrase = 'The paper lantern is ready';
+  const callFinals = draft('app:call', phrase, 1000).words;
+  // The mic window opened at 0 but stayed silent until the user said the same phrase at 19 s.
+  const mic = { ...draft('mic:room', phrase, 19000), windowStartMs: 0, committedUntilMs: 0, coveredUntilMs: 21000 };
+  assert.equal(callFinalsFromMs([mic], [], 22000), 12000, 'the window start no longer reaches back');
+  assert.equal(filterPreviewEchoes([mic], [], ['app:call'], callFinals, 22000).drafts[0].text, phrase, 'the genuine phrase stays visible');
+  const pending: PendingDraft = { ...mic, chunkId: 'mic-window', cutMs: 21000 };
+  assert.deepEqual(filterPreviewEchoes([], [pending], ['app:call'], callFinals, 22000).pending, [pending]);
+  assert.equal(callFinalsFromMs([draft('mic:room', 'okay then', 0)], [], 25000), 15000, 'a block under three words can never be an echo');
+});
+
 test('call pending and active words form one meeting-ordered reference, microphone checks its last twenty normalized words', () => {
   const mic = draft('mic:room', 'old unique unmatched words one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty');
   const call = draft('app:call', 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty');
