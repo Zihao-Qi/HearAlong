@@ -15,7 +15,7 @@ test('sentences end at punctuation or pauses; short utterances and the tail are 
   const out = buildSegments(20_000, { text: 'x', words: words(
     ['We', 0, 100], ['rinse', 150, 300], ['gravel.', 350, 900],
     ['Wait.', 1500, 1800],
-    ['Next', 2000, 2100], ['the', 2150, 2200], ['bucket', 2250, 2500],
+    ['Next', 2200, 2300], ['the', 2350, 2400], ['bucket', 2450, 2700], // a short sentence keeps its own line after a 400 ms pause
     ['drains', 3600, 3900], // 1.1 s pause before this word
   ) });
   assert.deepEqual(out.map(s => s.text), ['We rinse gravel.', 'Wait.', 'Next the bucket', 'drains']);

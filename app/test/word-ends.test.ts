@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { capPass, capWordEnd, wordCapMs, MAX_WORD_MS, MIN_WORD_MS } from '../src/word-ends.ts';
-import { buildSegments, wordSegments } from '../src/segments.ts';
+import { capPass, capWordEnd, wordCapMs, MAX_WORD_MS, MIN_WORD_MS, MAX_NUMBER_MS } from '../src/word-ends.ts';
+import { buildSegments, wordSegments, EARLIER_SHORT_SENTENCE_PAUSE_MS } from '../src/segments.ts';
 import { transcribeRecovering, type Word } from '../src/recovery.ts';
 import { LocalRecognizer } from '../src/recognizer.ts';
 import { MeetingStore, type Chunk } from '../src/store.ts';
+import { echoesFor, rolesFor, type EchoSegment } from '../src/speakers.ts';
+import { handoffAt } from '../public/transcript-view.js';
+import { coversTime, midpoint } from '../public/preview-composition.js';
 
 const words = (...items: [string, number, number][]): Word[] => items.map(([text, t0Ms, t1Ms]) => ({ text, t0Ms, t1Ms }));
 const lines = (parts: { text: string; startMs: number; endMs: number }[]) => parts.map(p => [p.text, p.startMs, p.endMs]);
@@ -119,4 +122,126 @@ test('the echo rule still hides a doubled Me line when both channels have capped
     assert.deepEqual(store.segments(meeting.id).map(s => s.source), ['app:call'], 'the Me echo is hidden');
     assert.equal(store.recentCallWords(meeting.id, new Set(['app:call']), 0).at(-1)!.endMs, 6820);
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('numbers get 300 ms per digit or symbol (400–2500 ms), acronyms 300 ms per letter (400–2000 ms)', () => {
+  assert.equal(wordCapMs('2.1.3'), 900, 'three digits; the dots are not counted');
+  assert.equal(wordCapMs('42,'), 600);
+  assert.equal(wordCapMs('7'), MIN_WORD_MS, 'at least one symbol, then the floor');
+  assert.equal(wordCapMs('50%'), 900);
+  assert.equal(wordCapMs('$1,250,000'), 2400, 'the currency sign and seven digits');
+  assert.equal(wordCapMs('1234567890'), MAX_NUMBER_MS);
+  assert.equal(wordCapMs('AB12'), 600, 'a word with a digit is counted as a number');
+  assert.equal(wordCapMs('NASA'), 1200);
+  assert.equal(wordCapMs('U.S.'), 600, 'non-letters are removed first');
+  assert.equal(wordCapMs('FBI.'), 900);
+  assert.equal(wordCapMs('ABCDEF'), 1800);
+  assert.equal(wordCapMs('ABCDEFG'), 630, 'seven letters are not an acronym');
+  assert.equal(wordCapMs('I'), MIN_WORD_MS, 'one letter is not an acronym');
+  assert.equal(wordCapMs('Ok'), MIN_WORD_MS, 'not all uppercase');
+  assert.equal(wordCapMs('Maple'), 450);
+  assert.equal(wordCapMs('你好'), MIN_WORD_MS, 'letters without case are not an acronym');
+  assert.deepEqual(capWordEnd({ text: '2.1.3', t0Ms: 1000, t1Ms: 2100 }), { text: '2.1.3', t0Ms: 1000, t1Ms: 1900 });
+  const said = { text: '2.1.3', t0Ms: 1000, t1Ms: 1800 };
+  assert.equal(capWordEnd(said), said);
+});
+
+test('native segments are not shortened by blank words or by a word list with broken times', () => {
+  const blank = { text: 'Quill hums', words: words([' ', 100, 300], ['', 400, 500]), segments: words(['Quill hums', 100, 900]) };
+  assert.deepEqual(capPass(blank).segments, blank.segments);
+  assert.deepEqual(buildSegments(20_000, capPass(blank)), [{ startMs: 100, endMs: 900, text: 'Quill hums', timing: 'segment' }]);
+  for (const broken of [words(['Quill', 100, 300], ['hums', NaN, 800]), words(['Quill', 100, 300], ['hums', 2000, 1500]),
+    words(['Quill', 100, 300], ['hums', 400, Infinity])]) {
+    const pass = { text: 'Quill hums', words: broken, segments: words(['Quill hums', 100, 3000]) };
+    assert.deepEqual(capPass(pass).segments, pass.segments);
+    assert.deepEqual(buildSegments(20_000, capPass(pass)), [{ startMs: 100, endMs: 3000, text: 'Quill hums', timing: 'segment' }]);
+  }
+});
+
+test('a 1–2 word sentence stays with the next one across a 200 ms pause and splits at 500 ms', () => {
+  const said = (next: number) => words(['Okay.', 0, 300], ['maple', next, next + 300], ['drifts', next + 350, next + 600], ['north.', next + 650, next + 900]);
+  const text = 'Okay. maple drifts north.';
+  assert.deepEqual(lines(buildSegments(20_000, { text, words: capPass({ text, words: said(500) }).words })), [['Okay. maple drifts north.', 0, 1400]]);
+  assert.deepEqual(lines(buildSegments(20_000, { text, words: capPass({ text, words: said(800) }).words })),
+    [['Okay.', 0, 300], ['maple drifts north.', 800, 1700]]);
+});
+
+test('lines saved under the earlier 150 ms short-sentence rule still reconstruct their word times', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'word-ends-short-'));
+  const store = new MeetingStore(directory);
+  try {
+    const meeting = store.createMeeting('Fictional short sentence');
+    const chunk = await store.addPcm(meeting.id, 'mic:room', 0, 0, 16000, Buffer.alloc(4 * 16000 * 20));
+    const said = words(['Okay.', 0, 300], ['maple', 550, 800], ['drifts', 850, 1100], ['north.', 1150, 1400]);
+    store.completeChunk(chunk.id, recognition('Okay. maple drifts north.', said));
+    assert.deepEqual(lines(store.db.prepare('SELECT text, startMs, endMs FROM segments WHERE chunkId=?').all(chunk.id) as never),
+      [['Okay. maple drifts north.', 0, 1400]], 'the current rule keeps the short sentence attached');
+    const earlier = wordSegments(20_000, said, EARLIER_SHORT_SENTENCE_PAUSE_MS);
+    assert.deepEqual(lines(earlier), [['Okay.', 0, 300], ['maple drifts north.', 550, 1400]]);
+    store.db.prepare('DELETE FROM segments WHERE chunkId=?').run(chunk.id);
+    const insert = store.db.prepare(`INSERT INTO segments (id,meetingId,chunkId,source,ord,startMs,endMs,text,originalText,timing)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`);
+    earlier.forEach((s, ord) => insert.run(`${chunk.id}:${ord}`, meeting.id, chunk.id, 'mic:room', ord, s.startMs, s.endMs, s.text, s.text, 'word'));
+    assert.deepEqual(store.recentCallWords(meeting.id, new Set(['mic:room']), 0).map(w => [w.text, w.startMs, w.endMs]),
+      said.map(w => [w.text, w.t0Ms, w.t1Ms]), 'each saved line finds its own words');
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('the echo rule at a capture edge reads capped word times: a pre-call word no longer stretches into the call', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'word-ends-edge-'));
+  const store = new MeetingStore(directory);
+  try {
+    const rest = 'paper lamps turn amber shades beside folded copper frames after sunset today'.split(' ');
+    // Meeting times; the mic chunk starts at 3000 and the call at 4500. "please" is said at 4000, before the call starts.
+    const said = [{ text: 'please', t0Ms: 4000, t1Ms: 5050 }, ...rest.map((text, i) => ({ text, t0Ms: 5150 + i * 350, t1Ms: 5350 + i * 350 }))];
+    const text = said.map(w => w.text).join(' ');
+    const run = async (micWords: Word[]) => {
+      const meeting = store.createMeeting('Fictional lamp call');
+      const mic = await store.addPcm(meeting.id, 'mic:room', 0, 3000, 16000, Buffer.alloc(4 * 16000 * 8));
+      store.completeChunk(mic.id, recognition(text, micWords.map(w => ({ ...w, t0Ms: w.t0Ms - 3000, t1Ms: w.t1Ms - 3000 }))));
+      const call = await store.addPcm(meeting.id, 'app:call', 0, 4500, 16000, Buffer.alloc(4 * 16000 * 6));
+      store.completeChunk(call.id, recognition(rest.join(' '), [], { audioSeconds: 6, timestampKind: 'chunk' }));
+      return meeting.id;
+    };
+    const stretched = await run(said);
+    assert.equal(store.segments(stretched).some(s => s.source === 'mic:room'), false, 'the stretched word looked as if it were inside the call');
+    const capped = await run(capPass({ text, words: said }).words);
+    const line = store.db.prepare("SELECT startMs, endMs, timing FROM segments WHERE meetingId=? AND source='mic:room'").get(capped);
+    assert.deepEqual({ ...line }, { startMs: 4000, endMs: 9200, timing: 'word' }, 'one line, not fully inside the call');
+    assert.deepEqual(store.recentCallWords(capped, new Set(['mic:room']), 0)[0], { text: 'please', startMs: 4000, endMs: 4540 });
+    assert.equal(store.segments(capped).some(s => s.source === 'mic:room'), true, 'the unmatched pre-call word keeps the Me line visible');
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a 1–2 word Me line is hidden only as the in-order tail or head of a hidden echo in its chunk', () => {
+  const roles = rolesFor([{ source: 'mic:room', startMs: 0, endMs: 60000 }, { source: 'app:call', startMs: 0, endMs: 60000 }]);
+  const me = (ord: number, text: string, startMs: number, endMs: number, chunkId = 'mic-chunk'): EchoSegment =>
+    ({ id: `${chunkId}:${ord}`, chunkId, ord, source: 'mic:room', text, startMs, endMs });
+  const call = (text: string): EchoSegment => ({ id: 'call:0', chunkId: 'call', ord: 0, source: 'app:call', text, startMs: 9000, endMs: 13500 });
+  const hidden = (...all: EchoSegment[]) => [...echoesFor(all, roles)].sort();
+  const echo = me(0, 'The paper lantern is ready.', 10000, 12000), remote = call('The paper lantern is ready. Thank you.');
+  assert.deepEqual(hidden(echo, me(1, 'Thank you.', 12500, 13000), remote), ['mic-chunk:0', 'mic-chunk:1']);
+  assert.deepEqual(hidden(me(0, 'Okay.', 9000, 9400), me(1, 'The paper lantern is ready.', 10000, 12000), call('Okay. The paper lantern is ready.')),
+    ['mic-chunk:0', 'mic-chunk:1'], 'a short head before the echo');
+  assert.deepEqual(hidden(me(1, 'Thank you.', 12500, 13000), remote), [], 'never on its own');
+  assert.deepEqual(hidden(me(0, 'I prefer a round green lantern.', 10000, 12000), me(1, 'Thank you.', 12500, 13000), remote), [],
+    'the neighbouring line is genuine');
+  assert.deepEqual(hidden(echo, me(1, 'Yes please.', 12500, 13000), remote), ['mic-chunk:0'], 'a genuine reply beside an echo');
+  assert.deepEqual(hidden(echo, me(1, 'you thank', 12500, 13000), remote), ['mic-chunk:0'], 'words must be in order');
+  assert.deepEqual(hidden(echo, me(1, 'Thank you.', 12500, 13000, 'other-chunk'), remote), ['mic-chunk:0'], 'another chunk');
+  assert.deepEqual(hidden(echo, me(2, 'Thank you.', 12500, 13000), remote), ['mic-chunk:0'], 'not adjacent');
+  assert.deepEqual(hidden(echo, me(1, 'Thank you.', 12500, 13000), me(2, 'Okay.', 13100, 13300), call('The paper lantern is ready. Thank you. Okay.')),
+    ['mic-chunk:0', 'mic-chunk:1'], 'a short line beside a short hidden line stays');
+  assert.deepEqual(hidden(echo, me(1, 'Thank you.', 20000, 20500), remote), ['mic-chunk:0'], 'the remote words must overlap the line itself');
+});
+
+test('the transcript view hands a stretched preview word to the final line that holds its capped end', () => {
+  const final = { startMs: 2000, endMs: 4330 }; // "maple drifts onward." with "onward." from 3700, capped at 4330
+  const stretched = { text: 'onward.', startMs: 3700, endMs: 9000 };
+  assert.equal(coversTime(final, midpoint(stretched)), false, 'the stretched midpoint falls after the final line');
+  assert.equal(handoffAt(stretched), 4300);
+  assert.equal(coversTime(final, handoffAt(stretched)), true);
+  const plain = { text: 'maple', startMs: 2000, endMs: 2300 };
+  assert.equal(handoffAt(plain), midpoint(plain), 'an ordinary word uses its midpoint');
+  assert.equal(handoffAt({ startMs: 5000, endMs: 5000 }), 5000);
 });

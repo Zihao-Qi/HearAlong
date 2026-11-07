@@ -5,6 +5,7 @@ export type DisplaySegment = { id: string; source?: string; startMs: number; end
 export type TranscriptSnapshot = { segments: DisplaySegment[]; drafts?: Preview[]; pending?: PendingPreview[]; labelled?: boolean; captureGaps?: CaptureGap[]; paragraphBarriers?: ParagraphBarrier[] };
 export type TranscriptRow = { kind?: string; gap?: CaptureGap; gapText?: string; key: string; signature: string; startMs: number; endMs: number; segments: DisplaySegment[]; preview?: ComposedPreview; speaker?: string | null };
 export function transcriptRows(snapshot: TranscriptSnapshot): TranscriptRow[];
+export function handoffAt(word: { startMs: number; endMs: number }): number;
 export function createTranscriptView(box: HTMLElement, options: { segmentNode: (segment: DisplaySegment) => HTMLElement; changed?: () => void; emptyText?: () => string }): {
   paragraphs: Map<string, HTMLElement>; following: boolean; readonly paused: boolean; render: (snapshot: TranscriptSnapshot, preserve?: boolean) => void; follow: () => void; reset: () => void;
 };

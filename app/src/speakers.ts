@@ -37,11 +37,13 @@ export function rolesFor(ranges: { source: string; startMs: number; endMs: numbe
   return { labelled, roleOf, tabs, cacheKey };
 }
 
-export type EchoSegment = { id: string; source: string; startMs: number; endMs: number; text: string; words?: EchoWord[] };
+export type EchoSegment = { id: string; source: string; startMs: number; endMs: number; text: string; words?: EchoWord[]; chunkId?: string; ord?: number };
 
 /** Read-time acoustic-echo heuristic. Never changes stored text or hides the call channel.
  * Hyphens separate words; other punctuation is removed except numeric separators/signs. Numbers are not expanded.
  * All overlapping remote pieces are joined in meeting order, regardless of their chunk boundaries.
+ * A Me line under three words is never an echo on its own: only as the tail of an echo, when a neighbouring line of its chunk
+ * (adjacent `ord`) is hidden and all of its words appear, in order, in the overlapping remote text.
  */
 export function echoesFor(segments: EchoSegment[], speakers: Speakers,
   wordsFor: (segment: EchoSegment) => EchoWord[] | undefined = segment => segment.words): Set<string> {
@@ -65,6 +67,7 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers,
     overlapping(node * 2 + 1, mid, to, limit, earliest, into);
   };
   const inCall = (word: EchoWord) => speakers.tabs.some(t => (word.startMs + word.endMs) / 2 >= t.startMs && (word.startMs + word.endMs) / 2 <= t.endMs);
+  const short: { mic: EchoSegment; words: string[]; limit: number; earliest: number }[] = [];
   for (const mic of segments) {
     if (role(mic) !== 'me') continue;
     const earliest = mic.startMs - 3000, latest = mic.endMs + 3000;
@@ -76,6 +79,7 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers,
     const limit = low;
     if (!limit || ends[1] < earliest) continue;
     let words = echoWords(mic.text);
+    if (words.length && words.length < 3 && mic.chunkId !== undefined && mic.ord !== undefined) short.push({ mic, words, limit, earliest });
     // Only consult stored timings at capture edges; ordinary interior segments keep the cheap whole-text path.
     if (!speakers.tabs.some(t => mic.startMs >= t.startMs && mic.endMs <= t.endMs)) {
       const timed = wordsFor(mic);
@@ -115,6 +119,15 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers,
       return false;
     };
     if (matches(1, 0, size)) echoes.add(mic.id);
+  }
+  if (!short.length || !echoes.size) return echoes;
+  // Neighbours come from the lines hidden above, so short lines never hide each other.
+  const hidden = new Set(segments.filter(s => echoes.has(s.id) && s.chunkId !== undefined && s.ord !== undefined).map(s => `${s.chunkId}\n${s.ord}`));
+  for (const { mic, words, limit, earliest } of short) {
+    if (!hidden.has(`${mic.chunkId}\n${mic.ord! - 1}`) && !hidden.has(`${mic.chunkId}\n${mic.ord! + 1}`)) continue;
+    const indices: number[] = [];
+    overlapping(1, 0, size, limit, earliest, indices);
+    if (commonWords(words, indices.flatMap(i => tokens[i] ??= echoWords(remote[i].text))) === words.length) echoes.add(mic.id);
   }
   return echoes;
 }
