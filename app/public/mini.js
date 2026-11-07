@@ -102,7 +102,7 @@ function render() {
   // Unless the lines follow the newest one, the line the user reads stays where it is on screen through this update (a notice
   // coming above them, new lines, a paragraph above changing). A selection in the lines holds them too.
   const selection = selected();
-  if (Math.abs($('m-scroll').scrollTop - view.setTop) >= 1) follow(atBottom()); // the user scrolled; its event has not come yet
+  syncScroll(); // account for a scroll whose event has not come yet
   const range = selection?.getRangeAt(0);
   const reading = range ? { range, y: range.getBoundingClientRect().top } : view.follow ? null : topLine();
   const statusKey = !recording ? 'none' : stopping ? 'stopping' : String(view.confirming);
@@ -223,11 +223,17 @@ function topLine() {
     if (bounds.top >= pane.top) { node = row; rect = bounds; edge = 'top'; break; }
   }
   if (!node) return null;
-  const pending = node.querySelector('.pending-preview');
-  const range = pending && document.createRange();
-  if (range) range.selectNodeContents(pending);
+  const range = pendingRange(node);
   return { key: node.dataset.key, edge, y: (range?.getBoundingClientRect() ?? rect)[edge],
-    chunkId: node.dataset.chunkId, text: pending?.textContent };
+    chunkId: node.dataset.chunkId, text: range?.toString() };
+}
+/** Pending anchors use text edges, not the surrounding row's box, both when saved and when restored. */
+function pendingRange(node) {
+  const text = node?.querySelector('.pending-preview');
+  if (!text) return null;
+  const range = document.createRange();
+  range.selectNodeContents(text);
+  return range;
 }
 /** Locate an old pending stretch inside its now-final, possibly multi-line paragraph. */
 function mergedAnchor(reading) {
@@ -254,7 +260,8 @@ function settle(reading, selection) {
   else {
     // An earlier, partly visible paragraph can grow while a later one is selected. Anchor the
     // selected words, not that earlier row's top (which would let the selection drift).
-    const target = reading.range ?? view.rows.get(reading.key) ?? mergedAnchor(reading);
+    const row = view.rows.get(reading.key);
+    const target = reading.range ?? (reading.text !== undefined ? pendingRange(row) ?? mergedAnchor(reading) : row);
     if (target) setTop($('m-scroll').scrollTop + target.getBoundingClientRect()[reading.edge ?? 'top'] - reading.y);
   }
   view.reading = view.follow && !selection ? null : topLine();
@@ -323,6 +330,14 @@ function atBottom() {
   const scroll = $('m-scroll');
   return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 2;
 }
+/** A smaller top at the end is a browser clamp, not the user scrolling down to follow. */
+function syncScroll() {
+  const top = $('m-scroll').scrollTop;
+  if (Math.abs(top - view.setTop) < 1) return;
+  const bottom = atBottom();
+  if (top < view.setTop && bottom) view.setTop = top;
+  else follow(bottom);
+}
 function setTop(top) {
   const scroll = $('m-scroll');
   if (Math.abs(scroll.scrollTop - top) >= 1) scroll.scrollTop = top; // otherwise left alone, so a scroll under way goes on
@@ -372,7 +387,7 @@ function edges() {
 function noteReading() { view.reading = view.follow && !selected() ? null : topLine(); }
 $('m-scroll').addEventListener('scroll', () => {
   edges();
-  if (Math.abs($('m-scroll').scrollTop - view.setTop) >= 1) follow(atBottom()); // the user's scroll, not this page's own
+  syncScroll();
   noteReading();
 });
 document.addEventListener('selectionchange', noteReading);
