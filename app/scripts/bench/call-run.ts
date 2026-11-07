@@ -25,7 +25,7 @@ import { summarize } from './stats.ts';
 import { NORMALIZER } from './wer.ts';
 import { BenchCallHelper } from './call-helper.ts';
 import { PAIRS, ROOM_VERSION, callLayout, farBlocks, layoutSamples, layoutSeconds, mixMicrophone, nearBlocks, pairName, pcm16Wav, placeClips, planClips,
-  scoreCall, sumCallScores, wallToMeetingMs, type CallCondition, type CallPair, type Layout, type Line, type Source } from './call-mix.ts';
+  lateCallStart, scoreCall, sumCallScores, wallToMeetingMs, type CallCondition, type CallPair, type Layout, type Line, type Source } from './call-mix.ts';
 
 type Role = 'me' | 'them' | 'none';
 type RoleSight = DomSight & { role: Role };
@@ -171,6 +171,21 @@ async function runPair(index: number, pair: CallPair, condition: CallCondition, 
   let settle: Settle | null = null;
   const directory = join(folder, 'run');
   const noticesBefore = notices.length;
+  /** One segments snapshot: call frames accepted so far reach their meter (in order), then ends, sources and diagnostic samples. */
+  const ingest = (body: { segments?: unknown }, now: number) => {
+    for (; accepted < helper.frames.length && helper.frames[accepted].acceptedAt !== null; accepted++) {
+      const frame = helper.frames[accepted];
+      themMeter.audio(frame.source, frame.endMs, frame.acceptedAt!);
+    }
+    rememberSegmentEnds(body, segmentEnds);
+    for (const segment of Array.isArray(body.segments) ? body.segments as { id?: unknown; source?: unknown }[] : []) {
+      if (typeof segment?.id === 'string' && typeof segment.source === 'string') segmentSources.set(segment.id, segment.source);
+    }
+    for (const [role, meter] of [['me', meMeter], ['them', themMeter]] as const) {
+      const sample = applySnapshot(meter, body, now);
+      diagnostic[role].preview.push(...sample.preview); diagnostic[role].final.push(...sample.final);
+    }
+  };
   const attach = async (page: Page) => {
     page.on('response', response => {
       const request = response.request();
@@ -206,19 +221,7 @@ async function runPair(index: number, pair: CallPair, condition: CallCondition, 
             const response = await fetch(`/api/meetings/${meeting.id}/segments`);
             return response.ok ? await response.json() : null;
           });
-          if (!body) return;
-          // Call frames reach the meter when the helper saw their 201, in order.
-          for (; accepted < helper.frames.length && helper.frames[accepted].acceptedAt !== null; accepted++) {
-            const frame = helper.frames[accepted];
-            themMeter.audio(frame.source, frame.endMs, frame.acceptedAt!);
-          }
-          rememberSegmentEnds(body, segmentEnds);
-          for (const segment of Array.isArray(body.segments) ? body.segments : []) if (typeof segment?.id === 'string' && typeof segment.source === 'string') segmentSources.set(segment.id, segment.source);
-          const now = Date.now();
-          for (const [role, meter] of [['me', meMeter], ['them', themMeter]] as const) {
-            const sample = applySnapshot(meter, body, now);
-            diagnostic[role].preview.push(...sample.preview); diagnostic[role].final.push(...sample.final);
-          }
+          if (body) ingest(body, Date.now());
         }).catch(() => { /* the page closes while the last finals settle */ }).finally(() => { polling = false; });
       };
       const takeSights = () => {
@@ -235,20 +238,25 @@ async function runPair(index: number, pair: CallPair, condition: CallCondition, 
       // the page shows each final line the segments view lists, so tail lines are timed too.
       settled: async (page, meetingId) => {
         const begun = Date.now(), until = begun + 60_000;
-        let last = { terminal: false, expected: [] as string[], visible: [] as string[] };
+        let last = { terminal: false, expected: [] as string[], visible: [] as string[], body: null as { segments?: unknown } | null, at: 0 };
         while (!page.isClosed()) {
           last = await page.evaluate(async id => {
             const meeting = await (await fetch(`/api/meetings/${id}`)).json() as { chunks?: { status: string }[] };
-            const lines = await (await fetch(`/api/meetings/${id}/segments`)).json() as { segments?: { id: string }[] };
+            const body = await (await fetch(`/api/meetings/${id}/segments`)).json() as { segments?: { id: string }[] };
             const visible = [...document.querySelectorAll('#transcript .para[data-kind="final"] span[data-id]')].map(node => node.getAttribute('data-id') ?? '');
             return { terminal: Boolean(meeting.chunks?.length) && meeting.chunks!.every(chunk => ['completed', 'failed', 'cancelled'].includes(chunk.status)),
-              expected: (lines.segments ?? []).map(line => line.id), visible };
+              expected: (body.segments ?? []).map(line => line.id), visible, body, at: Date.now() };
           }, meetingId).catch(() => last);
           const seen = new Set(last.visible);
           if (last.terminal && last.expected.every(id => seen.has(id))) break;
           if (Date.now() >= until) break;
           await new Promise(resolve => setTimeout(resolve, 250));
         }
+        // Before the context closes: the poll timers may not run again, so feed the last snapshot and copy the page's sights now.
+        await idle; await sightsIdle;
+        if (last.body) ingest(last.body, last.at);
+        const list = await copySights(page);
+        if (list.length >= polled.length) polled = list;
         const seen = new Set(last.visible);
         settle = { waitedMs: Date.now() - begun, chunksTerminal: last.terminal, expected: last.expected.length, missing: last.expected.filter(id => !seen.has(id)).length };
       },
@@ -302,6 +310,10 @@ async function runPair(index: number, pair: CallPair, condition: CallCondition, 
     notices: notices.slice(noticesBefore),
   };
   const lag = lagOf({ me: meLags, them: themLags }), diag = lagOf(diagnostic);
+  // Call audio played before the helper started is never sent. The far speaker's first utterance starts 0.3 s into the first block,
+  // so a call that starts later than the lead minus 1 s could miss far words, which would read as Them deletions and Me leakage.
+  const callStartMs = helper.frames[0] && startedAt !== null ? helper.frames[0].captureWallMs - startedAt : null;
+  failure ??= lateCallStart(layout, callStartMs);
   const settled = settle as Settle | null; // Set inside the rehearsal's callback.
   if (!settled) failure ??= 'The run did not reach the settled check.';
   else if (!settled.chunksTerminal) failure ??= 'Not every chunk was final after Stop.';
@@ -314,7 +326,7 @@ async function runPair(index: number, pair: CallPair, condition: CallCondition, 
   const result: CallPairResult = {
     name, pair: pairName(pair), delayMs: pair.delayMs, gainDb: pair.gainDb, audioSeconds: layoutSeconds(layout), error: failure,
     failedChunks, unfinishedChunks, score, lag, diagnostic: diag, aec, afterStop, settle: settled ?? { waitedMs: 0, chunksTerminal: false, expected: 0, missing: 0 },
-    timebase: { ...timebase, clockOffsetMs, callStartMs: helper.frames[0] && startedAt !== null ? helper.frames[0].captureWallMs - startedAt : null },
+    timebase: { ...timebase, clockOffsetMs, callStartMs },
   };
   const samples = { me: meLags, them: themLags, diagnostic };
   await writeFile(join(folder, 'detail.json'), `${JSON.stringify({ ...result, room: mixed.room, provenance: { near: near.provenance, far: far.provenance },
