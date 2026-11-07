@@ -41,6 +41,11 @@ export function rescore(raw: Record<string, unknown>, originalName: string, path
   return { ...raw, ...metadata, sessions, totals: { ...run.totals, ...sumScores(sessions) } };
 }
 
+/** `--all` re-scores wer/live results only: already re-scored files, ihm checks and call runs (scored from their own run folders) are left alone. */
+export function skippedByAll(raw: Record<string, unknown>): boolean {
+  return Boolean(raw.rescoredFrom) || raw.kind === 'ihm' || raw.kind === 'call';
+}
+
 function main(): void {
   const args = process.argv.slice(2), paths = benchPaths();
   if (!args.length || (args.includes('--all') && args.length !== 1) || args.some(arg => arg.startsWith('--') && arg !== '--all')) throw new Error('Usage: npm run bench:rescore -- <result.json ...> | --all');
@@ -50,7 +55,7 @@ function main(): void {
   for (const file of files) {
     try {
       const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
-      if (args[0] === '--all' && (raw.rescoredFrom || raw.kind === 'ihm')) continue;
+      if (args[0] === '--all' && skippedByAll(raw)) continue;
       const next = rescore(raw, basename(file), paths, scoring);
       const output = resultPath(paths.results, next.kind as 'wer' | 'live');
       writeFileSync(output, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: 'wx' });

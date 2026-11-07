@@ -76,9 +76,13 @@ function provenanceTable(group: BenchResult[]): string[] {
 function renderCallRuns(runs: CallFile[]): string {
   const lines = [ATTRIBUTION, '', 'Accuracy is custom-normalized WER; not directly comparable to published Whisper/NIST scores. Echo is simulated (see Method).'];
   let index = 0;
-  for (const [key, group] of cohorts(runs)) {
+  const numbers = new Map<string, number>();
+  // The echo and control files of one run share a date; put echo first so ties never depend on the order of the input files.
+  const ordered = [...runs].sort((a, b) => Number(a.condition.mode !== 'echo') - Number(b.condition.mode !== 'echo') || a.condition.batch.localeCompare(b.condition.batch));
+  for (const [key, group] of cohorts(ordered)) {
     const legacy = key.startsWith('legacy:'), example = group[0], finished = group.filter(run => !run.error);
     const mode = example.condition.mode === 'echo' ? 'with echo' : 'control, no echo';
+    if (!legacy) numbers.set(key, index + 1);
     lines.push('', legacy ? '### Legacy' : `### Call cohort ${++index} — ${mode}`, '', `${group.length} ${group.length === 1 ? 'run' : 'runs'}; ${finished.length} finished.`, '',
       `Normalizer: ${example.normalizer ?? 'hearalong-1'}. Scoring commit: ${example.scoringCommit ?? example.commit}; scoring dirty: ${example.scoringDirty ?? example.dirty ?? 'unknown'}.`, '',
       `Condition: ${example.condition.blocks} blocks of 20 s per pair${example.condition.smoke ? ' (smoke run)' : ''}; room ${example.condition.room}; pairs ${example.condition.pairs.join(', ')}.`, '',
@@ -90,6 +94,7 @@ function renderCallRuns(runs: CallFile[]): string {
       ['Run', 'Pairs', 'Near-only WER', 'Double-talk WER', 'Me words in echo-only blocks', 'Far words in Me, echo only', 'Far words in Me, double talk', 'Genuine Me words hidden'],
       group.map(run => { const t = run.totals.score; return [n(run), run.totals.pairs, wer(t.nearOnly.me), wer(t.doubleTalk.me), t.echoOnly.leak.meWords,
         formatLeak(t.echoOnly.leak), formatLeak(t.doubleTalk.leak), formatHidden(t.nearOnly.hidden.genuine + t.doubleTalk.hidden.genuine, t.nearOnly.hidden.recognizedGenuine + t.doubleTalk.hidden.recognizedGenuine)]; })));
+    lines.push('', UPPER_BOUNDS);
     if (!legacy) lines.push('', aggregate('Me near-only WER', finished.filter(r => r.totals.score.nearOnly.me.referenceWords).map(r => r.totals.score.nearOnly.me.wer), formatPercent),
       aggregate('Me double-talk WER', finished.filter(r => r.totals.score.doubleTalk.me.referenceWords).map(r => r.totals.score.doubleTalk.me.wer), formatPercent),
       aggregate('far-word rate in Me, echo only', finished.filter(r => r.totals.score.echoOnly.leak.farWords).map(r => r.totals.score.echoOnly.leak.rate), formatPercent));
@@ -97,6 +102,7 @@ function renderCallRuns(runs: CallFile[]): string {
       ['Run', 'Talk state', 'Me lines hidden', 'Me words hidden', 'Far words in Me, raw', 'Far words in Me, shown', 'Genuine Me words hidden', 'Me WER raw', 'Me WER shown'],
       group.flatMap(run => (['echoOnly', 'nearOnly', 'doubleTalk'] as const).map(state => { const t = run.totals.score[state]; return [n(run), STATE_NAMES[state], t.hidden.lines, t.hidden.words,
         formatLeak(t.leakRaw), formatLeak(t.leak), formatHidden(t.hidden.genuine, t.hidden.recognizedGenuine), state === 'echoOnly' ? 'n/a' : wer(t.meRaw), state === 'echoOnly' ? 'n/a' : wer(t.me)]; }))));
+    lines.push('', UPPER_BOUNDS);
     lines.push('', '#### Them (call source)', '', ...markdownTable(['Run', 'Far alone WER (echo-only blocks)', 'Double-talk WER'],
       group.map(run => [n(run), wer(run.totals.score.echoOnly.them), wer(run.totals.score.doubleTalk.them)])));
     if (!legacy) lines.push('', aggregate('Them WER, far alone', finished.filter(r => r.totals.score.echoOnly.them.referenceWords).map(r => r.totals.score.echoOnly.them.wer), formatPercent));
@@ -116,17 +122,19 @@ function renderCallRuns(runs: CallFile[]): string {
       group.flatMap(run => run.pairs.map(pair => { const t = pair.score; return [n(run), pair.pair, `${pair.delayMs} ms, ${pair.gainDb} dB`, wer(t.nearOnly.me), wer(t.doubleTalk.me),
         formatLeak(t.echoOnly.leak), wer(t.echoOnly.them), formatHidden(t.nearOnly.hidden.genuine + t.doubleTalk.hidden.genuine, t.nearOnly.hidden.recognizedGenuine + t.doubleTalk.hidden.recognizedGenuine),
         formatLag(pair.lag.me.final, 'p50'), formatLag(pair.lag.them.final, 'p50'), pair.error ? oneLine(pair.error) : '']; }))));
+    lines.push('', UPPER_BOUNDS);
     lines.push('', '##### Diagnostic: reached server to available on server', '', 'LagMeter on the segments snapshot, from each source\'s PCM upload HTTP 201, pooled across finished pairs. A final counts when the line reaches the snapshot, which can be before the page shows it.', '',
       ...callLagTable(group, n, run => run.totals.diagnostic));
   }
-  lines.push(...renderCallControl(runs));
+  lines.push(...renderCallControl(runs, numbers));
   return lines.join('\n');
 }
 
 /** Me WER with echo beside the control (no echo) from the same run, matched by batch, cohort by cohort. Never pooled across modes. */
-function renderCallControl(runs: CallFile[]): string[] {
+function renderCallControl(runs: CallFile[], numbers: ReadonlyMap<string, number>): string[] {
+  // Newest first, as cohorts() orders them, so the output does not depend on the order of the input files.
   const pairsOf = new Map<string, { echo: CallFile[]; control: CallFile[] }>();
-  for (const run of runs) {
+  for (const run of [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.condition.mode.localeCompare(b.condition.mode))) {
     const key = cohortKey({ ...run, condition: { ...run.condition, mode: 'echo' } });
     if (!key) continue;
     const entry = pairsOf.get(key) ?? { echo: [], control: [] };
@@ -142,7 +150,8 @@ function renderCallControl(runs: CallFile[]): string[] {
       .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt));
     if (!matched.length) continue;
     const example = matched[0].e.condition;
-    lines.push('', `### Echo against control ${++index}`, '', `Me WER with the simulated echo and in the control (the same microphone without echo, AEC still running), from the same runs. ${example.blocks} blocks per pair${example.smoke ? ' (smoke run)' : ''}; pairs ${example.pairs.join(', ')}. The difference is echo minus control, in percentage points.`, '',
+    const echoNo = numbers.get(cohortKey(matched[0].e)!), controlNo = numbers.get(cohortKey(matched[0].c)!);
+    lines.push('', `### Echo against control ${++index} (call cohorts ${echoNo} and ${controlNo})`, '', `Me WER with the simulated echo and in the control (the same microphone without echo, AEC still running), from the same runs. ${example.blocks} blocks per pair${example.smoke ? ' (smoke run)' : ''}; pairs ${example.pairs.join(', ')}. The difference is echo minus control, in percentage points.`, '',
       ...markdownTable(['Batch', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
         matched.map(({ e, c }) => { const a = e.totals.score, b = c.totals.score; return [e.condition.batch, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me),
           wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]; })));
@@ -161,6 +170,7 @@ function renderCallControl(runs: CallFile[]): string[] {
   return lines;
 }
 
+const UPPER_BOUNDS = 'Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.';
 const STATE_NAMES = { echoOnly: 'Echo only', nearOnly: 'Near only', doubleTalk: 'Double talk' } as const;
 
 function callLagTable(group: CallFile[], n: (run: CallFile) => number, pick: (run: CallFile) => CallLag): string[] {

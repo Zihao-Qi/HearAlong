@@ -38,6 +38,13 @@ export function blockAt(layout: Layout, fileSeconds: number): number | null {
   return Number.isFinite(block) && block >= 0 && block < layout.blocks ? block : null;
 }
 
+/** An error when the call source started too late to carry the far speaker's first words (later than the lead minus 1 s), else null. */
+export function lateCallStart(layout: Layout, callStartMs: number | null): string | null {
+  const latestMs = (layout.leadSeconds - 1) * 1000;
+  if (callStartMs === null || !Number.isFinite(callStartMs)) return 'The call start time is unknown.';
+  return callStartMs > latestMs ? `The call source started ${(callStartMs / 1000).toFixed(2)} s after the microphone, later than ${latestMs / 1000} s (the lead minus 1 s): early far audio was not sent, so this pair is not scored.` : null;
+}
+
 export type Clip = { start: number; end: number };
 export type PlannedClip = Clip & { at: number };
 /**

@@ -2,9 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCallArgs } from '../scripts/bench/cli.ts';
-import { blockAt, callLayout, farBlocks, hiddenGenuine, layoutSamples, linePieces, mixMicrophone, nearBlocks, pcm16Wav, placeClips, planClips,
+import { blockAt, callLayout, lateCallStart, farBlocks, hiddenGenuine, layoutSamples, linePieces, mixMicrophone, nearBlocks, pcm16Wav, placeClips, planClips,
   power, roomTaps, scoreCall, speakerEcho, stateOf, sumCallScores, wallToMeetingMs, PAIRS, ROOM_VERSION, type Line } from '../scripts/bench/call-mix.ts';
 import { firstSample } from '../scripts/bench/call-helper.ts';
+import { skippedByAll } from '../scripts/bench/rescore.ts';
 import { parseWav } from '../scripts/rehearsal-input.ts';
 import { parseResult, type CallFile } from '../scripts/bench/results.ts';
 import { renderBench } from '../scripts/bench/report.ts';
@@ -234,4 +235,33 @@ test('echo and control never share a cohort; the report sets them side by side b
   assert.match(out, /\| 2026-01-02T00:00:00Z \| 0\.00% \| 0\.00% \| \+0\.00 pts \| 75\.00% \| 50\.00% \| \+25\.00 pts \|/);
   assert.match(out, /Median double-talk difference across 1 eligible run: \+25\.00 pts/);
   assert.equal((out.match(/### Echo against control/g) ?? []).length, 1, 'the unmatched control batch adds no comparison');
+});
+
+test('a call that starts later than the lead minus 1 s fails the pair', () => {
+  const full = callLayout(6);
+  assert.equal(lateCallStart(full, 1481), null);
+  assert.equal(lateCallStart(full, 5000), null);
+  assert.match(lateCallStart(full, 5001) ?? '', /started 5\.00 s after the microphone, later than 5 s .*not scored/);
+  assert.match(lateCallStart(full, null) ?? '', /unknown/);
+});
+
+test('bench:rescore --all leaves call runs, ihm checks and re-scored files alone', () => {
+  assert.equal(skippedByAll({ kind: 'call' }), true);
+  assert.equal(skippedByAll({ kind: 'ihm' }), true);
+  assert.equal(skippedByAll({ kind: 'wer', rescoredFrom: 'x.json' }), true);
+  assert.equal(skippedByAll({ kind: 'wer' }), false);
+  assert.equal(skippedByAll({ kind: 'live' }), false);
+});
+
+test('echo-against-control output is newest first, names its cohorts, and does not depend on input order', () => {
+  const doc = '<!-- bench:begin -->\n<!-- bench:end -->\n<!-- bench-call:begin -->\n<!-- bench-call:end -->\n';
+  const older = [callRun('2026-01-02T00:00:00Z'), callRun('2026-01-02T00:00:00Z', null, 'control')];
+  const newer = [callRun('2026-01-09T00:00:00Z'), callRun('2026-01-09T00:00:00Z', null, 'control')];
+  const runs = [...older, ...newer];
+  const out = renderBench(doc, runs);
+  for (const order of [[...runs].reverse(), [runs[2], runs[0], runs[3], runs[1]], [runs[1], runs[3], runs[0], runs[2]]]) assert.equal(renderBench(doc, order), out);
+  assert.match(out, /### Echo against control 1 \(call cohorts \d and \d\)/);
+  const table = out.slice(out.indexOf('### Echo against control 1'));
+  assert.ok(table.indexOf('2026-01-09T00:00:00Z') < table.indexOf('2026-01-02T00:00:00Z'), 'newest batch first');
+  assert.match(out, /Both counts run slightly high/);
 });
