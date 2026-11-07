@@ -1006,10 +1006,11 @@ export async function startServer(options: {
         }
         if (req.method === 'POST' && url.pathname === '/api/meetings') {
           const value = await json(req);
-          const title = typeof value.title === 'string' && value.title.trim() ? value.title.trim().slice(0, 120) : 'Untitled meeting';
+          const title = typeof value.title === 'string' && value.title.trim() ? value.title.trim().slice(0, 120) : undefined;
           const projectId = typeof value.projectId === 'string' ? value.projectId : null;
           if (projectId) projects.get(projectId);
-          const created = appStore.createMeeting(title);
+          // The page says when it made the name up (its dated name, autoTitle: true); a typed or older caller's name is the user's.
+          const created = appStore.createMeeting(title, title === undefined || value.autoTitle === true);
           if (projectId) {
             projects.move(created.id, projectId, []);
             // A new meeting of the project: look for work finished in the repo since the last check (waits for an OK).

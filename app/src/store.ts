@@ -16,7 +16,9 @@ import { captureGapText, mergeCaptureGaps, type CaptureGap } from '../public/cap
 import { paragraphsOf } from '../public/live-shared.js';
 
 export type Mode = 'periodic' | 'manual' | 'questions';
-export type Meeting = { id: string; title: string; createdAt: number; mode: Mode; intervalSeconds: number; replay: string | null; correction: string | null;
+/** autoTitle: the name HearAlong itself last gave the meeting (its dated name, or the notes' title); null once the user named it.
+ * Notes may rename only while the title still equals it, so a rename by any build, older ones included, keeps the user's name. */
+export type Meeting = { id: string; title: string; autoTitle: string | null; createdAt: number; mode: Mode; intervalSeconds: number; replay: string | null; correction: string | null;
   audioDoneAt: number | null; audioRemovedAt: number | null; audioRemovedAfter: string | null; audioLegacy: number; audioKept: number; audioGeneration: number; audioEmpty: number };
 export type Replay = { sourceId: string; startedAt: number; speed: number; baseMs: number; durationMs: number };
 export type Edit = { start: number; end: number; from: string; to: string };
@@ -64,6 +66,47 @@ async function openAudioFile(directory: string, path: string) {
     }
   }
 }
+
+/** The page's dated name for a new meeting (public/app.js, "New meeting"), in the Mac's locale or in English. */
+const STAMP_OPTIONS: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+/** Exactly a name the app made up: "Untitled meeting", or "Meeting " and the page's stamp of the creation time (the page
+ * stamps a moment before the server records createdAt, so the previous minute counts too). Anything else is the user's. */
+export function isAppMadeTitle(title: string, createdAt: number): boolean {
+  if (title === 'Untitled meeting') return true;
+  if (!title.startsWith('Meeting ')) return false;
+  // Browser and ICU versions differ only in which space precedes AM/PM (U+202F, U+00A0 or a plain space).
+  const spaces = (text: string) => text.replace(/[\u202f\u00a0]/g, ' ');
+  const stamp = spaces(title.slice('Meeting '.length));
+  for (const locale of [undefined, 'en-US']) for (const at of [createdAt, createdAt - 60_000]) {
+    if (spaces(new Date(at).toLocaleString(locale, STAMP_OPTIONS)) === stamp) return true;
+  }
+  return false;
+}
+/** The notes' suggested title as a meeting name: one line, no wrapping quotes or final full stop, at most 80 characters. */
+export function cleanSuggestedTitle(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  let title = value.replace(/\s+/g, ' ').trim();
+  for (let previous = ''; previous !== title;) {
+    previous = title;
+    const chars = Array.from(title), open = chars[0], close = chars.at(-1);
+    // Only a pair that wraps the whole title: '"Q3" vs "Q4"' has more of the same quotes inside and stays.
+    if (chars.length >= 2 && open !== undefined && close !== undefined && QUOTE_PAIRS[open]?.includes(close)) {
+      const inner = chars.slice(1, -1);
+      if (!inner.some(c => c === open || c === close || QUOTE_PAIRS[open].includes(c))) title = inner.join('').trim();
+    }
+  }
+  // One sentence-ending full stop; an ellipsis ("..."), an initialism ("U.S.") or a short abbreviation ("etc.") stays.
+  if (/[^.]\.$/.test(title) && !/(?:^|[\s.])\p{L}\.$/u.test(title) && !SHORT_ABBREVIATION.test(title)) title = title.slice(0, -1).trim();
+  const chars = Array.from(title);
+  if (chars.length > 80) {
+    const cut = chars.slice(0, 81).join('');
+    const space = cut.lastIndexOf(' ');
+    title = (space > 0 ? cut.slice(0, space) : chars.slice(0, 80).join('')).replace(/[\s,;:–—-]+$/u, '');
+  }
+  return /[\p{L}\p{N}]/u.test(title) ? title : '';
+}
+const QUOTE_PAIRS: Record<string, string> = { '"': '"“”', "'": "'‘’", '“': '”"', '”': '”', '‘': '’\'', '’': '’', '«': '»', '»': '«', '`': '`' };
+const SHORT_ABBREVIATION = /(?:^|\s)(?:etc|vs|approx|incl|misc|dept|corp|inc|ltd|co|no|vol|mr|mrs|ms|dr|prof|st|jr|sr)\.$/i;
 
 export class MeetingStore {
   db: DatabaseSync;
@@ -113,6 +156,7 @@ export class MeetingStore {
     for (const column of ['audioDoneAt INTEGER', 'audioRemovedAt INTEGER', 'audioRemovedAfter TEXT', 'audioLegacy INTEGER NOT NULL DEFAULT 1', 'audioKept INTEGER NOT NULL DEFAULT 0', 'recordingEndedAt INTEGER', 'audioGeneration INTEGER NOT NULL DEFAULT 0', 'audioEmpty INTEGER NOT NULL DEFAULT 0']) {
       if (!columns.includes(column.split(' ')[0])) this.db.exec(`ALTER TABLE meetings ADD COLUMN ${column}`);
     }
+    if (!columns.includes('autoTitle')) this.addAutoTitle();
     this.db.exec(`CREATE TABLE IF NOT EXISTS audio_retention (id INTEGER PRIMARY KEY CHECK(id=1), decision TEXT);
       INSERT OR IGNORE INTO audio_retention(id) VALUES (1);
       CREATE TABLE IF NOT EXISTS audio_removals (meetingId TEXT NOT NULL REFERENCES meetings(id), generation INTEGER NOT NULL,
@@ -184,6 +228,17 @@ export class MeetingStore {
       }
       // A marker only: never use this to skip repair, and do not downgrade a future schema version.
       if (Number((this.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version) < 3) this.db.exec('PRAGMA user_version = 3');
+    });
+  }
+  /** Rows from before the column: an app-made name may later take the notes' title; every other name is the user's.
+   * The column and its classification commit together, so a crash cannot leave unclassified rows for a later open. */
+  private addAutoTitle() {
+    this.transaction(() => {
+      this.db.exec('ALTER TABLE meetings ADD COLUMN autoTitle TEXT');
+      const mark = this.db.prepare('UPDATE meetings SET autoTitle=title WHERE id=?');
+      for (const row of this.db.prepare("SELECT id,title,createdAt FROM meetings WHERE title='Untitled meeting' OR title GLOB 'Meeting *'").all() as { id: string; title: string; createdAt: number }[]) {
+        if (isAppMadeTitle(row.title, row.createdAt)) mark.run(row.id);
+      }
     });
   }
   /** Completed chunks from before segments existed get them once; legacy native timings are kept. */
@@ -364,10 +419,13 @@ export class MeetingStore {
   setCorrectionState(meetingId: string, state: unknown) {
     this.db.prepare('UPDATE meetings SET correction=? WHERE id=?').run(JSON.stringify(state), meetingId);
   }
-  createMeeting(title = 'Untitled meeting'): Meeting {
-    const meeting: Meeting = { id: randomUUID(), title, createdAt: Date.now(), mode: 'periodic', intervalSeconds: 60, replay: null, correction: null,
+  /** A name given here is the user's unless the caller says the app made it up (the page's dated name). */
+  createMeeting(title?: string, madeUp = title === undefined): Meeting {
+    title ??= 'Untitled meeting';
+    const autoTitle = madeUp ? title : null;
+    const meeting: Meeting = { id: randomUUID(), title, autoTitle, createdAt: Date.now(), mode: 'periodic', intervalSeconds: 60, replay: null, correction: null,
       audioDoneAt: null, audioRemovedAt: null, audioRemovedAfter: null, audioLegacy: 0, audioKept: 0, audioGeneration: 0, audioEmpty: 0 };
-    this.db.prepare('INSERT INTO meetings (id,title,createdAt,audioLegacy) VALUES (?,?,?,0)').run(meeting.id, title, meeting.createdAt);
+    this.db.prepare('INSERT INTO meetings (id,title,autoTitle,createdAt,audioLegacy) VALUES (?,?,?,?,0)').run(meeting.id, title, autoTitle, meeting.createdAt);
     return meeting;
   }
   meeting(id: string): Meeting {
@@ -378,9 +436,17 @@ export class MeetingStore {
   meetings(): Meeting[] {
     return this.db.prepare('SELECT * FROM meetings ORDER BY createdAt DESC').all() as Meeting[];
   }
+  /** The user's rename: from now on the name is theirs and AI never changes it. */
   rename(id: string, title: string) {
     this.meeting(id);
-    this.db.prepare('UPDATE meetings SET title=? WHERE id=?').run(title, id);
+    this.db.prepare('UPDATE meetings SET title=?, autoTitle=NULL WHERE id=?').run(title, id);
+  }
+  /** Saved notes rename a meeting only while it still has the name HearAlong gave it; a user's name stays. True when renamed. */
+  titleFromNotes(id: string, suggestion: unknown): boolean {
+    const title = cleanSuggestedTitle(suggestion);
+    if (!title) return false;
+    return Number(this.db.prepare('UPDATE meetings SET title=?, autoTitle=? WHERE id=? AND autoTitle IS NOT NULL AND title=autoTitle AND title<>?')
+      .run(title, title, id, title).changes) > 0;
   }
   updateMode(id: string, mode: Mode, intervalSeconds: number) {
     this.meeting(id);

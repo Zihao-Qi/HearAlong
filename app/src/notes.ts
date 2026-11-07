@@ -772,7 +772,7 @@ export class NotesJobs {
         const model = result.provider && result.model ? `${result.provider}/${result.model}` : result.model ?? null;
         await recordQuoteChecks(this.options.directory, 'notes', model, notesOutcomes({ notes, dropped }), this.options.clock());
         if (!NOTE_SECTIONS.some(section => notes[section].length) && !notes.needsReview.length) throw new Error('The model returned no usable notes.');
-        await this.file(meetingId).save({
+        const saved = await this.file(meetingId).save({
           createdAt: this.options.clock(), model,
           meetingId, title: snapshot.title,
           input: { inputHash: snapshot.inputHash, coverage: snapshot.coverage, glossaryVersion: snapshot.glossaryVersion, segments: snapshot.segments.length, takenAt: snapshot.takenAt },
@@ -784,6 +784,8 @@ export class NotesJobs {
           job.committed = true;
           return value;
         });
+        // The saved notes' title names a meeting the app (or earlier notes) named; the notes keep their own snapshot title.
+        try { this.options.store.titleFromNotes(meetingId, saved.notes.suggestedTitle); } catch (error) { console.warn(`Meeting title from notes: ${(error as Error).message}`); }
         await rm(this.jobPath(meetingId), { force: true });
         await history.record('notes', this.options.clock() - startedAt, snapshot.segments.length).catch(error => console.warn('Notes duration:', error));
         try { this.options.onSaved?.(meetingId); } catch (error) { console.warn(`After notes: ${(error as Error).message}`); }

@@ -1911,6 +1911,7 @@ function startRename(selectAll = true) {
   const field = $('meeting-name');
   field.value = status?.meetings.find(m => m.id === meetingId)?.title ?? '';
   field.dataset.owner = meetingId;
+  delete field.dataset.edited; // notes may rename the meeting meanwhile; a field the user never edited must not undo that
   $('meeting-button').hidden = true;
   field.hidden = false;
   field.focus();
@@ -1925,7 +1926,7 @@ async function finishRename(save) {
   if (hadFocus) $('meeting-button').focus(); // keyboard users continue from the name
   const title = field.value.trim();
   const owner = field.dataset.owner;
-  if (!save || !title || !owner || title === status?.meetings.find(m => m.id === owner)?.title) return;
+  if (!save || !title || !owner || !field.dataset.edited || title === status?.meetings.find(m => m.id === owner)?.title) return;
   await send(`/api/meetings/${owner}`, 'PATCH', { title });
   await refreshStatus();
 }
@@ -1934,6 +1935,7 @@ $('meeting-name').addEventListener('keydown', event => {
   if (event.key === 'Enter') { event.preventDefault(); void guarded(() => finishRename(true))(); }
   if (event.key === 'Escape') { event.preventDefault(); void finishRename(false); $('meeting-button').focus(); }
 });
+$('meeting-name').addEventListener('input', event => { event.currentTarget.dataset.edited = '1'; });
 $('meeting-name').addEventListener('blur', () => { void guarded(() => finishRename(true))(); });
 // New meeting: created with today's date as its name, which is ready to be typed over.
 $('new-meeting').onclick = guarded(async () => {
@@ -1942,7 +1944,7 @@ $('new-meeting').onclick = guarded(async () => {
   const projectId = menuProjectId();
   closeMeetingMenu();
   const stamp = new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const meeting = await post('/api/meetings', { title: `Meeting ${stamp}`, ...(projectId ? { projectId } : {}) });
+  const meeting = await post('/api/meetings', { title: `Meeting ${stamp}`, autoTitle: true, ...(projectId ? { projectId } : {}) });
   selectMeeting(meeting.id);
   await refreshStatus();
   log('Created a new meeting. Recording has not started.');
