@@ -11,14 +11,18 @@ const HARD_WORDS = 45;
 
 const DRIFT_MS = 250; // tolerated boundary drift; anything worse means the timings are not trustworthy
 
-/** Clamp small drift into the window; returns null (→ next fallback) when timings are clearly wrong. */
+/**
+ * Clamp small drift into the window; returns null (→ next fallback) when timings are clearly wrong.
+ * Items without text are skipped: the recognizer occasionally emits an empty word among good ones.
+ */
 function usable(items: Timed[] | undefined, windowMs: number): Timed[] | null {
   if (!items?.length) return null;
   const out: Timed[] = [];
   let last = 0;
   let lastEnd = 0;
   for (const item of items) {
-    if (!item.text?.trim() || !Number.isFinite(item.t0Ms) || !Number.isFinite(item.t1Ms)) return null;
+    if (typeof item.text !== 'string' || !item.text.trim()) continue;
+    if (!Number.isFinite(item.t0Ms) || !Number.isFinite(item.t1Ms)) return null;
     if (item.t0Ms < -DRIFT_MS || item.t1Ms > windowMs + DRIFT_MS || item.t1Ms < item.t0Ms - DRIFT_MS
       || item.t0Ms < last - DRIFT_MS || item.t1Ms < lastEnd - DRIFT_MS) return null;
     lastEnd = Math.max(lastEnd, item.t1Ms);
@@ -27,7 +31,7 @@ function usable(items: Timed[] | undefined, windowMs: number): Timed[] | null {
     out.push({ text: item.text.trim(), t0Ms: t0, t1Ms: t1 });
     last = t0;
   }
-  return out;
+  return out.length ? out : null;
 }
 
 function sentences(words: Timed[], keepWords = false): DraftSegment[] {
