@@ -240,8 +240,11 @@ test('a 1–2 word Me line is hidden only as a time-aligned continuation of a hi
   // The call says "Thank you." at 11000 and 11400; the echo of the sentence before it ends at 11050.
   const remote = call(0, 'The paper lantern is ready. Thank you.', 9000), echo = me(0, 'The paper lantern is ready.', 9150);
   assert.deepEqual(hidden(remote, echo, me(1, 'Thank you.', 11150)), ['mic:0', 'mic:1'], 'an echo tail 150 ms after the call words');
-  assert.deepEqual(hidden(call(0, 'Okay. The paper lantern is ready.', 9000), me(0, 'Okay.', 9100), me(1, 'The paper lantern is ready.', 9500)),
-    ['mic:0', 'mic:1'], 'an echo head before the echo');
+  // The call's "Okay." is its own line (9000–9300, then a 500 ms pause) and ends before its echo starts.
+  assert.deepEqual(hidden(call(0, 'Okay.', 9000), call(1, 'The paper lantern is ready.', 9800),
+    me(0, 'Okay.', 9350), me(1, 'The paper lantern is ready.', 10100)), ['mic:0', 'mic:1'], 'an echo head before the echo');
+  assert.deepEqual(hidden(call(0, 'The paper lantern is ready.', 9000), call(1, 'Okay.', 11400), echo, me(1, 'Okay.', 11750)),
+    ['mic:0', 'mic:1'], 'an echo tail whose call word is its own line, ending before the echo starts');
   const okay = call(0, 'The paper lantern is ready. Okay.', 9000);
   assert.deepEqual(hidden(okay, echo, me(1, 'Okay.', 11200)), ['mic:0', 'mic:1'], 'the same word at the same moment (200 ms) is an echo tail');
   assert.deepEqual(hidden(okay, echo, me(1, 'Okay.', 11600)), ['mic:0'], 'a reply 600 ms after the call said the same word stays');

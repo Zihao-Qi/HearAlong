@@ -159,7 +159,9 @@ export function echoesFor(segments: EchoSegment[], speakers: Speakers,
     if (!own.every(w => echoWords(w.text).every(token => nearby.some(r => Math.abs(r.startMs - w.startMs) <= SHORT_ECHO_ALIGN_MS
       && echoWords(r.text).includes(token))))) return false;
     // ...and continues the neighbour's match instead of reusing call words the neighbour already matched.
-    const reference = between(Math.min(mic.startMs, neighbour.startMs), Math.max(mic.endMs, neighbour.endMs))
+    // Same slack as above: a short call word can be its own call line, ending before the echo starts.
+    const reference = between(Math.min(mic.startMs, neighbour.startMs) - SHORT_ECHO_ALIGN_MS,
+      Math.max(mic.endMs, neighbour.endMs) + SHORT_ECHO_ALIGN_MS)
       .flatMap(i => tokens[i] ??= echoWords(remote[i].text));
     const theirs = echoWords(neighbour.text);
     return commonWords(tail ? [...theirs, ...words] : [...words, ...theirs], reference) >= commonWords(theirs, reference) + words.length;
