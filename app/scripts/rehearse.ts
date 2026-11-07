@@ -9,12 +9,14 @@ import type { startServer } from '../src/server.ts';
 import type { EchoOptions } from '../src/echo-audio.ts';
 import { clock, loadWav, parseArgs, validateRunFiles, writeTrimmed } from './rehearsal-input.ts';
 
+/** bench:call only: a stand-in for the native capture helper. It connects before navigation; Start goes through the real call menu. */
+export type BenchCallApp = { app: { id: string; name: string }; connect(url: string): Promise<void>; anchor(at: number): void };
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const RUNS = join(ROOT, 'app/artifacts/rehearsal/runs');
 const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 
 /** The optional observer drives lifecycle/UI checks; the command itself always uses the real UI unmodified. */
-export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>, benchmark?: { modelPath: string; terminalTimeoutMs: number; directory?: string; echo?: EchoOptions | null; callDelayMs?: number }) {
+export async function runRehearsal(argv: string[], observe?: (page: Page) => Promise<void>, prepare?: (page: Page) => void | Promise<void>, benchmark?: { modelPath: string; terminalTimeoutMs: number; directory?: string; echo?: EchoOptions | null; callDelayMs?: number; callApp?: BenchCallApp }) {
   const args = parseArgs(argv);
   // All input validation precedes starting a server or Chrome (or creating a run).
   const mic = args.mic ? await loadWav(resolve(args.mic), args.from, args.minutes) : undefined;
@@ -90,6 +92,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
     const { startServer } = await import('../src/server.ts');
     app = await startServer({ directory, port: 0, echo: benchmark?.echo });
     checkpoint();
+    if (benchmark?.callApp) await benchmark.callApp.connect(app.url);
     context = await chromium.launchPersistentContext(join(temporary, 'chrome-profile'), {
       executablePath: executable, headless: args.headless, viewport: null,
       // Our finally owns all cleanup; Playwright's default signal handlers would exit the process before it finishes.
@@ -119,6 +122,7 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
       await page.exposeFunction('__rehearsalStarted', (at: number) => {
         if (startedAt !== null) return;
         startedAt = at;
+        benchmark?.callApp?.anchor(at);
         timer = setTimeout(() => finish('audio ended'), Math.max(0, at + mic.seconds * 1000 - Date.now()));
       });
       if (them) await page.route('**/__rehearsal-them.wav', route => route.fulfill({ body: them.bytes, contentType: 'audio/wav' }));
@@ -181,8 +185,19 @@ export async function runRehearsal(argv: string[], observe?: (page: Page) => Pro
       await page.waitForFunction(() => !(document.getElementById('start') as HTMLButtonElement).disabled, null, { timeout: 30_000 });
       meetingId = app.store.meetings().find(m => m.title === `Rehearsal: ${basename(args.mic!)} from ${clock(args.from)}`)?.id;
       checkpoint();
-      await page.locator('#start').click();
-      await page.locator(them && !benchmark?.callDelayMs ? '#start-online' : '#start-mic').click();
+      if (benchmark?.callApp) {
+        // The page offers meeting apps only after it has seen the helper (its own 1 s app-capture poll).
+        await page.waitForResponse(async response => new URL(response.url()).pathname === '/api/live/app-capture' && response.request().method() === 'GET'
+          && await response.json().then(body => body?.available === true, () => false), { timeout: 15_000 });
+        await page.locator('#start').click();
+        await page.locator('#start-online').click();
+        const row = page.locator(`#call-apps [data-app="${benchmark.callApp.app.id}"]`);
+        await row.waitFor({ state: 'visible', timeout: 15_000 });
+        await row.click();
+      } else {
+        await page.locator('#start').click();
+        await page.locator(them && !benchmark?.callDelayMs ? '#start-online' : '#start-mic').click();
+      }
       await page.locator('#stop').waitFor({ state: 'visible', timeout: 15_000 });
       if (them && benchmark?.callDelayMs) {
         await new Promise<void>(resolve => setTimeout(resolve, benchmark.callDelayMs));

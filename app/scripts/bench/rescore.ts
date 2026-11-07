@@ -21,7 +21,7 @@ export function savedFinalText(directory: string): string {
 
 export function rescore(raw: Record<string, unknown>, originalName: string, paths: BenchPaths, scoring: { commit: string; dirty: boolean }): Record<string, unknown> {
   const run = parseResult(raw);
-  if (run.kind === 'ihm') throw new Error('bench:rescore accepts wer/live results, not ihm.');
+  if (run.kind === 'ihm' || run.kind === 'call') throw new Error(`bench:rescore accepts wer/live results, not ${run.kind}.`);
   const metadata = { normalizer: NORMALIZER, rescoredFrom: originalName, rescoredAt: new Date().toISOString(), scoringCommit: scoring.commit, scoringDirty: scoring.dirty };
   if (run.kind === 'live') {
     // The live runner stores the exact final rehearsal transcript in its result, independently of logs/temporary audio.

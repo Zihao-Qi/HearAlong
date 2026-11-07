@@ -86,6 +86,37 @@ The headline is spoken to visible. The report gives p50, p95, max, and the numbe
 
 Every 1 s, `ps -axo pid=,ppid=,pcpu=,rss=,command=` samples the Node process that hosts the server, and every descendant whose command is `stt-worker.ts` or `stt-stream-worker.ts` plus processes those workers spawn (the decoder). Chrome is a descendant and is not counted as a speech worker. When both the final-text worker and the preview worker are alive, one sample sums them. CPU is sampled macOS `ps %cpu`: a **decaying average over up to a minute**, not instantaneous or one-second interval utilization. **100% = one core**; values can exceed 100% and are not normalized to the whole machine. Averaging history changes when workers restart. RSS from `ps` is kilobytes, stored as bytes. The report gives mean, p95, and sampled max for each role; one-second sampling can miss short-lived processes and true peaks. Sampling starts once recording is up and continues while the tail is still being transcribed.
 
+### Calls through speakers
+
+`npm run bench:call` measures a call heard through speakers, through the same path v0.3.0 uses: the real page and server, the server's AEC3 echo canceller (its alignment by capture time and its wait for call audio), the read-time echo rule that hides doubled Me lines, and the Me and Them paragraphs. The app is not changed: the microphone is a file played in real time, and the native capture helper is replaced by a stand-in that speaks its protocol.
+
+**Pairs.** Five fixed pairs of AMI individual-headset speakers (`bench:fetch -- --mic Headset`). In each pair the near speaker ("Me") and the far speaker ("Them") come from different meetings, so they share no headset bleed. The pairs, with the simulated echo delay and level:
+
+| Pair | Near (Me) | Far (Them) | Echo delay | Echo level |
+| --- | --- | --- | --- | --- |
+| 1 | ES2004a B | IS1009a A | 30 ms | -6 dB |
+| 2 | IS1009a D | TS3003a A | 50 ms | -8 dB |
+| 3 | TS3003a D | EN2002a C | 70 ms | -9 dB |
+| 4 | EN2002a B | ES2004b D | 100 ms | -10 dB |
+| 5 | ES2004b A | IS1009b C | 120 ms | -12 dB |
+
+**Talk states.** Each pair plays 6 s of silence, six 20 s blocks, then 4 s of silence (130 s). The blocks repeat far only (echo only), near only, and double talk. Each speaker's complete AMI segments (1 to 13 s, at least four words) are packed into their blocks in corpus order, 0.3 s after the block start, ending at least 0.6 s before its end, with 0.35 s gaps and 10 ms fades. Each speaker is scaled to the same speech level (0.06 RMS over 10 ms blocks with sound). Reference words move with their audio. The lead lets the call source start before anyone speaks.
+
+**Simulated echo.** The microphone is the near speaker plus the far speaker as a speaker in a room would return it: a one-pole 3 kHz low-pass for the speaker, then a fixed room response (a direct path; reflections at 4, 9 and 17 ms with gains 0.4, -0.25 and 0.15; and one tap per millisecond from 20 to 80 ms, gain 0.06 decaying with a 20 ms time constant, signs from a fixed seed), delayed by the pair's echo delay. The echo is set to the pair's level below the near speaker (whole-file power), and white noise at -65 dBFS is added from a fixed seed. If any sample would pass 0.9, the microphone and the call audio are scaled down together. The room response and the pairs are the same in every run (`ROOM_VERSION` in `scripts/bench/call-mix.ts`, stored in each result).
+
+**What is played.** The rehearsal tool plays the microphone file in real time as the page's fake microphone (a disposable headless Chromium, an ephemeral port, a fresh data folder per pair). A stand-in for the native meeting-app capture (`scripts/bench/call-helper.ts`) speaks the helper's HTTP protocol to the server: it announces one app, and the run starts recording through the real call menu (**Microphone + online call**, then that app). The helper then sends the far speaker's clean audio as the `app:` source in one-second float32 frames, each once its last sample has been played, with `X-Capture-Wall-Ms` set to when that sample played (the moment the microphone file started, plus its position) and `X-Start-Ms` from the recording's clock start, as the native helper does. So the echo in the microphone trails the call audio by the pair's delay plus the browser's own capture latency.
+
+**Scoring.** After the recording settles, the run reads every saved line (raw) and the lines the server still shows after the echo rule (shown). Each recognized word goes to the block holding its start time (a line without word times goes by its start); reference words go by their start. Meeting time is mapped to the file by the median offset of each source's frames. Per talk state, summed over blocks and pairs:
+
+- **Me WER** — custom-normalized WER of the shown Me words against the near speaker's reference, for near-only and double-talk blocks.
+- **Far words in Me** — far reference words matched in order in the Me words of the same block, as a count and a share of the far reference words. In echo-only blocks every Me word is a leak, so the count of Me words is also given. In double talk a near word can match a far word by chance, so that figure is an upper bound.
+- **Them WER** — WER of the Them words against the far reference, for echo-only blocks (the far speaker alone) and double-talk blocks.
+- **Genuine Me words hidden** — one alignment of the near reference against the raw Me words: correct words that sit in a line the echo rule hid, out of all correct raw Me words.
+- **Lag during a call** — spoken to visible, as in the live benchmark, for each source (the paragraph's Me or Them class; a saved line by its source). One change: preview growth counts per source, not per paragraph key, because the Me and Them paragraphs regroup when a line lands and re-key text that was already visible. Finals are counted per saved line, as before. The diagnostic (reached server to available on server) is kept per source too.
+- **Echo cancellation** — from the server's own counters: microphone frames processed by the AEC worker out of those uploaded, the share of their samples that had call audio to cancel against, the mean and largest wait for that audio, worker failures, and the notices the server logs when AEC passes raw audio for a recording.
+
+A pair is an error pair (and contributes to no total) if the rehearsal did not end with the audio, any chunk failed or did not finish, the call source never started, or either source has no saved line or no visible final.
+
 ### How to rerun
 
 From `app/`, with provider keys unset. Fetch needs network access; measurement needs a local speech model, downloaded corpus and (for live) disposable Chromium. The report command needs none of these. Point `MEETING_TEST_CHROME` at a disposable Chromium, not the Chrome you browse with. The model is the one HearAlong already uses (`MEETING_MODEL_PATH` or Pi's voice settings).
@@ -95,25 +126,28 @@ npm run bench:fetch
 npm run bench:wer -- --run-label full
 npm run bench:wer -- --sessions ES2004a --mic Mix-Headset --run-label pilot
 npm run bench:live -- --session ES2004a --mic Mix-Headset --from 0:00 --minutes 10 --run-label live-es2004a
+npm run bench:call -- --run-label call
+npm run bench:call -- --smoke --allow-dirty
 npm run bench:rescore -- --all
 npm run bench:fetch -- --mic Headset
 npm run bench:ihm -- --allow-dirty
 npm run bench:report
 ```
 
-`bench:report` reads every `results/*.json`, or the files you pass. It emits one block per cohort, newest first (by newest run), with run and finished-run counts. Cohorts never pool normalizer versions (missing means `hearalong-1`) or differing scoring commits/dirty states. Cohorts match kind; model basename + SHA-256; chip, RAM and logical cores; app commit and dirty state; and exact condition: requested sessions × mics set for file accuracy, or session, mic, from and minutes for live. Labels do not define cohorts. Different conditions are never pooled. Results missing the new provenance fields go in one inspection-only **Legacy** block, with no cross-run statistics.
+`bench:call` takes `--pairs 1,3` to choose pairs and `--smoke` for a short check (one pair, one block of each talk state, not comparable to full runs). It writes `results/call-<stamp>.json` and keeps each pair's run folder, audio and detail beside it in `results/call-<stamp>/`. `bench:report` reads every `results/*.json`, or the files you pass. Call runs go to their own section below the other results. It emits one block per cohort, newest first (by newest run), with run and finished-run counts. Cohorts never pool normalizer versions (missing means `hearalong-1`) or differing scoring commits/dirty states. Cohorts match kind; model basename + SHA-256; chip, RAM and logical cores; app commit and dirty state; and exact condition: requested sessions × mics set for file accuracy, or session, mic, from and minutes for live, or pairs, blocks, smoke flag and room response for calls. Labels do not define cohorts. Different conditions are never pooled. Results missing the new provenance fields go in one inspection-only **Legacy** block, with no cross-run statistics.
 
 Within each cohort it prints medians and min–max spreads from eligible finished repetitions only, including in the per-session table. Each metric reports its eligible run count; lag/resource summaries contribute only when their `n > 0` (accuracy requires reference N > 0). Missing is `n/a`, never zero. Errored runs remain visible with failed/unfinished chunk counts but contribute to no median. Three comparable finished runs are the intended spread; a single eligible run is explicitly counted as one, not repeatability evidence.
 
 ## Known limits
 
-- **Measured before v0.3.0:** these runs use the microphone path only. v0.3.0 loads the speech model when the app opens, which only shortens the first block after launch, and adds echo cancellation for calls through speakers, which is not measured here and delays the grey preview by about a second during such calls.
+- **Measured before v0.3.0:** the file and live runs use the microphone path only. v0.3.0 loads the speech model when the app opens, which only shortens the first block after launch. Calls through speakers are measured separately by `npm run bench:call` (below).
 
 - **Live tail visibility:** queue settlement does not wait for every saved final to reach the real DOM or the segment-end snapshot before closing Chromium. Tail samples can be censored; no expected/observed/unmapped coverage accounting yet. Lag is conditional on recognized, mapped, observed text, not all speech. The diagnostic warning is a heuristic, not validation.
 - **Live input alignment:** fake-microphone playback can start before the capture graph is ready. Startup loss/offset and captured duration are not measured. WER still scores the requested interval; half-open reference selection by word start can include clipped boundary words.
 - **Reference integrity:** extraction is not atomic or verified against the archive; partial XML and missing speaker files can be accepted. Extracted references are not fingerprinted in results. Blank/whitespace timestamp attributes can silently become zero; negative/reversed times are not validated.
 - **Corpus trust:** fetch checks local hashes but can adopt preexisting nonempty files (trust on first use). Hashes do not establish official-source identity; approved corpus checksums and an immutable scored-input manifest are not pinned to runs.
 - **Provenance beyond this minimum:** no versioned measurement schema, selected backend/config, Chromium/native-runtime versions, or source-diff identity. `--allow-dirty` records only a flag, not the dirty bytes; same-commit dirty runs are not uniquely reproducible. Do not modify model/source files during a run.
+- **Calls are simulated:** the echo is a fixed synthetic room and speaker, not a real speaker, room, or microphone, and the near and far speakers never react to each other. The fake microphone has no browser echo cancellation, noise suppression or gain control, and the call audio comes from a stand-in for the native capture, not from a meeting app. Echo delays are 30 to 120 ms plus the browser's capture latency; clock drift and sleep are not exercised. Five pairs of two minutes each are a small sample.
 - **Interpretation:** custom normalization has the numeric/lexical limits listed above; macOS CPU values have a decaying time base, and one-second resource sampling misses true peaks. No end-to-end browser/audio alignment or tail-observation validation is supplied by the offline unit tests.
 
 ## Results
@@ -462,3 +496,9 @@ Corpus counts across eligible finished runs. Single-speaker excludes overlap and
 | TS3003d | Array1-01 | 33.19% | 33.19% | 33.19% | 33.19% | 3 |
 | TS3003d | Mix-Headset | 20.89% | 20.89% | 20.89% | 20.89% | 3 |
 <!-- bench:end -->
+
+### Calls through speakers
+
+<!-- bench-call:begin -->
+not yet measured
+<!-- bench-call:end -->
