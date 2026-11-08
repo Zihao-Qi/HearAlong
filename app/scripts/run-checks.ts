@@ -67,12 +67,15 @@ async function endBrowsers(directories: string[], chrome: string | undefined, gr
     for (const { pid, group } of owned) if (group) running.delete(pid);
   }
 }
-export async function runSuite([name, command]: [string, string[]], options: SuiteOptions) {
+/** A suite: its name, its command and any environment of its own on top of the runner's isolated one. */
+export type Task = [name: string, command: string[], env?: NodeJS.ProcessEnv];
+export async function runSuite([name, command, own]: Task, options: SuiteOptions) {
   const { out, env, summary, running, timeoutMs = 1_200_000, graceMs = 5000 } = options;
+  const started = Date.now();
   const temporary = resolve(out, 'tmp', name);
   await mkdir(temporary, { recursive: true });
   const canonical = await realpath(temporary);
-  const suiteEnv = { ...env, TMPDIR: canonical, TMP: canonical, TEMP: canonical };
+  const suiteEnv = { ...env, ...own, TMPDIR: canonical, TMP: canonical, TEMP: canonical };
   const log = createWriteStream(join(out, `${name}.log`));
   const child = spawn('nice', ['-n', '19', ...command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: suiteEnv });
   child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
@@ -96,8 +99,9 @@ export async function runSuite([name, command]: [string, string[]], options: Sui
   await cleanup; // Leader exit is not proof that its group (or detached Chromium) has ended.
   if (child.pid) running.delete(child.pid);
   await new Promise<void>(resolve => log.end(resolve));
-  await appendFile(summary, `${name} exit=${exit}\n`);
-  console.log(`${name} exit=${exit}`);
+  const line = `${name} exit=${exit} seconds=${Math.round((Date.now() - started) / 1000)}`;
+  await appendFile(summary, line + '\n');
+  console.log(line);
   return exit;
 }
 /** Per-suite limit: MEETING_CHECK_TIMEOUT_S (whole seconds) for a slower machine such as CI; unset keeps 20 minutes. */
@@ -118,10 +122,104 @@ export function suiteConcurrency(env: NodeJS.ProcessEnv = process.env) {
   if (value !== '1' && value !== '2') throw new Error('MEETING_CHECK_CONCURRENCY must be 1 or 2.');
   return Number(value);
 }
+/**
+ * Expected seconds per suite: the p50 of 5 GitHub CI runs of the browser job (macOS runner, two suites at a time, November 2026);
+ * npm-test is the unit job's test step. The plans suite took 937 s as one task; its three configs are a third each until CI
+ * measures them (every finish line and summary.txt now print each suite's own seconds).
+ */
+export const EXPECTED_SECONDS: Readonly<Record<string, number>> = {
+  'plans-1280': 315, 'plans-1280-board400': 315, 'plans-390': 315,
+  'npm-test': 379, 'mini-check': 353, 'capture-resilience': 229, 'ui-pass': 164, 'pane-head': 109, m9a: 94, progress: 88,
+  'browser-smoke': 52, 'transcript-notes-page': 52, 'notes-ui': 43, 'ai-mode': 39, 'board-focus': 38, 'api-keys': 25, listen: 14,
+  'progress-fix1': 13, 'mini-gap': 10, 'app-check': 9, 'transcript-download': 9, 'progress-fix2': 8, 'echo-page': 7,
+};
+export const DEFAULT_SECONDS = 60;
+export const expectedSeconds = (name: string) => Object.hasOwn(EXPECTED_SECONDS, name) ? EXPECTED_SECONDS[name] : DEFAULT_SECONDS;
+/** Longest expected first; equal estimates by name, so the order never depends on the list's order. */
+export const longestFirst = (names: readonly string[]) =>
+  [...names].sort((a, b) => expectedSeconds(b) - expectedSeconds(a) || (a < b ? -1 : a > b ? 1 : 0));
+/** MEETING_CHECKS_SHARD=k/n runs only shard k of n (whole numbers, 1 ≤ k ≤ n ≤ 8); unset runs every task. */
+export function checksShard(env: NodeJS.ProcessEnv = process.env) {
+  const value = env.MEETING_CHECKS_SHARD;
+  if (value === undefined || value === '') return undefined;
+  const match = /^([1-8])\/([1-8])$/.exec(value);
+  if (!match || Number(match[1]) > Number(match[2])) {
+    throw new Error(`MEETING_CHECKS_SHARD must be k/n with whole numbers 1 ≤ k ≤ n ≤ 8, not ${JSON.stringify(value)}.`);
+  }
+  return { index: Number(match[1]), count: Number(match[2]) };
+}
+/**
+ * Splits the tasks into `count` shards that each run `concurrency` at a time: longest first, each task goes to the least loaded
+ * of the count × concurrency slots (the lowest slot on a tie), and slot s belongs to shard floor(s / concurrency).
+ * Each shard keeps the longest-first order.
+ */
+export function splitShards(names: readonly string[], count: number, concurrency: number) {
+  if (!Number.isInteger(count) || count < 1 || count > 8) throw new Error(`Shard count must be a whole number from 1 to 8, not ${count}.`);
+  if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error(`Concurrency must be a whole number of at least 1, not ${concurrency}.`);
+  if (new Set(names).size !== names.length) throw new Error('Task names must be unique.');
+  const slots = Array.from({ length: count * concurrency }, () => 0);
+  const shards = Array.from({ length: count }, () => [] as string[]);
+  for (const name of longestFirst(names)) {
+    let least = 0;
+    for (let slot = 1; slot < slots.length; slot++) if (slots[slot] < slots[least]) least = slot;
+    slots[least] += expectedSeconds(name);
+    shards[Math.floor(least / concurrency)].push(name);
+  }
+  return shards;
+}
+export function checkTasks(out: string, audio: string, browserOnly: boolean): Task[] {
+  const node = [process.execPath, '--experimental-strip-types'];
+  const check = (script: string, ...args: string[]) => [...node, `scripts/${script}.ts`, ...args];
+  const guarded = (script: string, dir: string) => [...node, '--import', './scripts/check-env.ts', `scripts/${script}.ts`, join(out, dir)];
+  // plans-check's 21 fixture states at three window sizes is the longest suite by far: one task per size spreads it over slots.
+  const plans = (config: string): Task => [`plans-${config}`, guarded('plans-check', `plans-${config}`), { PLANS_CHECK_CONFIGS: config }];
+  const all: Task[] = [
+    ['npm-test', ['npm', 'test', '--', '--test-concurrency=2']],
+    ['typecheck', ['npm', 'run', 'check']],
+    ['transcript-download', check('transcript-download-check', join(out, 'transcript-download'))],
+    ['listen', check('listen-check', join(out, 'listen'))],
+    ['echo-page', check('echo-page-check', join(out, 'echo-page'))],
+    ['browser-smoke', check('browser-smoke', join(out, 'browser-smoke'))],
+    ['mini-check', check('mini-check', audio, audio, join(out, 'mini'))],
+    ['mini-gap', check('mini-gap-check', join(out, 'mini-gap'))],
+    ['m9a', check('m9a-page-check', join(out, 'm9a'))],
+    ['app-check', check('app-check')],
+    ['capture-resilience', check('capture-resilience-check', join(out, 'capture'))],
+    ['transcript-notes-page', check('transcript-notes-page-check', join(out, 'transcript-notes-page'))],
+    ['notes-ui', check('notes-ui-check', join(out, 'notes-ui'))],
+    ['pane-head', check('pane-head-check', join(out, 'pane-head'))],
+    plans('1280'), plans('1280-board400'), plans('390'),
+    ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
+    ['ui-pass', check('ui-pass-check', join(out, 'ui-pass'))],
+    ['api-keys', check('api-keys-check', join(out, 'api-keys'))],
+    ['ai-mode', check('ai-mode-check', join(out, 'ai-mode'))],
+    ['progress', guarded('progress-check', 'progress')],
+    ['progress-fix1', guarded('progress-fix1-check', 'progress-fix1')],
+    ['progress-fix2', guarded('progress-fix2-check', 'progress-fix2')],
+  ];
+  // CI runs the unit tests and the type check in their own jobs; its browser job sets MEETING_CHECKS_BROWSER_ONLY=1.
+  return browserOnly ? all.filter(([name]) => name !== 'npm-test' && name !== 'typecheck') : all;
+}
+/** This run's tasks, longest first: every task, or only those of shard k when MEETING_CHECKS_SHARD=k/n is set. */
+function plannedTasks(out: string, audio: string, concurrency: number) {
+  const tasks = checkTasks(out, audio, process.env.MEETING_CHECKS_BROWSER_ONLY === '1');
+  const shard = checksShard();
+  const byName = new Map(tasks.map(task => [task[0], task]));
+  const names = shard ? splitShards([...byName.keys()], shard.count, concurrency)[shard.index - 1] : longestFirst([...byName.keys()]);
+  return { shard, tasks: names.map(name => byName.get(name)!) };
+}
 async function main() {
-  if (process.argv.length !== 3) throw new Error('Usage: scripts/run-checks.sh <new-output-dir> (requires MEETING_TEST_CHROME)');
+  if (process.argv[2] === '--plan' && process.argv.length === 3) {
+    const { shard, tasks } = plannedTasks('<out>', '<audio>', suiteConcurrency());
+    const total = tasks.reduce((sum, [name]) => sum + expectedSeconds(name), 0);
+    console.log(`${shard ? `shard ${shard.index}/${shard.count}` : 'all tasks'}: ${tasks.length} tasks, ${total} s expected`);
+    for (const [name] of tasks) console.log(`  ${name} ${expectedSeconds(name)}`);
+    return;
+  }
+  if (process.argv.length !== 3) throw new Error('Usage: scripts/run-checks.sh <new-output-dir> (requires MEETING_TEST_CHROME) | --plan');
   const timeoutMs = suiteTimeoutMs();
   const concurrency = suiteConcurrency();
+  checksShard();
   const chrome = testBrowser();
   await access(chrome);
   const out = resolve(process.argv[2]);
@@ -139,35 +237,7 @@ async function main() {
   };
   const audio = join(out, 'synthetic-meeting.wav');
   await checkAudio(audio);
-  const node = [process.execPath, '--experimental-strip-types'];
-  const check = (script: string, ...args: string[]) => [...node, `scripts/${script}.ts`, ...args];
-  const all: [string, string[]][] = [
-    ['npm-test', ['npm', 'test', '--', '--test-concurrency=2']],
-    ['typecheck', ['npm', 'run', 'check']],
-    ['transcript-download', check('transcript-download-check', join(out, 'transcript-download'))],
-    ['listen', check('listen-check', join(out, 'listen'))],
-    ['echo-page', check('echo-page-check', join(out, 'echo-page'))],
-    ['browser-smoke', check('browser-smoke', join(out, 'browser-smoke'))],
-    ['mini-check', check('mini-check', audio, audio, join(out, 'mini'))],
-    ['mini-gap', check('mini-gap-check', join(out, 'mini-gap'))],
-    ['m9a', check('m9a-page-check', join(out, 'm9a'))],
-    ['app-check', check('app-check')],
-    ['capture-resilience', check('capture-resilience-check', join(out, 'capture'))],
-    ['transcript-notes-page', check('transcript-notes-page-check', join(out, 'transcript-notes-page'))],
-    ['notes-ui', check('notes-ui-check', join(out, 'notes-ui'))],
-    ['pane-head', check('pane-head-check', join(out, 'pane-head'))],
-    ['plans', [...node, '--import', './scripts/check-env.ts', 'scripts/plans-check.ts', join(out, 'plans')]],
-    ['board-focus', check('board-focus-check', join(out, 'board-focus'))],
-    ['ui-pass', check('ui-pass-check', join(out, 'ui-pass'))],
-    ['api-keys', check('api-keys-check', join(out, 'api-keys'))],
-    ['ai-mode', check('ai-mode-check', join(out, 'ai-mode'))],
-    ['progress', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-check.ts', join(out, 'progress')]],
-    ['progress-fix1', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-fix1-check.ts', join(out, 'progress-fix1')]],
-    ['progress-fix2', [...node, '--import', './scripts/check-env.ts', 'scripts/progress-fix2-check.ts', join(out, 'progress-fix2')]],
-  ];
-  // CI runs the unit tests and the type check in their own jobs; its browser job sets MEETING_CHECKS_BROWSER_ONLY=1.
-  const browserOnly = process.env.MEETING_CHECKS_BROWSER_ONLY === '1';
-  const tasks = browserOnly ? all.filter(([name]) => name !== 'npm-test' && name !== 'typecheck') : all;
+  const { tasks } = plannedTasks(out, audio, concurrency);
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {
     for (const pid of running) signal(pid, 'SIGKILL');

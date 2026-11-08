@@ -22,7 +22,7 @@ const gitEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]
 type Scripts = Partial<Record<'check' | 'test' | 'checks', string | undefined>>;
 const prefix = `hearalong-land-test-${randomUUID()}-`;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-const summaryCode = (summary = 'suite-a exit=0\nsuite-b exit=0\nleftover_test_browsers=0\n') =>
+const summaryCode = (summary = 'suite-a exit=0\nsuite-b exit=0 seconds=12\nleftover_test_browsers=0\n') =>
   `const fs=require('node:fs'); const out=process.argv[2]; require('node:assert/strict').equal(fs.existsSync(out),false,'checks requires a fresh folder'); fs.mkdirSync(out); fs.writeFileSync(out+'/summary.txt',${JSON.stringify(summary)});`;
 const defaults = { check: 'console.log("check passed")', test: 'console.log("test passed")', checks: summaryCode() };
 function writePackage(checkout: string, scripts: Scripts = {}, marker = checkout) {

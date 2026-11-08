@@ -99,7 +99,7 @@ function printFullSummary(file: string) {
   const suites = new Map<string, number>();
   let browsers: number | undefined;
   for (const line of readFileSync(file, 'utf8').trim().split(/\r?\n/)) {
-    const suite = /^([a-zA-Z0-9][a-zA-Z0-9._-]*) exit=(\d+)$/.exec(line);
+    const suite = /^([a-zA-Z0-9][a-zA-Z0-9._-]*) exit=(\d+)(?: seconds=\d+)?$/.exec(line);
     const leftover = /^leftover_test_browsers=(\d+)$/.exec(line);
     if (suite && !suites.has(suite[1]) && Number.isSafeInteger(Number(suite[2]))) suites.set(suite[1], Number(suite[2]));
     else if (leftover && browsers === undefined && Number.isSafeInteger(Number(leftover[1]))) browsers = Number(leftover[1]);
