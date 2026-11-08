@@ -189,7 +189,7 @@ export function checkTasks(out: string, audio: string, browserOnly: boolean): Ta
   // plans-check's 21 fixture states at three window sizes is the longest suite by far: one task per size spreads it over slots.
   const plans = (config: string): Task => [`plans-${config}`, guarded('plans-check', `plans-${config}`), { PLANS_CHECK_CONFIGS: config }];
   const all: Task[] = [
-    ['npm-test', ['npm', 'test', '--', '--test-concurrency=2']],
+    ['npm-test', ['npm', 'test']],
     ['typecheck', ['npm', 'run', 'check']],
     ['transcript-download', check('transcript-download-check', join(out, 'transcript-download'))],
     ['listen', check('listen-check', join(out, 'listen'))],
@@ -256,8 +256,10 @@ async function main() {
     npm_config_offline: 'true', npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false', npm_config_cache: join(out, 'home', '.npm'),
   };
   const audio = join(out, 'synthetic-meeting.wav');
-  await checkAudio(audio);
   const { tasks } = plannedTasks(out, audio);
+  // A clash thrown inside a worker would end the run while the other worker's suite is still going.
+  for (const [name, , own] of tasks) suiteEnvironment(name, env, own);
+  await checkAudio(audio);
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {
     for (const pid of running) signal(pid, 'SIGKILL');

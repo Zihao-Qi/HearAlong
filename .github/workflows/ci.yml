@@ -99,14 +99,14 @@ jobs:
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
         # A rename counts both names, so moving code into docs/ still runs the suites. The API lists at most 3000 files:
         # fewer distinct new names (f lines; p lines are a rename's old name) than the pull request changed means code.
+        # Names are JSON-encoded so a newline in a path cannot start a fake line; escapes stay inside the quotes.
         run: |
           code=true
-          if listing=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" --jq '.[] | "f " + .filename, (.previous_filename // empty | "p " + .)') && [ -n "$listing" ]; then
+          if listing=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" --jq '.[] | "f " + (.filename | @json), (.previous_filename // empty | "p " + @json)') && [ -n "$listing" ]; then
             printf '%s\n' "$listing"
-            listed=$(sed -n 's/^f //p' <<< "$listing" | sort -u | wc -l | tr -d ' ')
+            listed=$(sed -n '/^f /p' <<< "$listing" | sort -u | wc -l | tr -d ' ')
             echo "listed $listed of $CHANGED_FILES changed files"
-            files=$(cut -c3- <<< "$listing")
-            if [ "$listed" -ge "$CHANGED_FILES" ] && ! grep -Eqv '^(docs/.+|[^/]+\.md|LICENSE|THIRD-PARTY-LICENSES)$' <<< "$files"; then code=false; fi
+            if [ "$listed" -ge "$CHANGED_FILES" ] && ! grep -Eqv '^[fp] "(docs/.+|[^/]+\.md|LICENSE|THIRD-PARTY-LICENSES)"$' <<< "$listing"; then code=false; fi
           fi
           echo "code=$code" | tee -a "$GITHUB_OUTPUT"
 
