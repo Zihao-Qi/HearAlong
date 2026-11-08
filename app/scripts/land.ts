@@ -119,8 +119,11 @@ async function runCommand(name: 'check' | 'test' | 'checks', args: string[], mai
   let failure: string | undefined;
   try {
     signal.throwIfAborted();
+    // Land's pre-merge run covers every suite: a stray exported shard or browser-only setting must not narrow it.
+    const env: NodeJS.ProcessEnv = { ...process.env, MEETING_TEST_CHROME: chrome };
+    delete env.MEETING_CHECKS_SHARD; delete env.MEETING_CHECKS_BROWSER_ONLY;
     await new Promise<void>((done, reject) => {
-      const child = spawn('nice', ['-n', '19', 'npm', ...args], { cwd: join(main, 'app'), env: { ...process.env, MEETING_TEST_CHROME: chrome }, detached: true, stdio: ['ignore', fd, fd] });
+      const child = spawn('nice', ['-n', '19', 'npm', ...args], { cwd: join(main, 'app'), env, detached: true, stdio: ['ignore', fd, fd] });
       let stopped: string | undefined, ending: Promise<void> | undefined;
       const groupExists = () => {
         if (!child.pid) return false;

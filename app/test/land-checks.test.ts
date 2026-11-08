@@ -60,6 +60,12 @@ test('slim full runner gets a fresh output folder and prints each suite and brow
   assert.equal(existsSync(join(f.main, 'app/artifacts')), false);
 });
 
+test('full runner runs every suite even with a shard or browser-only setting exported', t => {
+  const f = fixture(t, { checks: `const { equal } = require('node:assert/strict'); equal(process.env.MEETING_CHECKS_SHARD, undefined, 'shard'); equal(process.env.MEETING_CHECKS_BROWSER_ONLY, undefined, 'browser-only'); ${summaryCode()}` }); f.change();
+  const r = f.runWithEnv({ MEETING_CHECKS_SHARD: '1/3', MEETING_CHECKS_BROWSER_ONLY: '1' }, '--full');
+  assert.equal(r.status, 0, r.output); assert.match(r.output, /checks\s+2\/2 passed/);
+});
+
 for (const exit of [0, 1]) {
   test(`slim a failing summary suite causes undo even when runner exit is ${exit}`, t => {
     const f = fixture(t, { checks: `${summaryCode('passing exit=0\nbroken exit=7\nleftover_test_browsers=0\n')} process.exit(${exit})` }); f.change();

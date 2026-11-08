@@ -69,13 +69,23 @@ async function endBrowsers(directories: string[], chrome: string | undefined, gr
 }
 /** A suite: its name, its command and any environment of its own on top of the runner's isolated one. */
 export type Task = [name: string, command: string[], env?: NodeJS.ProcessEnv];
+/** The runner's isolated environment plus a task's own variables, which may only add names the runner does not set. */
+export function suiteEnvironment(name: string, env: NodeJS.ProcessEnv, own: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  for (const key of Object.keys(own)) {
+    if (Object.hasOwn(env, key) || key === 'TMPDIR' || key === 'TMP' || key === 'TEMP') {
+      throw new Error(`Task ${name} may not set ${key}: the runner's isolated environment sets it.`);
+    }
+  }
+  return { ...env, ...own };
+}
 export async function runSuite([name, command, own]: Task, options: SuiteOptions) {
   const { out, env, summary, running, timeoutMs = 1_200_000, graceMs = 5000 } = options;
-  const started = Date.now();
+  const merged = suiteEnvironment(name, env, own);
+  const started = performance.now();
   const temporary = resolve(out, 'tmp', name);
   await mkdir(temporary, { recursive: true });
   const canonical = await realpath(temporary);
-  const suiteEnv = { ...env, ...own, TMPDIR: canonical, TMP: canonical, TEMP: canonical };
+  const suiteEnv = { ...merged, TMPDIR: canonical, TMP: canonical, TEMP: canonical };
   const log = createWriteStream(join(out, `${name}.log`));
   const child = spawn('nice', ['-n', '19', ...command], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: suiteEnv });
   child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
@@ -99,7 +109,7 @@ export async function runSuite([name, command, own]: Task, options: SuiteOptions
   await cleanup; // Leader exit is not proof that its group (or detached Chromium) has ended.
   if (child.pid) running.delete(child.pid);
   await new Promise<void>(resolve => log.end(resolve));
-  const line = `${name} exit=${exit} seconds=${Math.round((Date.now() - started) / 1000)}`;
+  const line = `${name} exit=${exit} seconds=${Math.round((performance.now() - started) / 1000)}`;
   await appendFile(summary, line + '\n');
   console.log(line);
   return exit;
@@ -123,15 +133,14 @@ export function suiteConcurrency(env: NodeJS.ProcessEnv = process.env) {
   return Number(value);
 }
 /**
- * Expected seconds per suite: the p50 of 5 GitHub CI runs of the browser job (macOS runner, two suites at a time, November 2026);
- * npm-test is the unit job's test step. The plans suite took 937 s as one task; its three configs are a third each until CI
- * measures them (every finish line and summary.txt now print each suite's own seconds).
+ * Expected seconds per suite: the mean of PR #76's two GitHub CI runs (macOS runner, two suites at a time, November 2026),
+ * read from each suite's seconds= in summary.txt. npm-test is the unit job's test step (p50 of earlier runs).
  */
 export const EXPECTED_SECONDS: Readonly<Record<string, number>> = {
-  'plans-1280': 315, 'plans-1280-board400': 315, 'plans-390': 315,
-  'npm-test': 379, 'mini-check': 353, 'capture-resilience': 229, 'ui-pass': 164, 'pane-head': 109, m9a: 94, progress: 88,
-  'browser-smoke': 52, 'transcript-notes-page': 52, 'notes-ui': 43, 'ai-mode': 39, 'board-focus': 38, 'api-keys': 25, listen: 14,
-  'progress-fix1': 13, 'mini-gap': 10, 'app-check': 9, 'transcript-download': 9, 'progress-fix2': 8, 'echo-page': 7,
+  'npm-test': 379, 'mini-check': 364, 'plans-1280': 343, 'plans-1280-board400': 228, 'plans-390': 224, 'capture-resilience': 224,
+  'ui-pass': 158, 'pane-head': 109, m9a: 94, progress: 89, 'browser-smoke': 63, 'transcript-notes-page': 52, 'notes-ui': 43,
+  'ai-mode': 42, 'board-focus': 41, 'api-keys': 27, listen: 15, 'mini-gap': 14, 'progress-fix1': 13, 'transcript-download': 9,
+  'progress-fix2': 8, 'echo-page': 7, 'app-check': 7,
 };
 export const DEFAULT_SECONDS = 60;
 export const expectedSeconds = (name: string) => Object.hasOwn(EXPECTED_SECONDS, name) ? EXPECTED_SECONDS[name] : DEFAULT_SECONDS;
@@ -150,7 +159,8 @@ export function checksShard(env: NodeJS.ProcessEnv = process.env) {
 }
 /**
  * Splits the tasks into `count` shards that each run `concurrency` at a time: longest first, each task goes to the least loaded
- * of the count × concurrency slots (the lowest slot on a tie), and slot s belongs to shard floor(s / concurrency).
+ * of the count × concurrency slots, and slot s belongs to shard floor(s / concurrency). Among equally loaded slots it takes the
+ * one whose shard has the least work (then the lowest slot), so the longest tasks start in different shards.
  * Each shard keeps the longest-first order.
  */
 export function splitShards(names: readonly string[], count: number, concurrency: number) {
@@ -158,12 +168,17 @@ export function splitShards(names: readonly string[], count: number, concurrency
   if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error(`Concurrency must be a whole number of at least 1, not ${concurrency}.`);
   if (new Set(names).size !== names.length) throw new Error('Task names must be unique.');
   const slots = Array.from({ length: count * concurrency }, () => 0);
+  const work = Array.from({ length: count }, () => 0);
   const shards = Array.from({ length: count }, () => [] as string[]);
+  const shardOf = (slot: number) => Math.floor(slot / concurrency);
   for (const name of longestFirst(names)) {
     let least = 0;
-    for (let slot = 1; slot < slots.length; slot++) if (slots[slot] < slots[least]) least = slot;
+    for (let slot = 1; slot < slots.length; slot++) {
+      if (slots[slot] < slots[least] || (slots[slot] === slots[least] && work[shardOf(slot)] < work[shardOf(least)])) least = slot;
+    }
     slots[least] += expectedSeconds(name);
-    shards[Math.floor(least / concurrency)].push(name);
+    work[shardOf(least)] += expectedSeconds(name);
+    shards[shardOf(least)].push(name);
   }
   return shards;
 }
@@ -200,17 +215,22 @@ export function checkTasks(out: string, audio: string, browserOnly: boolean): Ta
   // CI runs the unit tests and the type check in their own jobs; its browser job sets MEETING_CHECKS_BROWSER_ONLY=1.
   return browserOnly ? all.filter(([name]) => name !== 'npm-test' && name !== 'typecheck') : all;
 }
+/**
+ * Slots per shard in the split. Fixed, not this run's MEETING_CHECK_CONCURRENCY: every shard job must compute the same split,
+ * or a task could be dropped or run twice.
+ */
+export const SHARD_SLOTS = 2;
 /** This run's tasks, longest first: every task, or only those of shard k when MEETING_CHECKS_SHARD=k/n is set. */
-function plannedTasks(out: string, audio: string, concurrency: number) {
-  const tasks = checkTasks(out, audio, process.env.MEETING_CHECKS_BROWSER_ONLY === '1');
-  const shard = checksShard();
+export function plannedTasks(out: string, audio: string, env: NodeJS.ProcessEnv = process.env) {
+  const tasks = checkTasks(out, audio, env.MEETING_CHECKS_BROWSER_ONLY === '1');
+  const shard = checksShard(env);
   const byName = new Map(tasks.map(task => [task[0], task]));
-  const names = shard ? splitShards([...byName.keys()], shard.count, concurrency)[shard.index - 1] : longestFirst([...byName.keys()]);
+  const names = shard ? splitShards([...byName.keys()], shard.count, SHARD_SLOTS)[shard.index - 1] : longestFirst([...byName.keys()]);
   return { shard, tasks: names.map(name => byName.get(name)!) };
 }
 async function main() {
   if (process.argv[2] === '--plan' && process.argv.length === 3) {
-    const { shard, tasks } = plannedTasks('<out>', '<audio>', suiteConcurrency());
+    const { shard, tasks } = plannedTasks('<out>', '<audio>');
     const total = tasks.reduce((sum, [name]) => sum + expectedSeconds(name), 0);
     console.log(`${shard ? `shard ${shard.index}/${shard.count}` : 'all tasks'}: ${tasks.length} tasks, ${total} s expected`);
     for (const [name] of tasks) console.log(`  ${name} ${expectedSeconds(name)}`);
@@ -237,7 +257,7 @@ async function main() {
   };
   const audio = join(out, 'synthetic-meeting.wav');
   await checkAudio(audio);
-  const { tasks } = plannedTasks(out, audio, concurrency);
+  const { tasks } = plannedTasks(out, audio);
   const running = new Set<number>();
   for (const name of ['SIGINT', 'SIGTERM'] as const) process.on(name, () => {
     for (const pid of running) signal(pid, 'SIGKILL');
