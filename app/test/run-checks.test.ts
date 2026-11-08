@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runSuite, suiteTimeoutMs } from '../scripts/run-checks.ts';
+import { runSuite, suiteEnvironment, suiteTimeoutMs } from '../scripts/run-checks.ts';
 
 const fixture = fileURLToPath(new URL('./fixtures/check-runner-process.mjs', import.meta.url));
 function alive(pid: number) {
@@ -67,6 +67,23 @@ test('timeout browser cleanup is confined to that suite temp dir, not a neighbou
   assert.equal(alive(browser), false, 'detached test browser survived timeout cleanup');
   assert.equal(alive(neighbour.pid!), true, 'cleanup killed a different suite browser');
   assert.equal(options.running.size, 0);
+});
+
+test('a task may add its own variables but never override the isolated ones', async t => {
+  const env = { HOME: '/isolated/home', TMPDIR: '/isolated/tmp' };
+  assert.deepEqual(suiteEnvironment('plans-390', env, { PLANS_CHECK_CONFIGS: '390' }), { ...env, PLANS_CHECK_CONFIGS: '390' });
+  assert.deepEqual(suiteEnvironment('listen', env), env);
+  for (const key of ['HOME', 'TMPDIR', 'TMP', 'TEMP']) {
+    assert.throws(() => suiteEnvironment('clash', { HOME: '/isolated/home' }, { [key]: '/elsewhere' }), new RegExp(`may not set ${key}`));
+  }
+  assert.throws(() => suiteEnvironment('clash', { MEETING_TEST_CHROME: undefined }, { MEETING_TEST_CHROME: '/other' }), /MEETING_TEST_CHROME/);
+  const options = await setup();
+  t.after(() => rm(options.out, { recursive: true, force: true }));
+  const marker = join(options.out, 'ran');
+  await assert.rejects(runSuite(['clash', [process.execPath, '-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, '')`], { HOME: '/elsewhere' }], options),
+    /Task clash may not set HOME/);
+  assert.equal(await readFile(marker).then(() => true, () => false), false, 'the suite ran with an overridden variable');
+  assert.equal(await readFile(options.summary, 'utf8'), '');
 });
 
 test('the per-suite timeout is 20 minutes unless MEETING_CHECK_TIMEOUT_S names whole seconds', () => {

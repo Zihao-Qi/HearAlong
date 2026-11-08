@@ -1,5 +1,7 @@
 # A fresh checkout must pass: type check, lint and the public guard (Linux), unit tests and the isolated browser suites
-# (Apple Silicon Mac). Three parallel jobs, so one stalled part cannot hold the others and a failure names its part.
+# (Apple Silicon Mac). Parallel jobs, so one stalled part cannot hold the others and a failure names its part.
+# The browser suites run in three shards (browser-suites), and the small `browser` job reports them as the one required check.
+# A pull request so runs 4 macOS jobs at once (unit and 3 shards); free accounts get 5 concurrent macOS jobs.
 name: CI
 
 on:
@@ -10,11 +12,14 @@ on:
 permissions:
   contents: read
 
+# Pull requests: only the newest push runs. Main: every commit gets its own complete run, never cancelled or superseded.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Static and unit run on every pull request and push, docs-only ones too: unit tests read the docs
+  # (bench.test.ts, read-scope-disclosure.test.ts, land.test.ts).
   static:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -32,8 +37,9 @@ jobs:
           cache-dependency-path: app/package-lock.json
       # Pinned to the shellcheck release Homebrew ships on macOS (Ubuntu's apt has 0.9.0, which reports different notes).
       - run: pipx install shellcheck-py==0.11.0.1 && shellcheck --version
-      - run: sudo apt-get install -y zsh # lint-shell.sh also syntax-checks the zsh scripts
-      - run: npm ci --ignore-scripts
+      - run: sudo apt-get install -y --no-install-recommends zsh # lint-shell.sh also syntax-checks the zsh scripts
+      # Without the audit npm ci takes 5-12 s even with no cache (PR #76); caching node_modules saved no more than it cost.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm run lint
       # Its fixtures write their own fictional deny list, so the private one is not needed.
@@ -58,14 +64,62 @@ jobs:
           cache-dependency-path: app/package-lock.json
       # Xcode's swiftc (PDF text tool), cupsfilter, git, ps and zsh come with the runner.
       - run: brew install ffmpeg
-      - run: npm ci --ignore-scripts
-      - run: npm test
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_ANALYTICS: 1
+          HOMEBREW_NO_ENV_HINTS: 1
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      # Experiment, CI only: 3 test files at a time instead of package.json's 2. Many of the slowest tests wait on real
+      # timers (18 s keep-alive windows, 10 s disconnect fallbacks), and the macOS runner has 3 cores. Node ignores a
+      # --test-concurrency after the file list (npm test -- ...) and refuses it in NODE_OPTIONS, so this runs
+      # package.json's own test command with that one flag changed.
+      - name: npm test, 3 at a time
+        run: |
+          test=$(node -p "require('./package.json').scripts.test")
+          case "$test" in *' --test-concurrency=2 '*) ;; *) echo 'package.json test no longer sets --test-concurrency=2' >&2; exit 1 ;; esac
+          npm exec -c "${test/--test-concurrency=2/--test-concurrency=3}"
 
-  browser:
-    # Pull requests only: a merge to main reruns static and unit, not the same 25 minutes of suites the pull request just passed.
+  # Pull requests only: is anything besides documentation changed? Any doubt (an API error, no file list) means yes.
+  changes:
     if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - id: files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+        # A rename counts both names, so moving code into docs/ still runs the suites. The API lists at most 3000 files:
+        # fewer distinct new names (f lines; p lines are a rename's old name) than the pull request changed means code.
+        # Names are JSON-encoded so a newline in a path cannot start a fake line; escapes stay inside the quotes.
+        run: |
+          code=true
+          if listing=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files" --jq '.[] | "f " + (.filename | @json), (.previous_filename // empty | "p " + @json)') && [ -n "$listing" ]; then
+            printf '%s\n' "$listing"
+            listed=$(sed -n '/^f /p' <<< "$listing" | sort -u | wc -l | tr -d ' ')
+            echo "listed $listed of $CHANGED_FILES changed files"
+            if [ "$listed" -ge "$CHANGED_FILES" ] && ! grep -Eqv '^[fp] "(docs/.+|[^/]+\.md|LICENSE|THIRD-PARTY-LICENSES)"$' <<< "$listing"; then code=false; fi
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
+  # Pull requests only: a merge to main reruns static and unit, not the same suites the pull request just passed.
+  browser-suites:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-latest
     timeout-minutes: 60 # the suites run two at a time, up to 30 minutes each
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     defaults:
       run:
         working-directory: app
@@ -79,7 +133,12 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: brew install ffmpeg
-      - run: npm ci --ignore-scripts
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+          HOMEBREW_NO_ANALYTICS: 1
+          HOMEBREW_NO_ENV_HINTS: 1
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       # Use the pinned Playwright's headless shell on the displayless runner. Full Chrome logged CVDisplayLink failures
       # during the first run, where plans-check reached the 20-minute limit.
       - name: Install test Chromium
@@ -97,6 +156,7 @@ jobs:
         env:
           MEETING_CHECK_TIMEOUT_S: 1800
           MEETING_CHECKS_BROWSER_ONLY: '1' # the static and unit jobs already run the type check and unit tests
+          MEETING_CHECKS_SHARD: ${{ matrix.shard }}/3
         run: npm run checks -- "$RUNNER_TEMP/checks"
       - name: Summary
         if: always()
@@ -105,7 +165,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
-          name: checks-output
+          name: checks-output-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/checks
             !${{ runner.temp }}/checks/home/**
@@ -113,3 +173,20 @@ jobs:
             !${{ runner.temp }}/checks/**/data/**
           if-no-files-found: ignore
           retention-days: 7
+
+  # The required `browser` check: passes for a docs-only pull request, otherwise only when every shard passed.
+  browser:
+    needs: [changes, browser-suites]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          SUITES: ${{ needs.browser-suites.result }}
+        run: |
+          echo "changes=$CHANGES code=$CODE browser-suites=$SUITES"
+          if [ "$CHANGES" != success ]; then echo 'The changes job did not succeed.'; exit 1; fi
+          if [ "$CODE" = false ]; then echo 'Docs-only pull request: the browser suites are not needed.'; exit 0; fi
+          if [ "$SUITES" != success ]; then echo 'The browser suites did not all pass.'; exit 1; fi

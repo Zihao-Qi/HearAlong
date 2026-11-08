@@ -99,7 +99,7 @@ function printFullSummary(file: string) {
   const suites = new Map<string, number>();
   let browsers: number | undefined;
   for (const line of readFileSync(file, 'utf8').trim().split(/\r?\n/)) {
-    const suite = /^([a-zA-Z0-9][a-zA-Z0-9._-]*) exit=(\d+)$/.exec(line);
+    const suite = /^([a-zA-Z0-9][a-zA-Z0-9._-]*) exit=(\d+)(?: seconds=\d+)?$/.exec(line);
     const leftover = /^leftover_test_browsers=(\d+)$/.exec(line);
     if (suite && !suites.has(suite[1]) && Number.isSafeInteger(Number(suite[2]))) suites.set(suite[1], Number(suite[2]));
     else if (leftover && browsers === undefined && Number.isSafeInteger(Number(leftover[1]))) browsers = Number(leftover[1]);
@@ -119,8 +119,11 @@ async function runCommand(name: 'check' | 'test' | 'checks', args: string[], mai
   let failure: string | undefined;
   try {
     signal.throwIfAborted();
+    // Land's pre-merge run covers every suite: a stray exported shard or browser-only setting must not narrow it.
+    const env: NodeJS.ProcessEnv = { ...process.env, MEETING_TEST_CHROME: chrome };
+    delete env.MEETING_CHECKS_SHARD; delete env.MEETING_CHECKS_BROWSER_ONLY;
     await new Promise<void>((done, reject) => {
-      const child = spawn('nice', ['-n', '19', 'npm', ...args], { cwd: join(main, 'app'), env: { ...process.env, MEETING_TEST_CHROME: chrome }, detached: true, stdio: ['ignore', fd, fd] });
+      const child = spawn('nice', ['-n', '19', 'npm', ...args], { cwd: join(main, 'app'), env, detached: true, stdio: ['ignore', fd, fd] });
       let stopped: string | undefined, ending: Promise<void> | undefined;
       const groupExists = () => {
         if (!child.pid) return false;

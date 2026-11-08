@@ -5,7 +5,8 @@
 // and 390 px (compact). Checked: the Add buttons share one edge, rows keep their height after Add, no text is clipped or past the
 // edge, every control is at least 44×44 px, the focus stays in the section when a control is replaced, every control responds,
 // no console errors.
-// Usage: node --experimental-strip-types scripts/plans-check.ts [outDir] (PLANS_CHECK_STATES=plans,refused for a focused rerun)
+// Usage: node --experimental-strip-types scripts/plans-check.ts [outDir] (PLANS_CHECK_STATES=plans,refused for a focused rerun;
+// PLANS_CHECK_CONFIGS=1280,1280-board400,390 picks window sizes, and the lifecycle and Settings checks run only with 1280)
 // The browser is Playwright's own Chromium (MEETING_TEST_CHROME, else the newest headless shell in the Playwright cache).
 import { chromium, type Browser, type Locator, type Page } from 'playwright-core';
 import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
@@ -16,6 +17,20 @@ import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 import { MeetingStore } from '../src/store.ts';
 import type { Recognition } from '../src/recognizer.ts';
 import { plansLifecycleCheck } from './plans-lifecycle-check.ts';
+
+const CONFIGS = [
+  { name: '1280', width: 1280, height: 900, board: 640 },
+  { name: '1280-board400', width: 1280, height: 900, board: 400 },
+  { name: '390', width: 390, height: 844, board: 400 },
+];
+// The full runner runs one task per size; a misspelt name must fail rather than check nothing.
+const configNames = process.env.PLANS_CHECK_CONFIGS ? process.env.PLANS_CHECK_CONFIGS.split(',') : CONFIGS.map(c => c.name);
+for (const name of configNames) {
+  if (!CONFIGS.some(c => c.name === name)) throw new Error(`PLANS_CHECK_CONFIGS: unknown config ${JSON.stringify(name)} (known: ${CONFIGS.map(c => c.name).join(', ')}).`);
+}
+const selectedConfigs = CONFIGS.filter(c => configNames.includes(c.name));
+// The lifecycle and Settings checks are not per size: they run once, with 1280 (which a full run includes).
+const extras = configNames.includes('1280');
 
 const outDir = resolve(process.argv[2] ?? 'artifacts/plans-check');
 await mkdir(outDir, { recursive: true });
@@ -91,16 +106,11 @@ try {
   if (!(await call(`/api/meetings/${meeting.id}/notes`)).notes) throw new Error('The scripted notes were not written.');
 
   browser = await chromium.launch({ executablePath: await bundledChromium(), headless: true });
-  const CONFIGS = [
-    { name: '1280', width: 1280, height: 900, board: 640 },
-    { name: '1280-board400', width: 1280, height: 900, board: 400 },
-    { name: '390', width: 390, height: 844, board: 400 },
-  ];
   const STATES = ['idle', 'running', 'waiting-recording', 'waiting-notes', 'waiting-quota', 'plans', 'replanning', 'mixed', 'nothing', 'all-failed',
     'stopped', 'closed', 'failed', 'stale', 'stale-materials', 'explored', 'explore-stopped', 'newer', 'refused', 'moved', 'no-project'];
 
   const selected = process.env.PLANS_CHECK_STATES ? STATES.filter(s => process.env.PLANS_CHECK_STATES!.split(',').includes(s)) : STATES;
-  for (const config of CONFIGS) for (const state of selected) {
+  for (const config of selectedConfigs) for (const state of selected) {
     const t = `${state} @${config.name}`;
     const context = await browser.newContext({ viewport: { width: config.width, height: config.height }, acceptDownloads: true });
     await context.addInitScript(([id, board]) => {
@@ -160,8 +170,10 @@ try {
       await page.screenshot({ path: join(outDir, `${state}-${config.name}-error.png`) }).catch(() => {});
     } finally { await context.close(); await Promise.all(eventWork); }
   }
-  await lifecycleChecks(browser);
-  await settingsCheck(browser, meeting.id);
+  if (extras) {
+    await lifecycleChecks(browser);
+    await settingsCheck(browser, meeting.id);
+  }
 } finally {
   await browser?.close().catch(() => {});
   await app.close();
