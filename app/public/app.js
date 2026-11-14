@@ -26,7 +26,7 @@ let glossaryOwner = null; // the meeting whose glossary is open in the editor
 let selectionGeneration = 0;
 let statusSequence = 0;
 const view = createTranscriptView($('transcript'), { segmentNode, listen: ms => listen.open(ms), changed: updateJump,
-  emptyText: () => meetingId ? 'Waiting for transcribed speech…' : 'Create a meeting, then start the microphone or replay a recording.' });
+  emptyText: () => meetingId ? 'Waiting for transcribed speech…' : 'Start a new recording, or replay a recording from the meeting menu (top left).' });
 const listen = createListenPlayer($('transcript-pane'), { owner: () => meetingId,
   recording: () => Boolean(capture || requestingMic || micTest || status?.recordingAnywhere),
   request: api, hear: ms => view.hear(ms) });
@@ -507,11 +507,20 @@ function selectMeeting(id) {
   void refreshDetail();
 }
 
+function focusRecordingButton() {
+  [$('start-new'), $('start')].find(button => !button.hidden && button.classList.contains('primary'))?.focus();
+}
 function controls() {
   const recording = Boolean(capture);
   document.body.classList.toggle('recording', recording);
   const ready = Boolean(status?.config.available && meetingId) && !busy && !requestingMic && !quitView.seen;
-  $('start').hidden = recording;
+  const meeting = status?.meetings.find(m => m.id === meetingId);
+  $('start').hidden = recording || !meeting || Boolean(meeting.replay);
+  $('start').innerHTML = `${meeting?.recorded ? 'Continue' : 'Start'}<span class="wide-only">&nbsp;recording</span>`;
+  $('start').className = meeting?.recorded ? 'button' : 'button primary';
+  $('start').title = meeting?.recorded ? 'Record more in this meeting' : 'Record in this meeting';
+  $('start-new').hidden = recording || Boolean(meeting && !meeting.replay && !meeting.recorded);
+  $('start-new').disabled = !status?.config.available || busy || requestingMic || quitView.seen || Boolean(lastSnapshot?.replay);
   $('stop').hidden = !recording;
   $('add-tab').hidden = !recording || Boolean(capture?.sources.has('tab') || capture?.sources.has('app')) || Boolean(capture?.stopping);
   $('mini-view').hidden = !recording || Boolean(capture?.stopping) || (nativeMini() ? lastSnapshot.mini.state === 'open' : !miniSupported() || Boolean(mini.win));
@@ -630,6 +639,7 @@ function applyLayout() {
   }
   for (const id of ['board', 'notes', 'plans', 'project']) $(`${id}-panel`).setAttribute('aria-labelledby', `${compact ? 'ctab' : 'tab'}-${id}`);
   if (changed) restoreScroll();
+  fitStartMenu();
   updateBoardBadge();
   renderMeetingChip();
 }
@@ -2287,8 +2297,9 @@ async function finishSession(session) {
   await session.context.close().catch(() => {});
   if (capture === session) capture = undefined;
   closeMini();
+  await refreshStatus();
   controls();
-  if (!document.activeElement || document.activeElement === document.body) $('start').focus();
+  if (!document.activeElement || document.activeElement === document.body) focusRecordingButton();
   renderLive(lastSnapshot);
   log('Recording stopped. Saved audio keeps transcribing.');
 }
@@ -2396,7 +2407,7 @@ let helperCheckedAt = 0;
 function hasAppCapture() { return helperAvailable && Date.now() - helperCheckedAt < 3000; }
 function closeStartMenu() {
   $('start-menu').hidden = true;
-  $('start').setAttribute('aria-expanded', 'false'); $('add-tab').setAttribute('aria-expanded', 'false');
+  for (const id of ['start', 'start-new', 'add-tab']) $(id).setAttribute('aria-expanded', 'false');
   clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null;
 }
 function startMenuStep(apps) {
@@ -2404,7 +2415,7 @@ function startMenuStep(apps) {
   for (const id of ['call-heading', 'call-tab', 'call-apps']) $(id).hidden = !apps;
   if (window.hearalong?.desktop) $('call-tab').hidden = true;
   $('call-empty').hidden = true;
-  $('start-menu').setAttribute('aria-label', apps ? 'Where is the call?' : 'Start recording');
+  $('start-menu').setAttribute('aria-label', callMenuAnchor === 'add-tab' ? 'Where is the call?' : callMenuAnchor === 'start-new' ? 'New recording' : $('start').textContent.replace(/\s+/g, ' ').trim());
 }
 async function refreshCallApps() {
   const anchor = callMenuAnchor;
@@ -2420,7 +2431,7 @@ async function refreshCallApps() {
       if (!row) {
         row = el('button', app.name); row.setAttribute('role', 'menuitem'); row.dataset.app = app.id;
         row.append(el('span', 'Use headphones', 'muted small'));
-        row.onclick = guarded(() => { closeStartMenu(); return capture ? attachApp(capture, app) : startRecording(true, app); });
+        row.onclick = guarded(() => { const fresh = callMenuAnchor === 'start-new'; closeStartMenu(); return capture ? attachApp(capture, app) : startRecording(true, app, { fresh }); });
         $('call-apps').append(row);
       }
     }
@@ -2433,25 +2444,38 @@ async function refreshCallApps() {
     $('call-empty').hidden = apps.length > 0;
   } catch { /* keep the last list until the next refresh */ }
 }
+function fitStartMenu() {
+  const menu = $('start-menu');
+  if (menu.hidden) return;
+  menu.style.transform = '';
+  const box = menu.getBoundingClientRect();
+  const left = Math.max(12, Math.min(box.left, innerWidth - 12 - box.width));
+  menu.style.transform = `translateX(${left - box.left}px)`;
+}
+function openStartMenu(anchor) {
+  const open = $('start-menu').hidden || callMenuAnchor !== anchor;
+  closeStartMenu();
+  if (!open) return;
+  callMenuAnchor = anchor;
+  $(anchor).parentElement.append($('start-menu')); startMenuStep(false);
+  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
+  fitStartMenu();
+  $('start-mic').focus();
+}
 function openCallMenu(anchor) {
   closeStartMenu(); callMenuAnchor = anchor;
   $(anchor).parentElement.append($('start-menu'));
-  startMenuStep(true); $('call-back').hidden = anchor !== 'start';
+  startMenuStep(true); $('call-back').hidden = anchor === 'add-tab';
   $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
+  fitStartMenu();
   const first = $('call-tab').hidden
     ? [...$('start-menu').querySelectorAll('button')].find(item => !item.hidden && item.offsetParent)
     : $('call-tab');
   first?.focus();
   void refreshCallApps(); callMenuTimer = setInterval(refreshCallApps, 1000);
 }
-$('start').onclick = () => {
-  const open = $('start-menu').hidden;
-  closeStartMenu();
-  $('start').parentElement.append($('start-menu')); startMenuStep(false);
-  $('start-menu').hidden = !open;
-  $('start').setAttribute('aria-expanded', String(open));
-  if (open) $('start-mic').focus();
-};
+$('start').onclick = () => openStartMenu('start');
+$('start-new').onclick = () => openStartMenu('start-new');
 document.addEventListener('click', event => { if (!event.target.closest?.('.start-wrap')) closeStartMenu(); });
 $('start-menu').addEventListener('keydown', event => {
   if (event.key === 'Escape') { const anchor = callMenuAnchor ?? 'start'; closeStartMenu(); $(anchor).focus(); }
@@ -2461,17 +2485,18 @@ $('start-menu').addEventListener('keydown', event => {
     rows[(rows.indexOf(document.activeElement) + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus();
   }
 });
-$('call-back').onclick = () => { closeStartMenu(); startMenuStep(false); $('start-menu').hidden = false; $('start').setAttribute('aria-expanded', 'true'); $('start-online').focus(); };
+$('call-back').onclick = () => { const anchor = callMenuAnchor; closeStartMenu(); openStartMenu(anchor); $('start-online').focus(); };
 $('call-tab').onclick = guarded(() => {
+  const fresh = callMenuAnchor === 'start-new';
   closeStartMenu();
-  if (!capture) return startRecording(true);
+  if (!capture) return startRecording(true, null, { fresh });
   return attachTab(capture, pickMeetingTab().then(stream => ({ stream }), error => ({ error })));
 });
-async function startRecording(online, app = null) {
+async function startRecording(online, app = null, { fresh = false } = {}) {
   closeStartMenu();
   micTest?.stop();
-  const path = base();
-  const owner = meetingId;
+  let path = fresh ? null : base();
+  let owner = meetingId;
   const generation = ++captureGeneration;
   // The tab picker first, straight from the click; everything else may wait on the network or a permission prompt.
   // Settled at once (stream or error), so a cancelled share is never an unhandled rejection while the microphone starts.
@@ -2483,6 +2508,16 @@ async function startRecording(online, app = null) {
     if (meetingId !== owner || generation !== captureGeneration) throw new Error('The meeting changed while recording was starting; it was cancelled.');
   };
   try {
+    if (fresh) {
+      const projectId = menuProjectId();
+      closeMeetingMenu();
+      const stamp = new Date().toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const meeting = await post('/api/meetings', { title: `Meeting ${stamp}`, autoTitle: true, ...(projectId ? { projectId } : {}) });
+      stillOwner();
+      selectMeeting(meeting.id);
+      owner = meeting.id; path = base();
+      await refreshStatus();
+    }
     const current = await api(path);
     stillOwner();
     micStream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(online), video: false }).catch(error => {
@@ -2582,8 +2617,8 @@ async function pollAppCapture() {
   } catch { helperAvailable = false; }
   finally { appCapturePolling = false; }
 }
-$('start-mic').onclick = guarded(() => startRecording(false));
-$('start-online').onclick = guarded(() => window.hearalong?.desktop || hasAppCapture() ? openCallMenu('start') : startRecording(true));
+$('start-mic').onclick = guarded(() => startRecording(false, null, { fresh: callMenuAnchor === 'start-new' }));
+$('start-online').onclick = guarded(() => window.hearalong?.desktop || hasAppCapture() ? openCallMenu(callMenuAnchor) : startRecording(true, null, { fresh: callMenuAnchor === 'start-new' }));
 $('add-tab').onclick = guarded(async () => {
   const session = capture;
   if (!session) return;

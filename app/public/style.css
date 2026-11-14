@@ -394,6 +394,7 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 
 /* Start menu (M5 step 3): the choice of sources, with the consent note in place of a dialog (the tab picker needs the click). */
 .start-wrap { position: relative; }
+.start-wrap:has(> button[hidden]) { display: none; }
 .start-menu { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; width: 300px; max-width: calc(100vw - 24px); padding: 8px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); box-shadow: 0 8px 24px rgba(24,33,47,.16); display: flex; flex-direction: column; gap: 4px; }
 .start-menu[hidden] { display: none; }
 .start-consent { margin: 2px 6px 6px; font-size: 13px; color: var(--muted); }
@@ -593,12 +594,10 @@ body.layout-compact .compact-tabs { padding-left: max(8px, calc((100% - 720px) /
 .row[hidden] { display: none; }
 .nav-divider { display: none; }
 @media (max-width: 600px) {
-  /* A phone: one top row (meeting, Start, Settings); materials are in Settings. */
+  /* A phone: two rows leave room for both recording actions; materials are in Settings. */
   body.layout-compact #open-meeting { display: none; }
-  body.layout-compact .topbar-left { flex-basis: auto; flex: 1 1 0; }
-  body.layout-compact .topbar-right { flex-basis: auto; flex: 0 0 auto; justify-content: flex-end; }
-  /* While recording the right side holds more (Add meeting tab, Mini view, Stop): two rows, so the meeting name is never covered. */
-  body.layout-compact.recording .topbar-left, body.layout-compact.recording .topbar-right { flex: 1 1 100%; }
+  body.layout-compact .topbar-left, body.layout-compact .topbar-right { flex: 1 1 100%; }
+  body.layout-compact .topbar-right { justify-content: flex-end; }
 }
 @media (max-width: 640px) {
   .settings-nav .nav-divider { display: block; flex: 0 0 100%; height: 0; border-top: 1px solid var(--line); margin: 2px 0; }

@@ -713,7 +713,7 @@ async function run() {
   await page.locator('#live-chip').waitFor({ state: 'hidden', timeout: 15_000 });
   step('detach delayed end routes', 30_000);
   await page.unroute('**/pcm/end', delayedEnd);
-  check('stopped: the window closed and the focus is on Start', await page.locator('#start').isVisible() && await page.locator('#mini-view').isHidden() && await page.evaluate(() => document.activeElement?.id) === 'start');
+  check('stopped: the window closed and the focus is on New recording', await page.locator('#start-new').isVisible() && await page.locator('#start-new').evaluate(n => n.classList.contains('primary')) && await page.locator('#mini-view').isHidden() && await page.evaluate(() => document.activeElement?.id) === 'start-new');
   // The same meeting recorded again: the kept page hears of it only now, with the tag of the first recording.
   const firstKeys = await retained.evaluate(() => ([...document.querySelectorAll('#m-scroll .ln')] as HTMLElement[]).map(r => r.dataset.key));
   await page.waitForFunction(() => !(document.getElementById('start') as HTMLButtonElement).disabled, null, { timeout: 30_000 });

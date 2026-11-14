@@ -24,7 +24,7 @@ test('call menu focuses the first visible desktop button, never the hidden Chrom
     const nodes = { start: button('start'), 'add-tab': button('add-tab'), 'call-back': back,
       'call-tab': tab, 'start-menu': { hidden: true, querySelectorAll: () => [back, tab, appItem] } };
     const context = { $: (id: keyof typeof nodes) => nodes[id], closeStartMenu() {}, startMenuStep() {}, callMenuAnchor: null, callMenuTimer: null,
-      refreshCallApps: async () => {}, setInterval: () => 1 };
+      refreshCallApps: async () => {}, fitStartMenu() {}, setInterval: () => 1 };
     runInNewContext(`${open}\nopenCallMenu(${JSON.stringify(anchor)});`, context);
     assert.equal(focused, expected);
   }

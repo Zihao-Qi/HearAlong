@@ -104,12 +104,17 @@ try {
         if (heading.width < 44 || heading.hitHeight < 44) geometryProblems.push(`${name}: Back hit area ${heading.width} × ${heading.hitHeight}`);
       } else if (heading.height !== headingHeights.get(heading.viewport)) geometryProblems.push(`${name}: header height changed ${headingHeights.get(heading.viewport)} → ${heading.height}`);
     }
-    const bounds = await page.locator('#start-menu').evaluate(node => { const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, viewport: innerWidth }; });
-    assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewport, `${name}: menu stays within viewport`);
+    const bounds = await page.locator('#start-menu').evaluate(node => {
+      const box = node.getBoundingClientRect(), button = document.getElementById('start')!;
+      return { left: box.left, right: box.right, viewport: innerWidth, startClass: button.className, startLeft: button.getBoundingClientRect().left,
+        newHidden: document.getElementById('start-new')!.hidden, menuLeft: getComputedStyle(node).left, menuRight: getComputedStyle(node).right };
+    });
+    assert.ok(bounds.left >= 0 && bounds.right <= bounds.viewport, `${name}: menu stays within viewport: ${JSON.stringify(bounds)}`);
     const path = join(out, name); await page.screenshot({ path, fullPage: true }); screenshots.push(path);
   };
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 860 });
+    await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width < 900);
     await page.locator('#start').click(); await screenshot(`start-${width}.png`);
     await page.locator('#start-online').click();
     await waitFor(async () => await page.locator('#call-apps button').count() === 2);
@@ -144,6 +149,26 @@ try {
   assert.ok(attempts.length > 0 && attempts.every(a => Math.abs(a.wallMs - a.clockStart - a.startMs) < 1), 'capture wall time describes the first sample, on the page timeline');
   assert.ok(server.store!.chunks(server.store!.meetings()[0].id).some(c => c.source.startsWith('app:') && c.seconds % 1 > 0));
   console.log('PASS menu/focus/Back/Escape, Them preview, unpadded tail, clean Stop');
+
+  const meetingsBeforeFresh = server.store!.meetings();
+  const previousMeeting = await page.evaluate(() => localStorage.getItem('meeting-id'));
+  const previousSource = (await state())?.source;
+  await page.locator('#start-new').click(); await page.locator('#start-online').click();
+  assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'New recording');
+  await page.locator('#call-apps button', { hasText: 'Fictional Meet' }).click();
+  await waitFor(async () => { const s = await state(); return Boolean(s && s.source !== previousSource); });
+  const freshSource = (await state())!.source;
+  const freshMeeting = await page.evaluate(() => localStorage.getItem('meeting-id'));
+  assert.notEqual(freshMeeting, previousMeeting);
+  assert.equal(server.store!.meetings().length, meetingsBeforeFresh.length + 1, 'New app recording creates exactly one meeting');
+  assert.deepEqual(server.store!.meetings().filter(m => !meetingsBeforeFresh.some(old => old.id === m.id)).map(m => m.id), [freshMeeting], 'the new meeting is selected');
+  await hasFrames(freshSource);
+  assert.ok(server.store!.openRecordings().some(r => r.meetingId === freshMeeting && r.source === freshSource), 'the selected meeting owns the app recording');
+  assert.ok(server.store!.openRecordings().some(r => r.meetingId === freshMeeting && r.source.startsWith('mic:')), 'the selected meeting also records the microphone');
+  await stop();
+  assert.equal(server.store!.meetings().length, meetingsBeforeFresh.length + 1);
+  assert.ok(server.store!.chunks(freshMeeting!).some(c => c.source === freshSource && c.seconds > 0), 'app audio is saved in the new meeting');
+  console.log('PASS New recording → online call → meeting app: exactly one new selected meeting owns mic and saved app audio');
 
   await page.locator('#start').click(); await page.locator('#start-mic').click();
   const closed = await chooseApp(true); assert.equal(await page.locator('#call-back').isHidden(), true);

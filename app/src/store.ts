@@ -441,8 +441,10 @@ export class MeetingStore {
     if (!result) throw new Error('Meeting not found.');
     return result;
   }
-  meetings(): Meeting[] {
-    return this.db.prepare('SELECT * FROM meetings ORDER BY createdAt DESC').all() as Meeting[];
+  meetings(): (Meeting & { recorded: boolean })[] {
+    const rows = this.db.prepare(`SELECT meetings.*, (EXISTS (SELECT 1 FROM recording_sources WHERE meetingId=meetings.id)
+      OR EXISTS (SELECT 1 FROM chunks WHERE meetingId=meetings.id)) AS recorded FROM meetings ORDER BY createdAt DESC`).all() as (Meeting & { recorded: number })[];
+    return rows.map(row => ({ ...row, recorded: Boolean(row.recorded) }));
   }
   /** The user's rename: from now on the name is theirs and AI never changes it. */
   rename(id: string, title: string) {

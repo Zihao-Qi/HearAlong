@@ -31,6 +31,23 @@ test('meetings need no project; periodic defaults and PCM deduplication persist'
   } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test('meeting list records source admission or chunks, even after recording stops', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-recorded-'));
+  const store = new MeetingStore(directory);
+  try {
+    const source = store.createMeeting('Source only'), chunk = store.createMeeting('Chunk only');
+    const recorded = (id: string) => store.meetings().find(m => m.id === id)!.recorded;
+    assert.equal(recorded(source.id), false);
+    assert.equal(recorded(chunk.id), false);
+    store.claimRecording(source.id, 'mic:source', 'page');
+    assert.equal(recorded(source.id), true);
+    store.finishRecordingSource(source.id, 'mic:source', 'ended', Date.now());
+    assert.equal(recorded(source.id), true);
+    await store.addPcm(chunk.id, 'mic:chunk', 0, 0, 16000, Buffer.alloc(64000));
+    assert.equal(recorded(chunk.id), true);
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
 test('disk-backed queue isolates failed jobs and exports an honest transcript', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'meeting-jobs-'));
   const store = new MeetingStore(directory);

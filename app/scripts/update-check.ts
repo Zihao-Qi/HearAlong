@@ -44,7 +44,7 @@ async function layout(page: Page) {
     const node = (id: string) => document.getElementById(id)!;
     const box = (id: string) => node(id).getBoundingClientRect();
     const bar = node('update-bar'), top = document.querySelector('.topbar')!, right = document.querySelector('.topbar-right')!;
-    const b = box('update-restart'), l = box('update-later'), t = box('start');
+    const b = box('update-restart'), l = box('update-later'), t = box('start-new');
     return { text: box('update-text').left, title: box('meeting-title').left, right: b.right, topRight: box('open-system').right,
       h: b.height, laterH: l.height, topH: t.height, gap: b.left - l.right, topGap: parseFloat(getComputedStyle(right).gap),
       py: getComputedStyle(bar).paddingTop, topPy: getComputedStyle(top).paddingTop,

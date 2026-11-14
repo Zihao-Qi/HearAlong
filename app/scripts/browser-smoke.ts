@@ -91,6 +91,68 @@ try {
     await page.locator('#meeting-list button', { hasText: title }).first().click();
     await page.locator('#meeting-title', { hasText: title }).waitFor();
   };
+  const recordingButtons = async (kind: 'recorded' | 'empty' | 'none' | 'replay', playing = false) => {
+    const showStart = kind === 'recorded' || kind === 'empty';
+    await page.waitForFunction(({ showStart, showNew, playing }) => {
+      const start = document.getElementById('start') as HTMLButtonElement;
+      const fresh = document.getElementById('start-new') as HTMLButtonElement;
+      return start.hidden === !showStart && fresh.hidden === !showNew && fresh.disabled === playing;
+    }, { showStart, showNew: kind !== 'empty', playing });
+    assert.equal(await page.locator('#start').isVisible(), showStart, kind);
+    assert.equal(await page.locator('#start-new').isVisible(), kind !== 'empty', kind);
+    assert.equal(await page.locator('#start-new').textContent(), 'New recording');
+    assert.equal(await page.locator('#start-new').getAttribute('class'), 'button primary');
+    assert.equal(await page.locator('#start-new').isDisabled(), playing);
+    assert.equal(await page.locator('#start').isDisabled(), kind === 'none' || playing);
+    if (showStart) {
+      assert.equal(await page.locator('#start').textContent(), `${kind === 'recorded' ? 'Continue' : 'Start'}\u00a0recording`);
+      assert.equal(await page.locator('#start').getAttribute('class'), kind === 'recorded' ? 'button' : 'button primary');
+      assert.equal(await page.locator('#start').getAttribute('title'), kind === 'recorded' ? 'Record more in this meeting' : 'Record in this meeting');
+    }
+  };
+  const menuAt = async (anchor: string, label: string) => {
+    await page.locator(`#${anchor}`).click();
+    assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), label);
+    assert.ok(await page.locator(`#${anchor}`).evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
+    assert.equal(await page.locator(`#${anchor}`).getAttribute('aria-expanded'), 'true');
+    const button = (await page.locator(`#${anchor}`).boundingBox())!, menu = (await page.locator('#start-menu').boundingBox())!;
+    assert.equal(menu.y, button.y + button.height + 6);
+    assert.ok(menu.x >= 0 && menu.x + menu.width <= page.viewportSize()!.width, `${anchor}: menu stays within viewport`);
+    await page.keyboard.press('Escape');
+    assert.ok(await page.locator(`#${anchor}`).evaluate(n => n === document.activeElement));
+    assert.equal(await page.locator(`#${anchor}`).getAttribute('aria-expanded'), 'false');
+  };
+  const recordingScreens = async (kind: 'recorded' | 'empty' | 'none') => {
+    for (const width of [1280, 440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width === 440);
+      await recordingButtons(kind);
+      const compact = width === 440;
+      if (kind !== 'none') assert.equal((await page.locator('#start').innerText()).replace(/\s+/g, ' ').trim(), compact ? kind === 'recorded' ? 'Continue' : 'Start' : `${kind === 'recorded' ? 'Continue' : 'Start'} recording`);
+      const height = await page.locator(kind === 'empty' ? '#start' : '#start-new').evaluate(n => n.getBoundingClientRect().height);
+      assert.equal(height, compact ? 44 : 40);
+      if (kind === 'recorded') {
+        const start = (await page.locator('#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
+        assert.equal(fresh.x - start.x - start.width, compact ? 8 : 10);
+        assert.equal(settings.x - fresh.x - fresh.width, compact ? 8 : 10);
+      }
+      await page.screenshot({ path: join(outDir, `recording-${kind}-${width}.png`) });
+      if (kind === 'recorded') {
+        await menuAt('start', 'Continue recording');
+        await menuAt('start-new', 'New recording');
+        await page.locator('#start-new').click();
+        await page.screenshot({ path: join(outDir, `recording-new-menu-${width}.png`) });
+        await page.keyboard.press('Escape');
+      }
+    }
+    await page.setViewportSize({ width: 900, height: 900 });
+    const row = await page.locator('.topbar').evaluate(n => {
+      const left = n.querySelector('.topbar-left')!.getBoundingClientRect(), right = n.querySelector('.topbar-right')!.getBoundingClientRect();
+      return Math.abs(left.y - right.y);
+    });
+    assert.ok(row < 1, `900 px top bar stays in one row (${row})`);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
   if (process.env.BROWSER_SMOKE_REPLAY_DELAY_MS) await page.route('**/segments*', async route => {
     // Delay the poll itself, not a snapshot already captured while Replay was active.
     if (replayNow !== null) await new Promise(r => setTimeout(r, Number(process.env.BROWSER_SMOKE_REPLAY_DELAY_MS)));
@@ -100,6 +162,8 @@ try {
   await page.goto(app.url);
   await page.locator('#live-chip').waitFor({ state: 'hidden' });
   assert.equal(app.store.meetings().length, 0);
+  await recordingScreens('none');
+  await menuAt('start-new', 'New recording');
 
   // Replay a recording at 16x into a fresh meeting.
   await page.locator('#meeting-button').click();
@@ -110,11 +174,13 @@ try {
   try {
     await page.locator('#replay').click();
     await page.locator('#live-chip').getByText(/Replay/).waitFor();
+    await recordingButtons('replay', true);
   } finally { replayNow = null; }
   await page.waitForFunction(() => document.getElementById('transcript')?.textContent?.includes('lanterns'), null, { timeout: 60_000 });
   const replayMeeting = app.store.meetings()[0];
   assert.ok(app.store.segments(replayMeeting.id).length >= 1, 'segments were published');
   assert.match(app.store.markdown(replayMeeting.id), /parade/);
+  await recordingButtons('replay', true);
 
   // A selection survives polling refreshes and opens the action menu.
   await page.evaluate(() => {
@@ -146,6 +212,8 @@ try {
   // Live microphone path: worklet → PCM uploads → disk queue → native STT.
   await page.locator('#settings [data-close-panel]').click();
   await newMeeting('Synthetic live meeting');
+  await recordingScreens('empty');
+  await menuAt('start', 'Start recording');
   await page.locator('#start').click();
   // Count acknowledged microphone frames, not elapsed wall time: startup/worklet scheduling can consume part of 6.2 s.
   const sixFrames = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/pcm') && r.status() === 201
@@ -167,6 +235,47 @@ try {
   await app.jobs!.wait();
   assert.ok(app.store.chunks(liveMeeting.id).every(c => c.status === 'completed'));
   await page.waitForFunction(() => document.querySelectorAll('#transcript .para').length > 0, null, { timeout: 30_000 });
+
+  await recordingButtons('recorded');
+  await recordingScreens('recorded');
+  await page.locator('#start-new').click();
+  // Back and Escape preserve the New anchor through the second step.
+  await page.evaluate(() => { (window as any).hearalong = { desktop: true }; });
+  await page.locator('#start-online').click();
+  await page.locator('#call-back').click();
+  assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'New recording');
+  assert.equal(await page.locator('#start-new').getAttribute('aria-expanded'), 'true');
+  await page.keyboard.press('Escape');
+  assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement));
+  await page.evaluate(() => { delete (window as any).hearalong; });
+  const beforeFresh = app.store.meetings().length;
+  await page.locator('#start-new').click();
+  await page.locator('#start-mic').evaluate(n => { (n as HTMLButtonElement).click(); (n as HTMLButtonElement).click(); });
+  await page.locator('#live-chip').getByText('Recording').waitFor();
+  assert.equal(app.store.meetings().length, beforeFresh + 1, 'double-click creates exactly one meeting');
+  const freshId = await page.evaluate(() => localStorage.getItem('meeting-id'));
+  assert.notEqual(freshId, liveMeeting.id);
+  assert.ok(app.store.meetings().some(m => m.id === freshId && m.autoTitle === m.title));
+  assert.equal(await page.locator('#meeting-name').isVisible(), false, 'fresh recording never starts rename');
+  assert.equal(await page.locator('#start').isVisible(), false);
+  assert.equal(await page.locator('#start-new').isVisible(), false);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: join(outDir, 'recording-active-1280.png') });
+  await page.locator('#stop').click();
+  await page.locator('#live-chip').waitFor({ state: 'hidden' });
+  await recordingButtons('recorded');
+  assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement), 'stop focuses the visible primary');
+  await page.locator('#start').click();
+  await page.locator('#start-mic').click();
+  await page.locator('#live-chip').getByText('Recording').waitFor();
+  assert.equal(await page.evaluate(() => localStorage.getItem('meeting-id')), freshId);
+  assert.equal(app.store.meetings().length, beforeFresh + 1, 'Continue does not create a meeting');
+  await page.locator('#stop').click();
+  await page.locator('#live-chip').waitFor({ state: 'hidden' });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator('#start-new').click();
+  await pickMeeting(liveMeeting.title);
+  assert.equal(await page.locator('#start-menu').isVisible(), false, 'switching meetings closes the menu');
 
   // Online meeting: microphone + a meeting tab. Automated Chrome cannot capture a real tab here (macOS screen-recording
   // permission), so getDisplayMedia is replaced by a stand-in: a 330 Hz tone on the RIGHT channel only (a mono pick of the
