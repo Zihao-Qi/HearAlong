@@ -102,9 +102,13 @@ try {
     localStorage.setItem('meeting-id', meeting.id);
   });
   await desktop.reload();
+  await desktop.route('**/api/live/apps', route => route.fulfill({ json: { available: true, apps: [
+    { id: 'fictional.call.one', name: 'Fictional Call One' }, { id: 'fictional.call.two', name: 'Fictional Call Two' },
+  ] } }));
   await desktop.locator('#start').click(); await desktop.locator('#start-online').click();
   check('desktop call chooser keeps the Chrome tab hidden', await desktop.locator('#call-tab').isHidden());
-  check('desktop call chooser focuses the first visible button', await desktop.evaluate(() => document.activeElement === [...document.querySelectorAll<HTMLButtonElement>('#start-menu button')].find(item => !item.hidden && item.offsetParent)));
+  await desktop.waitForFunction(() => document.activeElement === document.querySelector('#call-apps button'));
+  check('desktop call chooser focuses the first visible menu item, not Back', await desktop.evaluate(() => document.activeElement === [...document.querySelectorAll<HTMLButtonElement>('#start-menu [role="menuitem"]')].find(item => !item.hidden && item.offsetParent)));
   await desktop.keyboard.press('Escape'); await desktop.close();
   await app.close();
   await page.goto(`http://127.0.0.1:${port}/`);

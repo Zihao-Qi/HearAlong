@@ -39,6 +39,13 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 
 .topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: var(--topbar-pad-y) var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
 .topbar-left, .topbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--topbar-controls-gap); }
+#connection:empty { display: none; }
+@media (min-width: 900px) {
+  .topbar { flex-wrap: nowrap; }
+  .topbar-left { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
+  .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
+  .topbar-right { flex: 0 0 auto; flex-wrap: nowrap; }
+}
 .meeting-select { font: 600 16px var(--sans); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; max-width: 360px; }
 .meeting-select:hover, .meeting-select:focus { border-color: var(--line-strong); }
 .chip[hidden] { display: none; }
@@ -394,6 +401,7 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 
 /* Start menu (M5 step 3): the choice of sources, with the consent note in place of a dialog (the tab picker needs the click). */
 .start-wrap { position: relative; }
+.start-wrap:has(> button[hidden]) { display: none; }
 .start-menu { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; width: 300px; max-width: calc(100vw - 24px); padding: 8px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); box-shadow: 0 8px 24px rgba(24,33,47,.16); display: flex; flex-direction: column; gap: 4px; }
 .start-menu[hidden] { display: none; }
 .start-consent { margin: 2px 6px 6px; font-size: 13px; color: var(--muted); }
@@ -431,10 +439,10 @@ body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 
 /* Meetings & settings (direction A): meeting menu, two side panels, status dot, replay dialog. */
 .meeting-wrap { position: relative; display: flex; align-items: center; min-width: 0; }
-.meeting-button { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; max-width: 420px; min-width: 0; padding: 0 var(--meeting-button-pad-x); border: var(--meeting-button-border) solid transparent; border-radius: 8px; background: transparent; font: 600 16px var(--sans); color: var(--ink); cursor: pointer; }
+.meeting-button { display: inline-flex; align-items: center; gap: 8px; min-height: var(--topbar-button-height); max-width: 420px; min-width: 0; padding: 0 var(--meeting-button-pad-x); border: var(--meeting-button-border) solid transparent; border-radius: 8px; background: transparent; font: 600 16px var(--sans); color: var(--ink); cursor: pointer; }
 .meeting-button:hover, .meeting-button:focus-visible, .meeting-button[aria-expanded="true"] { border-color: var(--line-strong); background: var(--panel); }
 .meeting-button:disabled { cursor: default; }
-#meeting-title { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#meeting-title { min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .menu { position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; width: min(380px, calc(100vw - 24px)); padding: 8px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); box-shadow: 0 10px 28px rgba(24,33,47,.18); display: flex; flex-direction: column; gap: 2px; }
 .menu[hidden] { display: none; }
 #meeting-menu { max-height: calc(100dvh - max(100%, var(--topbar-button-height)) - var(--topbar-pad-y) - 6px - 12px); overflow-y: auto; }
@@ -593,12 +601,10 @@ body.layout-compact .compact-tabs { padding-left: max(8px, calc((100% - 720px) /
 .row[hidden] { display: none; }
 .nav-divider { display: none; }
 @media (max-width: 600px) {
-  /* A phone: one top row (meeting, Start, Settings); materials are in Settings. */
+  /* A phone: two rows leave room for both recording actions; materials are in Settings. */
   body.layout-compact #open-meeting { display: none; }
-  body.layout-compact .topbar-left { flex-basis: auto; flex: 1 1 0; }
-  body.layout-compact .topbar-right { flex-basis: auto; flex: 0 0 auto; justify-content: flex-end; }
-  /* While recording the right side holds more (Add meeting tab, Mini view, Stop): two rows, so the meeting name is never covered. */
-  body.layout-compact.recording .topbar-left, body.layout-compact.recording .topbar-right { flex: 1 1 100%; }
+  body.layout-compact .topbar-left, body.layout-compact .topbar-right { flex: 1 1 100%; }
+  body.layout-compact .topbar-right { justify-content: flex-end; }
 }
 @media (max-width: 640px) {
   .settings-nav .nav-divider { display: block; flex: 0 0 100%; height: 0; border-top: 1px solid var(--line); margin: 2px 0; }

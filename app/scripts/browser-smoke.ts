@@ -91,6 +91,94 @@ try {
     await page.locator('#meeting-list button', { hasText: title }).first().click();
     await page.locator('#meeting-title', { hasText: title }).waitFor();
   };
+  const recordingButtons = async (kind: 'recorded' | 'empty' | 'none' | 'replay', playing = false) => {
+    const showStart = kind === 'recorded' || kind === 'empty';
+    await page.waitForFunction(({ showStart, showNew, playing }) => {
+      const start = document.getElementById('start') as HTMLButtonElement;
+      const fresh = document.getElementById('start-new') as HTMLButtonElement;
+      return start.hidden === !showStart && fresh.hidden === !showNew && fresh.disabled === playing;
+    }, { showStart, showNew: kind !== 'empty', playing });
+    assert.equal(await page.locator('#start').isVisible(), showStart, kind);
+    assert.equal(await page.locator('#start-new').isVisible(), kind !== 'empty', kind);
+    assert.equal(await page.locator('#start-new').textContent(), 'New recording');
+    assert.equal(await page.locator('#start-new').getAttribute('class'), 'button primary');
+    assert.equal(await page.locator('#start-new').isDisabled(), playing);
+    assert.equal(await page.locator('#start').isDisabled(), kind === 'none' || kind === 'replay' || playing);
+    if (showStart) {
+      assert.equal(await page.locator('#start').textContent(), `${kind === 'recorded' ? 'Continue' : 'Start'}\u00a0recording`);
+      assert.equal(await page.locator('#start').getAttribute('class'), kind === 'recorded' ? 'button' : 'button primary');
+      assert.equal(await page.locator('#start').getAttribute('title'), kind === 'recorded' ? 'Record more in this meeting' : 'Record in this meeting');
+    }
+  };
+  const menuAt = async (anchor: string, label: string) => {
+    await page.locator(`#${anchor}`).click();
+    assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), label);
+    assert.ok(await page.locator(`#${anchor}`).evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
+    assert.equal(await page.locator(`#${anchor}`).getAttribute('aria-expanded'), 'true');
+    const button = (await page.locator(`#${anchor}`).boundingBox())!, menu = (await page.locator('#start-menu').boundingBox())!;
+    assert.equal(menu.y, button.y + button.height + 6);
+    assert.ok(menu.x >= 0 && menu.x + menu.width <= page.viewportSize()!.width, `${anchor}: menu stays within viewport`);
+    await page.keyboard.press('Escape');
+    assert.ok(await page.locator(`#${anchor}`).evaluate(n => n === document.activeElement));
+    assert.equal(await page.locator(`#${anchor}`).getAttribute('aria-expanded'), 'false');
+  };
+  const longTopbar = async (state: string) => {
+    const oldTitle = await page.locator('#meeting-title').textContent();
+    const title = 'Quarterly planning review for the northern region team';
+    const rename = async (name: string) => {
+      await page.locator('#meeting-button').dblclick();
+      await page.locator('#meeting-name').fill(name); await page.keyboard.press('Enter');
+      await page.locator('#meeting-title', { hasText: name }).waitFor();
+    };
+    await rename(title);
+    await page.setViewportSize({ width: 900, height: 900 });
+    await page.waitForFunction(() => !document.body.classList.contains('layout-compact'));
+    const geometry = await page.evaluate(() => {
+      const left = document.querySelector('.topbar-left')!.getBoundingClientRect(), right = document.querySelector('.topbar-right')!.getBoundingClientRect();
+      const title = document.getElementById('meeting-title')!, connection = document.getElementById('connection')!;
+      return { leftY: left.y, rightY: right.y, leftRight: left.right, rightLeft: right.left, rightRight: right.right,
+        titleWidth: title.clientWidth, titleScroll: title.scrollWidth, connectionEmpty: !connection.textContent, connectionDisplay: getComputedStyle(connection).display };
+    });
+    assert.equal(geometry.leftY, geometry.rightY, `${state}: one top-bar row`);
+    assert.ok(geometry.leftRight < geometry.rightLeft && geometry.rightRight <= 900, `${state}: controls fit`);
+    assert.ok(geometry.titleWidth > 0 && geometry.titleWidth < geometry.titleScroll, `${state}: title truncates`);
+    assert.equal(geometry.connectionEmpty, true); assert.equal(geometry.connectionDisplay, 'none');
+    await page.screenshot({ path: join(outDir, `long-title-${state}-900.png`) });
+    await rename(oldTitle!);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
+  const recordingScreens = async (kind: 'recorded' | 'empty' | 'none') => {
+    for (const width of [1280, 600, 440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width < 900);
+      await recordingButtons(kind);
+      const compact = width < 900;
+      if (kind !== 'none') assert.equal((await page.locator('#start').innerText()).replace(/\s+/g, ' ').trim(), compact ? kind === 'recorded' ? 'Continue' : 'Start' : `${kind === 'recorded' ? 'Continue' : 'Start'} recording`);
+      const height = await page.locator(kind === 'empty' ? '#start' : '#start-new').evaluate(n => n.getBoundingClientRect().height);
+      assert.equal(height, compact ? 44 : 40);
+      assert.equal(await page.locator('#meeting-button').evaluate(n => n.getBoundingClientRect().height), height, `${width}: meeting control height`);
+      if (kind === 'recorded') {
+        const start = (await page.locator('#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
+        assert.equal(fresh.x - start.x - start.width, compact ? 8 : 10);
+        assert.equal(settings.x - fresh.x - fresh.width, compact ? 8 : 10);
+      }
+      await page.screenshot({ path: join(outDir, `recording-${kind}-${width}.png`) });
+      if (kind === 'recorded') {
+        await menuAt('start', 'Continue recording');
+        await menuAt('start-new', 'New recording');
+        await page.locator('#start-new').click();
+        await page.screenshot({ path: join(outDir, `recording-new-menu-${width}.png`) });
+        await page.keyboard.press('Escape');
+      }
+    }
+    await page.setViewportSize({ width: 900, height: 900 });
+    const row = await page.locator('.topbar').evaluate(n => {
+      const left = n.querySelector('.topbar-left')!.getBoundingClientRect(), right = n.querySelector('.topbar-right')!.getBoundingClientRect();
+      return Math.abs(left.y - right.y);
+    });
+    assert.ok(row < 1, `900 px top bar stays in one row (${row})`);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
   if (process.env.BROWSER_SMOKE_REPLAY_DELAY_MS) await page.route('**/segments*', async route => {
     // Delay the poll itself, not a snapshot already captured while Replay was active.
     if (replayNow !== null) await new Promise(r => setTimeout(r, Number(process.env.BROWSER_SMOKE_REPLAY_DELAY_MS)));
@@ -100,6 +188,8 @@ try {
   await page.goto(app.url);
   await page.locator('#live-chip').waitFor({ state: 'hidden' });
   assert.equal(app.store.meetings().length, 0);
+  await recordingScreens('none');
+  await menuAt('start-new', 'New recording');
 
   // Replay a recording at 16x into a fresh meeting.
   await page.locator('#meeting-button').click();
@@ -110,11 +200,14 @@ try {
   try {
     await page.locator('#replay').click();
     await page.locator('#live-chip').getByText(/Replay/).waitFor();
+    await recordingButtons('replay', true);
+    await longTopbar('replay-playing');
   } finally { replayNow = null; }
   await page.waitForFunction(() => document.getElementById('transcript')?.textContent?.includes('lanterns'), null, { timeout: 60_000 });
   const replayMeeting = app.store.meetings()[0];
   assert.ok(app.store.segments(replayMeeting.id).length >= 1, 'segments were published');
   assert.match(app.store.markdown(replayMeeting.id), /parade/);
+  await recordingButtons('replay');
 
   // A selection survives polling refreshes and opens the action menu.
   await page.evaluate(() => {
@@ -146,6 +239,8 @@ try {
   // Live microphone path: worklet → PCM uploads → disk queue → native STT.
   await page.locator('#settings [data-close-panel]').click();
   await newMeeting('Synthetic live meeting');
+  await recordingScreens('empty');
+  await menuAt('start', 'Start recording');
   await page.locator('#start').click();
   // Count acknowledged microphone frames, not elapsed wall time: startup/worklet scheduling can consume part of 6.2 s.
   const sixFrames = page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/pcm') && r.status() === 201
@@ -153,6 +248,7 @@ try {
   await page.locator('#start-mic').click();
   await page.locator('#live-chip').getByText('Recording').waitFor();
   await sixFrames;
+  await longTopbar('recording');
   const during = await page.evaluate(async () => { const id = localStorage.getItem('meeting-id'); return (await fetch(`/api/meetings/${id}/segments`)).json(); });
   assert.equal(during.draftsAvailable, true, 'live drafts run while recording');
   await page.locator('#stop').click();
@@ -167,6 +263,69 @@ try {
   await app.jobs!.wait();
   assert.ok(app.store.chunks(liveMeeting.id).every(c => c.status === 'completed'));
   await page.waitForFunction(() => document.querySelectorAll('#transcript .para').length > 0, null, { timeout: 30_000 });
+
+  await recordingButtons('recorded');
+  await recordingScreens('recorded');
+  await longTopbar('idle');
+  let appsReady = false;
+  await page.route('**/api/live/apps', route => route.fulfill({ json: { available: true, apps: appsReady ? [
+    { id: 'fictional.call.one', name: 'Fictional Call One' }, { id: 'fictional.call.two', name: 'Fictional Call Two' },
+  ] : [] } }));
+  await page.locator('#start-new').click();
+  await page.evaluate(() => { (window as any).hearalong = { desktop: true }; });
+  await page.locator('#start-online').click();
+  await page.locator('#call-empty').waitFor();
+  assert.equal(await page.locator('#call-apps button').count(), 0);
+  assert.equal(await page.locator('#call-tab').isHidden(), true);
+  await page.locator('#call-back').focus();
+  appsReady = true;
+  const appOne = page.locator('#call-apps button').first(), appTwo = page.locator('#call-apps button').nth(1);
+  await page.waitForFunction(() => document.activeElement === document.querySelector('#call-apps button'));
+  await page.keyboard.press('ArrowDown'); assert.ok(await appTwo.evaluate(n => n === document.activeElement));
+  await page.keyboard.press('ArrowDown'); assert.ok(await appOne.evaluate(n => n === document.activeElement));
+  await page.keyboard.press('ArrowUp'); assert.ok(await appTwo.evaluate(n => n === document.activeElement));
+  await page.waitForTimeout(1200); assert.ok(await appTwo.evaluate(n => n === document.activeElement), 'poll keeps the chosen app focused');
+  await page.locator('#meeting-button').focus();
+  await page.waitForTimeout(1200);
+  assert.ok(await page.locator('#meeting-button').evaluate(n => n === document.activeElement), 'late app focus happens only once');
+  await page.locator('#call-back').click();
+  assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'New recording');
+  assert.equal(await page.locator('#start-new').getAttribute('aria-expanded'), 'true');
+  await page.locator('#start-online').click();
+  assert.ok(await appOne.evaluate(n => n === document.activeElement), 'populated desktop chooser focuses its first app, not Back');
+  await page.screenshot({ path: join(outDir, 'desktop-call-focus-1280.png') });
+  await page.keyboard.press('Escape');
+  assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement));
+  await page.evaluate(() => { delete (window as any).hearalong; });
+  await page.unroute('**/api/live/apps');
+  const beforeFresh = app.store.meetings().length;
+  await page.locator('#start-new').click();
+  await page.locator('#start-mic').evaluate(n => { (n as HTMLButtonElement).click(); (n as HTMLButtonElement).click(); });
+  await page.locator('#live-chip').getByText('Recording').waitFor();
+  assert.equal(app.store.meetings().length, beforeFresh + 1, 'double-click creates exactly one meeting');
+  const freshId = await page.evaluate(() => localStorage.getItem('meeting-id'));
+  assert.notEqual(freshId, liveMeeting.id);
+  assert.ok(app.store.meetings().some(m => m.id === freshId && m.autoTitle === m.title));
+  assert.equal(await page.locator('#meeting-name').isVisible(), false, 'fresh recording never starts rename');
+  assert.equal(await page.locator('#start').isVisible(), false);
+  assert.equal(await page.locator('#start-new').isVisible(), false);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.screenshot({ path: join(outDir, 'recording-active-1280.png') });
+  await page.locator('#stop').click();
+  await page.locator('#live-chip').waitFor({ state: 'hidden' });
+  await recordingButtons('recorded');
+  assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement), 'stop focuses the visible primary');
+  await page.locator('#start').click();
+  await page.locator('#start-mic').click();
+  await page.locator('#live-chip').getByText('Recording').waitFor();
+  assert.equal(await page.evaluate(() => localStorage.getItem('meeting-id')), freshId);
+  assert.equal(app.store.meetings().length, beforeFresh + 1, 'Continue does not create a meeting');
+  await page.locator('#stop').click();
+  await page.locator('#live-chip').waitFor({ state: 'hidden' });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.locator('#start-new').click();
+  await pickMeeting(liveMeeting.title);
+  assert.equal(await page.locator('#start-menu').isVisible(), false, 'switching meetings closes the menu');
 
   // Online meeting: microphone + a meeting tab. Automated Chrome cannot capture a real tab here (macOS screen-recording
   // permission), so getDisplayMedia is replaced by a stand-in: a 330 Hz tone on the RIGHT channel only (a mono pick of the

@@ -134,7 +134,8 @@ export class AudioRetention {
       await this.erase(removal.meetingId, removal.generation);
     }
     if (this.stopped) return;
-    for (let m of this.store.meetings()) {
+    for (const meeting of this.store.meetings()) {
+      let m: Meeting = meeting;
       if (this.stopped) return;
       // Committed removals above are finished even if the setting is now Always or a new generation records.
       if (m.audioRemovedAt !== null || m.audioEmpty || m.audioKept || !this.ready(m)) continue;
