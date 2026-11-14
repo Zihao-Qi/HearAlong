@@ -103,7 +103,7 @@ try {
     assert.equal(await page.locator('#start-new').textContent(), 'New recording');
     assert.equal(await page.locator('#start-new').getAttribute('class'), 'button primary');
     assert.equal(await page.locator('#start-new').isDisabled(), playing);
-    assert.equal(await page.locator('#start').isDisabled(), kind === 'none' || playing);
+    assert.equal(await page.locator('#start').isDisabled(), kind === 'none' || kind === 'replay' || playing);
     if (showStart) {
       assert.equal(await page.locator('#start').textContent(), `${kind === 'recorded' ? 'Continue' : 'Start'}\u00a0recording`);
       assert.equal(await page.locator('#start').getAttribute('class'), kind === 'recorded' ? 'button' : 'button primary');
@@ -122,15 +122,41 @@ try {
     assert.ok(await page.locator(`#${anchor}`).evaluate(n => n === document.activeElement));
     assert.equal(await page.locator(`#${anchor}`).getAttribute('aria-expanded'), 'false');
   };
+  const longTopbar = async (state: string) => {
+    const oldTitle = await page.locator('#meeting-title').textContent();
+    const title = 'Quarterly planning review for the northern region team';
+    const rename = async (name: string) => {
+      await page.locator('#meeting-button').dblclick();
+      await page.locator('#meeting-name').fill(name); await page.keyboard.press('Enter');
+      await page.locator('#meeting-title', { hasText: name }).waitFor();
+    };
+    await rename(title);
+    await page.setViewportSize({ width: 900, height: 900 });
+    await page.waitForFunction(() => !document.body.classList.contains('layout-compact'));
+    const geometry = await page.evaluate(() => {
+      const left = document.querySelector('.topbar-left')!.getBoundingClientRect(), right = document.querySelector('.topbar-right')!.getBoundingClientRect();
+      const title = document.getElementById('meeting-title')!, connection = document.getElementById('connection')!;
+      return { leftY: left.y, rightY: right.y, leftRight: left.right, rightLeft: right.left, rightRight: right.right,
+        titleWidth: title.clientWidth, titleScroll: title.scrollWidth, connectionEmpty: !connection.textContent, connectionDisplay: getComputedStyle(connection).display };
+    });
+    assert.equal(geometry.leftY, geometry.rightY, `${state}: one top-bar row`);
+    assert.ok(geometry.leftRight < geometry.rightLeft && geometry.rightRight <= 900, `${state}: controls fit`);
+    assert.ok(geometry.titleWidth > 0 && geometry.titleWidth < geometry.titleScroll, `${state}: title truncates`);
+    assert.equal(geometry.connectionEmpty, true); assert.equal(geometry.connectionDisplay, 'none');
+    await page.screenshot({ path: join(outDir, `long-title-${state}-900.png`) });
+    await rename(oldTitle!);
+    await page.setViewportSize({ width: 1440, height: 900 });
+  };
   const recordingScreens = async (kind: 'recorded' | 'empty' | 'none') => {
-    for (const width of [1280, 440]) {
+    for (const width of [1280, 600, 440]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width === 440);
+      await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width < 900);
       await recordingButtons(kind);
-      const compact = width === 440;
+      const compact = width < 900;
       if (kind !== 'none') assert.equal((await page.locator('#start').innerText()).replace(/\s+/g, ' ').trim(), compact ? kind === 'recorded' ? 'Continue' : 'Start' : `${kind === 'recorded' ? 'Continue' : 'Start'} recording`);
       const height = await page.locator(kind === 'empty' ? '#start' : '#start-new').evaluate(n => n.getBoundingClientRect().height);
       assert.equal(height, compact ? 44 : 40);
+      assert.equal(await page.locator('#meeting-button').evaluate(n => n.getBoundingClientRect().height), height, `${width}: meeting control height`);
       if (kind === 'recorded') {
         const start = (await page.locator('#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
         assert.equal(fresh.x - start.x - start.width, compact ? 8 : 10);
@@ -175,12 +201,13 @@ try {
     await page.locator('#replay').click();
     await page.locator('#live-chip').getByText(/Replay/).waitFor();
     await recordingButtons('replay', true);
+    await longTopbar('replay-playing');
   } finally { replayNow = null; }
   await page.waitForFunction(() => document.getElementById('transcript')?.textContent?.includes('lanterns'), null, { timeout: 60_000 });
   const replayMeeting = app.store.meetings()[0];
   assert.ok(app.store.segments(replayMeeting.id).length >= 1, 'segments were published');
   assert.match(app.store.markdown(replayMeeting.id), /parade/);
-  await recordingButtons('replay', true);
+  await recordingButtons('replay');
 
   // A selection survives polling refreshes and opens the action menu.
   await page.evaluate(() => {
@@ -221,6 +248,7 @@ try {
   await page.locator('#start-mic').click();
   await page.locator('#live-chip').getByText('Recording').waitFor();
   await sixFrames;
+  await longTopbar('recording');
   const during = await page.evaluate(async () => { const id = localStorage.getItem('meeting-id'); return (await fetch(`/api/meetings/${id}/segments`)).json(); });
   assert.equal(during.draftsAvailable, true, 'live drafts run while recording');
   await page.locator('#stop').click();
@@ -238,16 +266,38 @@ try {
 
   await recordingButtons('recorded');
   await recordingScreens('recorded');
+  await longTopbar('idle');
+  let appsReady = false;
+  await page.route('**/api/live/apps', route => route.fulfill({ json: { available: true, apps: appsReady ? [
+    { id: 'fictional.call.one', name: 'Fictional Call One' }, { id: 'fictional.call.two', name: 'Fictional Call Two' },
+  ] : [] } }));
   await page.locator('#start-new').click();
-  // Back and Escape preserve the New anchor through the second step.
   await page.evaluate(() => { (window as any).hearalong = { desktop: true }; });
   await page.locator('#start-online').click();
+  await page.locator('#call-empty').waitFor();
+  assert.equal(await page.locator('#call-apps button').count(), 0);
+  assert.equal(await page.locator('#call-tab').isHidden(), true);
+  await page.locator('#call-back').focus();
+  appsReady = true;
+  const appOne = page.locator('#call-apps button').first(), appTwo = page.locator('#call-apps button').nth(1);
+  await page.waitForFunction(() => document.activeElement === document.querySelector('#call-apps button'));
+  await page.keyboard.press('ArrowDown'); assert.ok(await appTwo.evaluate(n => n === document.activeElement));
+  await page.keyboard.press('ArrowDown'); assert.ok(await appOne.evaluate(n => n === document.activeElement));
+  await page.keyboard.press('ArrowUp'); assert.ok(await appTwo.evaluate(n => n === document.activeElement));
+  await page.waitForTimeout(1200); assert.ok(await appTwo.evaluate(n => n === document.activeElement), 'poll keeps the chosen app focused');
+  await page.locator('#meeting-button').focus();
+  await page.waitForTimeout(1200);
+  assert.ok(await page.locator('#meeting-button').evaluate(n => n === document.activeElement), 'late app focus happens only once');
   await page.locator('#call-back').click();
   assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'New recording');
   assert.equal(await page.locator('#start-new').getAttribute('aria-expanded'), 'true');
+  await page.locator('#start-online').click();
+  assert.ok(await appOne.evaluate(n => n === document.activeElement), 'populated desktop chooser focuses its first app, not Back');
+  await page.screenshot({ path: join(outDir, 'desktop-call-focus-1280.png') });
   await page.keyboard.press('Escape');
   assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement));
   await page.evaluate(() => { delete (window as any).hearalong; });
+  await page.unroute('**/api/live/apps');
   const beforeFresh = app.store.meetings().length;
   await page.locator('#start-new').click();
   await page.locator('#start-mic').evaluate(n => { (n as HTMLButtonElement).click(); (n as HTMLButtonElement).click(); });

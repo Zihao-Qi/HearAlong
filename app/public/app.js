@@ -510,17 +510,24 @@ function selectMeeting(id) {
 function focusRecordingButton() {
   [$('start-new'), $('start')].find(button => !button.hidden && button.classList.contains('primary'))?.focus();
 }
+function replayPlaying() {
+  const replay = lastSnapshot?.replay;
+  return Boolean(replay && replay.positionMs < replay.durationMs);
+}
 function controls() {
   const recording = Boolean(capture);
   document.body.classList.toggle('recording', recording);
   const ready = Boolean(status?.config.available && meetingId) && !busy && !requestingMic && !quitView.seen;
   const meeting = status?.meetings.find(m => m.id === meetingId);
   $('start').hidden = recording || !meeting || Boolean(meeting.replay);
-  $('start').innerHTML = `${meeting?.recorded ? 'Continue' : 'Start'}<span class="wide-only">&nbsp;recording</span>`;
-  $('start').className = meeting?.recorded ? 'button' : 'button primary';
-  $('start').title = meeting?.recorded ? 'Record more in this meeting' : 'Record in this meeting';
+  const label = `${meeting?.recorded ? 'Continue' : 'Start'}<span class="wide-only">&nbsp;recording</span>`;
+  const className = meeting?.recorded ? 'button' : 'button primary';
+  const title = meeting?.recorded ? 'Record more in this meeting' : 'Record in this meeting';
+  if ($('start').innerHTML !== label) $('start').innerHTML = label;
+  if ($('start').className !== className) $('start').className = className;
+  if ($('start').title !== title) $('start').title = title;
   $('start-new').hidden = recording || Boolean(meeting && !meeting.replay && !meeting.recorded);
-  $('start-new').disabled = !status?.config.available || busy || requestingMic || quitView.seen || Boolean(lastSnapshot?.replay);
+  $('start-new').disabled = !status?.config.available || busy || requestingMic || quitView.seen || replayPlaying();
   $('stop').hidden = !recording;
   $('add-tab').hidden = !recording || Boolean(capture?.sources.has('tab') || capture?.sources.has('app')) || Boolean(capture?.stopping);
   $('mini-view').hidden = !recording || Boolean(capture?.stopping) || (nativeMini() ? lastSnapshot.mini.state === 'open' : !miniSupported() || Boolean(mini.win));
@@ -2402,13 +2409,14 @@ async function pickMeetingTab() {
 }
 let callMenuAnchor = null;
 let callMenuTimer = null;
+let callMenuFocusPending = false;
 let helperAvailable = false;
 let helperCheckedAt = 0;
 function hasAppCapture() { return helperAvailable && Date.now() - helperCheckedAt < 3000; }
 function closeStartMenu() {
   $('start-menu').hidden = true;
   for (const id of ['start', 'start-new', 'add-tab']) $(id).setAttribute('aria-expanded', 'false');
-  clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null;
+  clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null; callMenuFocusPending = false;
 }
 function startMenuStep(apps) {
   for (const node of [$('start-mic'), $('start-online'), document.querySelector('.start-consent')]) node.hidden = apps;
@@ -2437,7 +2445,10 @@ async function refreshCallApps() {
     }
     const lostFocus = [...known.values()].includes(document.activeElement);
     for (const row of known.values()) row.remove();
-    if (lostFocus) [...$('start-menu').querySelectorAll('button')].find(item => !item.hidden && item.offsetParent)?.focus();
+    if (lostFocus || (callMenuFocusPending && (document.activeElement === $('call-back') || !$('start-menu').contains(document.activeElement)))) {
+      const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
+      if (first) { first.focus(); callMenuFocusPending = false; }
+    }
     $('call-empty').textContent = window.hearalong?.desktop && !result.available
       ? 'Meeting-app audio is not available right now. You can record the microphone.'
       : 'No meeting app is playing sound.';
@@ -2468,9 +2479,8 @@ function openCallMenu(anchor) {
   startMenuStep(true); $('call-back').hidden = anchor === 'add-tab';
   $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
   fitStartMenu();
-  const first = $('call-tab').hidden
-    ? [...$('start-menu').querySelectorAll('button')].find(item => !item.hidden && item.offsetParent)
-    : $('call-tab');
+  const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
+  callMenuFocusPending = !first;
   first?.focus();
   void refreshCallApps(); callMenuTimer = setInterval(refreshCallApps, 1000);
 }

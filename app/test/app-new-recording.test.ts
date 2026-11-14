@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 
 const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
-const controls = code.slice(code.indexOf('function controls()'), code.indexOf('// ---------- Notes'));
+const controls = code.slice(code.indexOf('function replayPlaying()'), code.indexOf('// ---------- Notes'));
 
 test('recording controls distinguish recorded, empty, absent and replay meetings, without a cross-page lock', () => {
   for (const kind of ['recorded', 'empty', 'none', 'replay']) for (const unavailable of [false, true]) {
@@ -22,13 +22,32 @@ test('recording controls distinguish recorded, empty, absent and replay meetings
     assert.equal($('start').innerHTML, `${kind === 'recorded' ? 'Continue' : 'Start'}<span class="wide-only">&nbsp;recording</span>`);
     assert.equal($('start').className, kind === 'recorded' ? 'button' : 'button primary');
     for (const lock of ['busy', 'requestingMic', 'quitting', 'replay']) {
-      const locked = { ...context, busy: lock === 'busy', requestingMic: lock === 'requestingMic', quitView: { seen: lock === 'quitting' }, lastSnapshot: { meetingId: meeting?.id, replay: lock === 'replay' } };
+      const locked = { ...context, busy: lock === 'busy', requestingMic: lock === 'requestingMic', quitView: { seen: lock === 'quitting' }, lastSnapshot: { meetingId: meeting?.id, replay: lock === 'replay' ? { positionMs: 0, durationMs: 1000 } : null } };
       runInNewContext(`${controls}\ncontrols();`, locked);
       assert.equal($('start-new').disabled, true, lock);
     }
     runInNewContext(`${controls}\ncontrols();`, { ...context, capture: { sources: new Map() }, nativeMini: () => false, miniSupported: () => false });
     assert.equal($('start').hidden, true); assert.equal($('start-new').hidden, true);
   }
+});
+
+test('finished replay enables New recording, and unchanged controls preserve the Start child node', () => {
+  const nodes: Record<string, any> = {};
+  const $ = (id: string) => nodes[id] ??= { classList: { toggle() {} }, querySelectorAll: () => [], setAttribute() {} };
+  let html = '', child = {}, writes = 0;
+  Object.defineProperty($('start'), 'innerHTML', { get: () => html, set(value) { html = value; child = {}; writes++; } });
+  const context = { $, document: { body: { classList: { toggle() {} } } }, capture: null, busy: false, requestingMic: false,
+    quitView: { seen: false }, meetingId: 'owner', status: { config: { available: true }, meetings: [{ id: 'owner', recorded: true, replay: 'file' }] },
+    lastSnapshot: { meetingId: 'owner', replay: { positionMs: 1000, durationMs: 1000 } }, callMenuAnchor: null };
+  runInNewContext(`${controls}\ncontrols();`, context);
+  const first = child;
+  runInNewContext(`${controls}\ncontrols();`, context);
+  assert.equal(child, first); assert.equal(writes, 1);
+  assert.equal($('start-new').disabled, false);
+  assert.equal($('start').disabled, true, 'Start retains its existing replay rule');
+  context.lastSnapshot.replay.positionMs = 999;
+  runInNewContext(`${controls}\ncontrols();`, context);
+  assert.equal($('start-new').disabled, true);
 });
 
 test('fresh starts pick a tab before creating, release it on creation failure, and retain an empty meeting on mic failure', async () => {

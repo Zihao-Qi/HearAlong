@@ -14,16 +14,16 @@ import { startServer } from '../src/server.ts';
 const app = { id: 'test.fictional.meet', name: 'Fictional Meet' };
 const source = () => `app:${randomUUID()}`;
 
-test('call menu focuses the first visible desktop button, never the hidden Chrome tab', async () => {
+test('call menu focuses the first visible menu item, never Back or the hidden Chrome tab', async () => {
   const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   const open = code.slice(code.indexOf('function openCallMenu('), code.indexOf("$('start').onclick ="));
-  for (const [desktop, anchor, expected] of [[true, 'start', 'call-back'], [true, 'add-tab', 'app'], [false, 'start', 'call-tab']] as const) {
+  for (const [desktop, anchor, expected] of [[true, 'start', 'app'], [true, 'add-tab', 'app'], [false, 'start', 'call-tab']] as const) {
     let focused = '';
     const button = (id: string, hidden = false) => ({ hidden, offsetParent: {}, focus() { focused = id; }, setAttribute() {}, parentElement: { append() {} } });
     const back = button('call-back'), tab = button('call-tab', desktop), appItem = button('app');
     const nodes = { start: button('start'), 'add-tab': button('add-tab'), 'call-back': back,
-      'call-tab': tab, 'start-menu': { hidden: true, querySelectorAll: () => [back, tab, appItem] } };
-    const context = { $: (id: keyof typeof nodes) => nodes[id], closeStartMenu() {}, startMenuStep() {}, callMenuAnchor: null, callMenuTimer: null,
+      'call-tab': tab, 'start-menu': { hidden: true, querySelectorAll: (selector: string) => selector === '[role="menuitem"]' ? [tab, appItem] : [back, tab, appItem] } };
+    const context = { $: (id: keyof typeof nodes) => nodes[id], closeStartMenu() {}, startMenuStep() {}, callMenuAnchor: null, callMenuTimer: null, callMenuFocusPending: false,
       refreshCallApps: async () => {}, fitStartMenu() {}, setInterval: () => 1 };
     runInNewContext(`${open}\nopenCallMenu(${JSON.stringify(anchor)});`, context);
     assert.equal(focused, expected);
@@ -39,13 +39,33 @@ test('disappearing focused app row moves focus to a visible item; desktop empty/
     const back = button('back', adding), tab = button('tab', desktop), remaining = button('remaining');
     const gone = { dataset: { app: 'gone' }, remove() {} };
     const empty = { textContent: '', hidden: true };
-    const nodes = { 'call-apps': { children: [gone] }, 'call-empty': empty, 'start-menu': { querySelectorAll: () => [back, tab, remaining] } };
-    const context = { $: (id: keyof typeof nodes) => nodes[id], callMenuAnchor: 'start', helperAvailable: false, helperCheckedAt: 0,
+    const nodes = { 'call-apps': { children: [gone] }, 'call-empty': empty, 'call-back': back,
+      'start-menu': { querySelectorAll: (selector: string) => selector === '[role="menuitem"]' ? [tab, remaining] : [back, tab, remaining] } };
+    const context = { $: (id: keyof typeof nodes) => nodes[id], callMenuAnchor: 'start', callMenuFocusPending: false, helperAvailable: false, helperCheckedAt: 0,
       api: async () => ({ available, apps: [] }), window: { hearalong: { desktop } }, document: { activeElement: gone } };
     await runInNewContext(`${refresh}\nrefreshCallApps();`, context);
-    assert.equal(focused, adding ? 'remaining' : 'back');
+    assert.equal(focused, desktop ? 'remaining' : 'tab');
     assert.equal(empty.hidden, false);
     assert.equal(empty.textContent, desktop && !available ? 'Meeting-app audio is not available right now. You can record the microphone.' : 'No meeting app is playing sound.');
+  }
+});
+
+test('late app discovery focuses the first item once, from Back or outside the menu', async () => {
+  const code = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const refresh = code.slice(code.indexOf('async function refreshCallApps('), code.indexOf('function fitStartMenu('));
+  for (const initial of ['back', 'outside']) {
+    const back = {}, outside = {};
+    const document = { activeElement: initial === 'back' ? back : outside };
+    const row = { hidden: false, offsetParent: {}, dataset: { app: app.id }, focus() { document.activeElement = row; } };
+    const menu = { contains: (node: unknown) => node === back || node === row, querySelectorAll: () => [row] };
+    const nodes = { 'call-apps': { children: [row] }, 'call-back': back, 'start-menu': menu, 'call-empty': { hidden: true, textContent: '' } };
+    const context = { $: (id: keyof typeof nodes) => nodes[id], document, callMenuAnchor: 'start-new', callMenuFocusPending: true,
+      helperAvailable: false, helperCheckedAt: 0, window: { hearalong: { desktop: true } }, api: async () => ({ available: true, apps: [app] }) };
+    await runInNewContext(`${refresh}\nrefreshCallApps();`, context);
+    assert.equal(document.activeElement, row); assert.equal(context.callMenuFocusPending, false);
+    document.activeElement = outside;
+    await runInNewContext(`${refresh}\nrefreshCallApps();`, context);
+    assert.equal(document.activeElement, outside, 'later polls do not steal focus again');
   }
 });
 
