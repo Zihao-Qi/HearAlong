@@ -552,7 +552,12 @@ test('calculate parent exit kills a group stopped behind the recording gate', as
   const { pid } = JSON.parse(result.stdout);
   // Register the group for the fixture's full non-zombie/stopped-member check, even on assertion failure.
   try { process.kill(-pid, 0); } catch { /* the parent's exit handler has already killed it */ }
-  assert.throws(() => process.kill(pid, 0), /ESRCH/, JSON.stringify(result));
+  // Killed means gone or a zombie: with its parent gone, launchd reaps it a moment later (later still on a busy Mac),
+  // and kill(pid, 0) still finds a zombie. Wait for that state, within the fixture's own 2 s check; never running or stopped.
+  const state = () => { try { return childProcess.execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { env: { LC_ALL: 'C' } }).toString().trim(); } catch { return ''; } };
+  let seen = state();
+  for (let n = 0; n < 40 && seen && !seen.startsWith('Z'); n++) { await new Promise(resolve => setTimeout(resolve, 50)); seen = state(); }
+  assert.match(seen, /^(?:Z.*)?$/, `group member still ${seen}: ${JSON.stringify(result)}`);
 });
 
 let mathAvailable = false;
