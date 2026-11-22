@@ -120,10 +120,10 @@ export async function runSetupFix1Checks(check: Check) {
         await f.page.setViewportSize({ width: 390, height: 900 }); await shot(f.page, '01-390-alive-after-grace');
         await check(f.page, 1, { idle: f.idle, heartbeats });
         await f.page.locator('#open-app').click(); await f.page.locator('#meeting-button').waitFor();
-        await closeRegisteredPage(f.page); await until(() => f.idle, 10_000);
+        await closeRegisteredPage(f.page); await until(() => f.idle, 10_000, 'the server to go idle after the page closed');
       } finally { await f.dispose(); }
       const closing = await fixture({ seen: false, idle: true });
-      try { await closing.page.goto(`${closing.app.url}/setup`); await closing.page.locator('[data-setup-row="speech"]').waitFor(); await closeRegisteredPage(closing.page); await until(() => closing.idle, 10_000); }
+      try { await closing.page.goto(`${closing.app.url}/setup`); await closing.page.locator('[data-setup-row="speech"]').waitFor(); await closeRegisteredPage(closing.page); await until(() => closing.idle, 10_000, 'the server to go idle after the page closed'); }
       finally { await closing.dispose(); }
     });
     await run(2, async () => {

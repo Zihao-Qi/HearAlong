@@ -93,11 +93,11 @@ const ACTIVE = new Set(['waiting', 'running']);
  * project", "other project", "unchecked", "busy", "version", "not ready"…) and, for a generation conflict, `current`: the
  * step's state now. A lost reply has no status.
  */
-export function realPlansApi({ pageId }) {
-  const request = async (path, method = 'GET', body) => {
+export function realPlansApi({ pageId, pageHeaders = () => ({ 'X-Page': pageId }) }) {
+  const request = async (path, method = 'GET', body, signal) => {
     const response = await fetch(path, {
-      method,
-      headers: { 'X-Page': pageId, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+      method, ...(signal ? { signal } : {}),
+      headers: { ...pageHeaders(), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     const data = response.headers.get('content-type')?.includes('json') ? await response.json() : {};
@@ -109,8 +109,9 @@ export function realPlansApi({ pageId }) {
   return {
     fixture: null,
     /** GET …/plans → { enabled, notes, project, run, current, kept } (src/plans/view.ts PlansPage). */
-    getPlans: meetingId => request(plans(meetingId)),
-    getSubmission: (meetingId, opId) => request(`${plans(meetingId)}/runs?opId=${encodeURIComponent(opId)}`),
+    // Polled reads have 10 s, including the body, so a stalled one cannot hold the refresh guard (#48). Mutations keep no limit.
+    getPlans: meetingId => request(plans(meetingId), 'GET', undefined, AbortSignal.timeout(10000)),
+    getSubmission: (meetingId, opId) => request(`${plans(meetingId)}/runs?opId=${encodeURIComponent(opId)}`, 'GET', undefined, AbortSignal.timeout(10000)),
     /** Plan / Plan again: a new run based on the newest version. → { run, replayed } */
     startPlan: (meetingId, { opId }) => request(`${plans(meetingId)}/runs`, 'POST', { opId }),
     /** Cancel a waiting or running run (plan pass or Explore further). → { run } */

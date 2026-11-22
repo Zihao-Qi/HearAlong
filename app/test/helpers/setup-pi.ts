@@ -16,7 +16,7 @@ export async function fakePi(t: { after(fn: () => unknown): void }, initial: Rec
   const env: NodeJS.ProcessEnv = { ...process.env, MEETING_PI: command, FAKE_PI_STATE: state, PI_CODING_AGENT_DIR: join(directory, 'agent') };
   return { directory, command, state, log, configure, calls, env, cwd: join(directory, 'scratch') };
 }
-export async function until(check: () => Promise<boolean> | boolean, ms = 10_000) {
+export async function until(check: () => Promise<boolean> | boolean, ms = 10_000, what = 'fake Pi') {
   const deadline = Date.now() + ms;
-  while (!await check()) { if (Date.now() > deadline) throw new Error('Timed out waiting for fake Pi.'); await new Promise(resolve => setTimeout(resolve, 10)); }
+  while (!await check()) { if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}.`); await new Promise(resolve => setTimeout(resolve, 10)); }
 }

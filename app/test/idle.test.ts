@@ -70,3 +70,50 @@ test('the server reports idle once the last open page says goodbye, and not whil
     assert.equal(idleStopMessage(idleReason), 'The last page closed and nothing is running: stopping.');
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+// #71: a request already on its way when the window closed can arrive after the goodbye beacon (another connection).
+test('a request that arrives after its page\'s goodbye does not reopen the page; a restored page counts again', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-late-page-'));
+  const reasons: IdleReason[] = [];
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.now() });
+  const app = await startServer({ directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null, idleMs: 1000, onIdle: reason => { reasons.push(reason); } });
+  try {
+    const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
+    const call = async (path: string, page: string, seq?: number, method = 'GET') => {
+      const res = await fetch(`${app.url}${path}`, { method, headers: { Cookie: cookie, Origin: app.url, 'X-Page': page, ...(seq === undefined ? {} : { 'X-Page-Seq': String(seq) }) } });
+      assert.ok(res.ok, `${path}: ${res.status}`); await res.arrayBuffer();
+    };
+    // A restored page (back/forward cache) goes on numbering after its goodbye, so it is open again.
+    await call('/api/status', 'restored', 1);
+    await call('/api/bye?page=restored&seq=1', 'restored', 2, 'POST');
+    await call('/api/status', 'restored', 3);
+    // The closing page: its goodbye covers request 2; request 2 lands afterwards.
+    await call('/api/status', 'closing', 1);
+    await call('/api/status', 'closing', 2);
+    await fetch(`${app.url}/api/bye?page=closing&seq=2`, { method: 'POST', headers: { Cookie: cookie, Origin: app.url } });
+    await call('/api/status', 'closing', 2);
+    t.mock.timers.tick(5000);
+    assert.deepEqual(reasons, [], 'the restored page is open');
+    await fetch(`${app.url}/api/bye?page=restored&seq=3`, { method: 'POST', headers: { Cookie: cookie, Origin: app.url } });
+    t.mock.timers.tick(1000);
+    assert.deepEqual(reasons, [], 'the idle delay begins');
+    t.mock.timers.tick(1000);
+    assert.deepEqual(reasons, ['last-page-closed'], 'the late request did not keep the closed page open');
+  } finally { t.mock.timers.reset(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('an older page without request numbers still counts as open on every request, as before', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'meeting-unnumbered-page-'));
+  const reasons: IdleReason[] = [];
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: Date.now() });
+  const app = await startServer({ directory, port: 0, quick: null, heavy: null, recognizer: null, drafts: null, idleMs: 1000, onIdle: reason => { reasons.push(reason); } });
+  try {
+    const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
+    const headers = { Cookie: cookie, Origin: app.url, 'X-Page': 'old' };
+    await (await fetch(`${app.url}/api/status`, { headers })).arrayBuffer();
+    await (await fetch(`${app.url}/api/bye?page=old`, { method: 'POST', headers: { Cookie: cookie, Origin: app.url } })).arrayBuffer();
+    await (await fetch(`${app.url}/api/status`, { headers })).arrayBuffer();
+    t.mock.timers.tick(5000);
+    assert.deepEqual(reasons, [], 'its next request opened it again');
+  } finally { t.mock.timers.reset(); await app.close(); await rm(directory, { recursive: true, force: true }); }
+});

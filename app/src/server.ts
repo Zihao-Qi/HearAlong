@@ -614,6 +614,9 @@ export async function startServer(options: {
     let restarting = false;
     let admissions = 0; // Mutations count before their first await, including bodies/uploads not yet represented by jobs.
     const pages = new Map<string, number>(); // page id → last request
+    // page id → the last request number its goodbye covered: a numbered request at or below it arrived late, after the
+    // goodbye, and does not register the page again. Kept 3 min, as long as a silent page would count anyway.
+    const departed = new Map<string, { seq: number; at: number }>();
     // The installed app's server stops by itself once its window is gone and nothing is in progress. A page silent for 3 min
     // (hidden and throttled, or closed without its goodbye) no longer counts. Until a first page has come, a minute's grace.
     let seenPage = false;
@@ -637,6 +640,7 @@ export async function startServer(options: {
       pruneDeletedMeetingState();
       const now = Date.now();
       for (const [id, at] of pages) if (now - at > 180_000) pages.delete(id);
+      for (const [id, gone] of departed) if (now - gone.at > 180_000) departed.delete(id);
       if (pages.size || working() || closing || restarting || shuttingDown || (!seenPage && now - startedAt < 60_000)) { idleSince = null; return; }
       idleSince ??= now;
       if (now - idleSince >= options.idleMs!) { clearInterval(idleLoop); options.onIdle?.(seenPage ? 'last-page-closed' : 'no-page'); }
@@ -807,19 +811,24 @@ export async function startServer(options: {
         pruneDeletedMeetingState();
         // Open pages (the installed app's window, tabs): each says who it is with every request, and goodbye when it closes.
         const pageId = req.headers['x-page'];
-        if (typeof pageId === 'string' && pageId.length <= 64) {
+        const pageSeq = Number(req.headers['x-page-seq']);
+        const late = typeof pageId === 'string' && Number.isSafeInteger(pageSeq) && pageSeq <= (departed.get(pageId)?.seq ?? -1);
+        if (typeof pageId === 'string' && pageId.length <= 64 && !late) {
           pages.set(pageId, Date.now()); seenPage = true;
+          if (Number.isSafeInteger(pageSeq)) departed.delete(pageId);
           // Only an actual frame reclaims a recovering source; a page heartbeat does not prove it is still capturing.
         }
         if (req.method === 'POST' && url.pathname === '/api/bye') {
-          const departed = url.searchParams.get('page') ?? '';
-          pages.delete(departed);
-          if (appCapture.state?.pageId === departed) {
+          const departedId = url.searchParams.get('page') ?? '';
+          const lastSeq = Number(url.searchParams.get('seq') ?? NaN);
+          pages.delete(departedId);
+          if (departedId && departedId.length <= 64 && Number.isSafeInteger(lastSeq) && lastSeq >= 0) departed.set(departedId, { seq: lastSeq, at: Date.now() });
+          if (appCapture.state?.pageId === departedId) {
             appCapture.stop();
             appCapture.ended(appCapture.state.source);
           }
-          const departedSources = appStore.openRecordings().filter(s => s.pageId === departed);
-          await capture.abandonPage(departed);
+          const departedSources = appStore.openRecordings().filter(s => s.pageId === departedId);
+          await capture.abandonPage(departedId);
           for (const session of departedSources) recording.get(session.meetingId)?.delete(session.source);
           audioRetention.observe();
           res.writeHead(204).end(); return;
