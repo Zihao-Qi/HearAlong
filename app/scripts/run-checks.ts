@@ -140,7 +140,7 @@ export const EXPECTED_SECONDS: Readonly<Record<string, number>> = {
   'npm-test': 379, 'mini-check': 364, 'plans-1280': 343, 'plans-1280-board400': 228, 'plans-390': 224, 'capture-resilience': 224,
   'ui-pass': 158, 'pane-head': 109, m9a: 94, progress: 89, 'browser-smoke': 63, 'transcript-notes-page': 52, 'notes-ui': 43,
   'ai-mode': 42, 'board-focus': 41, 'api-keys': 27, listen: 15, 'mini-gap': 14, 'progress-fix1': 13, 'transcript-download': 9,
-  'progress-fix2': 8, 'echo-page': 7, 'app-check': 7,
+  'progress-fix2': 8, 'echo-page': 7, 'app-check': 7, 'audio-retention': 5,
 };
 export const DEFAULT_SECONDS = 60;
 export const expectedSeconds = (name: string) => Object.hasOwn(EXPECTED_SECONDS, name) ? EXPECTED_SECONDS[name] : DEFAULT_SECONDS;
@@ -197,6 +197,7 @@ export function checkTasks(out: string, audio: string, browserOnly: boolean): Ta
     ['browser-smoke', check('browser-smoke', join(out, 'browser-smoke'))],
     ['mini-check', check('mini-check', audio, audio, join(out, 'mini'))],
     ['mini-gap', check('mini-gap-check', join(out, 'mini-gap'))],
+    ['audio-retention', check('audio-retention-check', join(out, 'audio-retention'))],
     ['m9a', check('m9a-page-check', join(out, 'm9a'))],
     ['app-check', check('app-check')],
     ['capture-resilience', check('capture-resilience-check', join(out, 'capture'))],

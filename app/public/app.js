@@ -8,7 +8,7 @@ import { CaptureSuspension } from '/capture-clock.js';
 import { uploadWithRetry } from '/upload-retry.js';
 import { createRecordingEnds } from '/recording-end.js';
 import { SetupUI, setupRequest, aiDialog } from '/setup-ui.js';
-import { pageId, pageRequest as api, startPageSession } from '/page-session.js';
+import { pageId, pageHeaders, pageRequest as api, startPageSession } from '/page-session.js';
 
 const $ = id => document.getElementById(id);
 const store = {
@@ -926,7 +926,8 @@ async function refreshNotes() {
   const owner = meetingId;
   const sequence = ++notesView.sequence;
   try {
-    const data = await api(`/api/meetings/${owner}/notes`);
+    // A local read: 10 s, including the body, so a stalled poll releases the guard and the next tick tries again (#48).
+    const data = await api(`/api/meetings/${owner}/notes`, { signal: AbortSignal.timeout(10000) });
     if (owner !== meetingId || sequence !== notesView.sequence) return; // a stale answer for another meeting
     // Re-render only when something changed, so reading is not disturbed by polling.
     const signature = JSON.stringify([data.notes?.version, data.job, data.stale, data.currentUntilMs, data.enabled, data.coverage]);
@@ -937,7 +938,14 @@ async function refreshNotes() {
     notesView.signature = signature;
     renderNotes(data, owner);
     if (!data.job || data.job.state !== 'running') plansView?.render(); // progress must not rebuild the plans either
-  } catch (error) { if (owner === meetingId && sequence === notesView.sequence) { $('notes-status').hidden = false; $('notes-status').textContent = error.message; } }
+  } catch (error) {
+    if (owner !== meetingId || sequence !== notesView.sequence) return;
+    // A poll that timed out is retried by the next tick, as before the limit: say nothing. Any message shown here is
+    // replaced by the next good answer, which redraws even when the notes themselves did not change.
+    notesView.signature = null;
+    if (error?.name === 'TimeoutError') return;
+    $('notes-status').hidden = false; $('notes-status').textContent = error.message;
+  }
   finally { if (sequence === notesView.sequence) notesView.busy = false; }
 }
 // ---------- Notes options ----------
@@ -2611,7 +2619,8 @@ async function pollAppCapture() {
   if (appCapturePolling) return;
   appCapturePolling = true;
   try {
-    const result = await api('/api/live/app-capture');
+    // Polled every second: a reply stalled for 5 s counts as no helper, and the next poll tries again.
+    const result = await api('/api/live/app-capture', { signal: AbortSignal.timeout(5000) });
     helperAvailable = result.available; helperCheckedAt = Date.now();
     const session = capture, source = session?.sources.get('app'), state = result.state;
     if (!source || state?.source !== source.sourceId) return;
@@ -3996,7 +4005,7 @@ async function renderProjectFiles() {
 $('settings').querySelector('.settings-nav button[data-section="project"]').addEventListener('click', () => void renderProjectFiles());
 
 // ---------- Plans (M7b): its meeting tab, and the project's "Plan after the notes" ----------
-plansApi = await choosePlansApi({ pageId, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
+plansApi = await choosePlansApi({ pageId, pageHeaders, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
 plansView = createPlansView({
   optionsHost: $('plans-options-slot'),
   optionsInHead: () => !layoutView.compact,
