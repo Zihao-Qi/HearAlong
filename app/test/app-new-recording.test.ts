@@ -102,3 +102,15 @@ test('guarded rejects a second click synchronously while fresh meeting creation 
   assert.equal(creates, 1);
   release(); await Promise.all([first, second]);
 });
+
+test('a replay meeting is created with its default name marked as the app\'s, so notes may rename it', async () => {
+  const handler = code.slice(code.indexOf("$('replay').onclick"), code.indexOf("for (const [field, button] of [['material-path'"));
+  const posts: [string, any][] = [];
+  const nodes: Record<string, any> = { 'replay-file': { files: [{ name: 'lantern-club.m4a' }] }, 'replay-speed': { value: '2' }, 'replay-dialog': { close() {} } };
+  const context: Record<string, any> = { $: (id: string) => nodes[id] ??= {}, guarded: (fn: () => Promise<void>) => fn, busy: false, controls() {}, log() {},
+    projectView: { replayProject: 'project-1' }, selectMeeting() {}, refreshStatus: async () => {}, api: async () => ({}),
+    post: async (path: string, body: any) => { posts.push([path, body]); return { id: 'replay-meeting' }; } };
+  runInNewContext(handler, context);
+  await nodes.replay.onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(posts[0])), ['/api/meetings', { title: 'lantern-club.m4a (replay)', autoTitle: true, projectId: 'project-1' }]);
+});

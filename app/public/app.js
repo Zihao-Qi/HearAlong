@@ -2098,7 +2098,8 @@ $('replay').onclick = guarded(async () => {
   try {
     // A replay joins the project the menu showed when the dialog opened, as a new meeting does.
     const projectId = projectView.replayProject ?? null;
-    const meeting = await post('/api/meetings', { title: `${file.name} (replay)`, ...(projectId ? { projectId } : {}) });
+    // The file's name is the app's default, so the notes may rename it until the user does (as for a dated name).
+    const meeting = await post('/api/meetings', { title: `${file.name} (replay)`, autoTitle: true, ...(projectId ? { projectId } : {}) });
     log(`Uploading ${file.name} for local transcription…`);
     await api(`/api/meetings/${meeting.id}/upload`, { method: 'POST', body: file });
     await post(`/api/meetings/${meeting.id}/replay`, { speed: Number($('replay-speed').value) });
