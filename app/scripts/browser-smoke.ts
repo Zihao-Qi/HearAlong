@@ -93,17 +93,19 @@ try {
   };
   const recordingButtons = async (kind: 'recorded' | 'empty' | 'none' | 'replay', playing = false) => {
     const showStart = kind === 'recorded' || kind === 'empty';
-    await page.waitForFunction(({ showStart, showNew, playing }) => {
+    // Start stays disabled until the selected meeting's first snapshot arrives (app.js controls()): wait for that too.
+    const startDisabled = kind === 'none' || kind === 'replay' || playing;
+    await page.waitForFunction(({ showStart, showNew, playing, startDisabled }) => {
       const start = document.getElementById('start') as HTMLButtonElement;
       const fresh = document.getElementById('start-new') as HTMLButtonElement;
-      return start.hidden === !showStart && fresh.hidden === !showNew && fresh.disabled === playing;
-    }, { showStart, showNew: kind !== 'empty', playing });
+      return start.hidden === !showStart && fresh.hidden === !showNew && fresh.disabled === playing && start.disabled === startDisabled;
+    }, { showStart, showNew: kind !== 'empty', playing, startDisabled });
     assert.equal(await page.locator('#start').isVisible(), showStart, kind);
     assert.equal(await page.locator('#start-new').isVisible(), kind !== 'empty', kind);
     assert.equal(await page.locator('#start-new').textContent(), 'New recording');
     assert.equal(await page.locator('#start-new').getAttribute('class'), 'button primary');
     assert.equal(await page.locator('#start-new').isDisabled(), playing);
-    assert.equal(await page.locator('#start').isDisabled(), kind === 'none' || kind === 'replay' || playing);
+    assert.equal(await page.locator('#start').isDisabled(), startDisabled);
     if (showStart) {
       assert.equal(await page.locator('#start').textContent(), `${kind === 'recorded' ? 'Continue' : 'Start'}\u00a0recording`);
       assert.equal(await page.locator('#start').getAttribute('class'), kind === 'recorded' ? 'button' : 'button primary');
