@@ -41,6 +41,7 @@ test('desktop test-only entry and fake switches cannot be enabled in packaged bu
   assert.equal(config.node, '/fictional/HearAlong.app/Contents/Resources/bin/node');
   assert.equal(config.entry, '/fictional/HearAlong.app/Contents/Resources/server/src/server.ts');
   assert.equal(config.pdfText, '/fictional/HearAlong.app/Contents/Resources/bin/pdf-text');
+  assert.equal(config.footprint, '/fictional/HearAlong.app/Contents/Resources/bin/footprint');
   assert.equal(config.captureBinary, '/fictional/HearAlong.app/Contents/Resources/bin/hearalong-capture');
   assert.equal(config.data, '/fictional/home/Library/Application Support/HearAlong/data');
   assert.equal(config.userData, '/fictional/home/Library/Application Support/HearAlong/Electron');
@@ -54,6 +55,7 @@ test('packaged server has a Dock-safe PATH, bundled Pi/Node and extractor, never
   assert.equal(env.PATH, '/usr/bin:/bin:/usr/sbin:/sbin:/fictional/Resources/bin:/opt/homebrew/bin:/usr/local/bin');
   assert.equal(env.MEETING_PI, '/fictional/Resources/server/node_modules/.bin/pi');
   assert.equal(env.HEARALONG_PDF_TEXT, config.pdfText);
+  assert.equal(env.HEARALONG_FOOTPRINT, config.footprint);
   assert.equal(env.HEARALONG_PACKAGED, '1');
   assert.equal(env.PI_CODING_AGENT_DIR, undefined, 'leave Pi on its existing default configuration folder');
   assert.equal(serverEnvironment(config, { PI_CODING_AGENT_DIR: '/fictional/pi-config' }).PI_CODING_AGENT_DIR,
