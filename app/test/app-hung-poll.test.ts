@@ -63,3 +63,23 @@ test('plans: polled reads carry a 10 s limit; changes keep none', async () => {
   assert.deepEqual(signals.map(([method, , signal]) => [method, Boolean(signal)]), [['GET', true], ['GET', true], ['PATCH', false]]);
   assert.deepEqual(s.timers.map(t => t.ms), [10000, 10000]);
 });
+
+test('notes: a timed-out poll shows nothing; another error shows until the next good answer clears it', async () => {
+  const nodes: Record<string, any> = {};
+  let reply: () => Promise<any> = async () => { throw Object.assign(new Error('signal timed out'), { name: 'TimeoutError' }); };
+  const rendered: any[] = [];
+  const context: Record<string, any> = { AbortSignal, meetingId: 'meeting', notesView: { busy: false, sequence: 0, owner: 'meeting', signature: null }, plansView: null,
+    renderNotes(data: any) { rendered.push(data); Object.assign(context.$('notes-status'), { hidden: true, textContent: '' }); },
+    $: (id: string) => nodes[id] ??= { hidden: true, textContent: '' }, api: () => reply() };
+  runInNewContext(between(app, 'async function refreshNotes()', '// ---------- Notes options'), context);
+  const good = { notes: { version: 1 }, job: null, stale: false, currentUntilMs: 0, enabled: true, coverage: null };
+  reply = async () => good; await context.refreshNotes();
+  assert.equal(rendered.length, 1);
+  reply = async () => { throw Object.assign(new Error('signal timed out'), { name: 'TimeoutError' }); }; await context.refreshNotes();
+  assert.equal(context.$('notes-status').hidden, true, 'a timeout says nothing');
+  reply = async () => { throw new Error('Fictional server error'); }; await context.refreshNotes();
+  assert.equal(context.$('notes-status').textContent, 'Fictional server error');
+  reply = async () => good; await context.refreshNotes();
+  assert.equal(rendered.length, 2, 'the same notes are drawn again');
+  assert.equal(context.$('notes-status').hidden, true, 'and the message is gone');
+});

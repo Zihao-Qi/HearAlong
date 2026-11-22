@@ -938,7 +938,14 @@ async function refreshNotes() {
     notesView.signature = signature;
     renderNotes(data, owner);
     if (!data.job || data.job.state !== 'running') plansView?.render(); // progress must not rebuild the plans either
-  } catch (error) { if (owner === meetingId && sequence === notesView.sequence) { $('notes-status').hidden = false; $('notes-status').textContent = error.message; } }
+  } catch (error) {
+    if (owner !== meetingId || sequence !== notesView.sequence) return;
+    // A poll that timed out is retried by the next tick, as before the limit: say nothing. Any message shown here is
+    // replaced by the next good answer, which redraws even when the notes themselves did not change.
+    notesView.signature = null;
+    if (error?.name === 'TimeoutError') return;
+    $('notes-status').hidden = false; $('notes-status').textContent = error.message;
+  }
   finally { if (sequence === notesView.sequence) notesView.busy = false; }
 }
 // ---------- Notes options ----------
