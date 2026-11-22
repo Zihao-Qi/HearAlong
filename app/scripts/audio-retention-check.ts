@@ -7,7 +7,9 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startServer } from '../src/server.ts';
 import { AUDIO_RETENTION } from '../src/audio-retention.ts';
+import { dashboardSetup } from '../test/helpers/dashboard-setup.ts';
 
+const out = resolve(process.argv[2] ?? 'artifacts');
 const directory = await mkdtemp(join(tmpdir(), 'audio-ui-'));
 let browser: Browser | undefined;
 let app: Awaited<ReturnType<typeof startServer>> | undefined;
@@ -17,7 +19,8 @@ try {
   const standIn = join(directory, 'model-stand-in');
   await writeFile(standIn, 'Not a model. The recognizer below is scripted.');
   process.env.MEETING_MODEL_PATH = standIn;
-  app = await startServer({ directory, port: 0, recognizer: { async transcribe() {
+  // Start after onboarding, as the other dashboard checks do (since the Setup page, an unset app opens Setup instead).
+  app = await startServer({ directory, port: 0, setup: await dashboardSetup(directory, true), recognizer: { async transcribe() {
     return { text: 'A fresh recording continues this meeting.', backend: 'scripted', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, words: [], timestampKind: 'none' as const };
   }, close() {} }, drafts: null, quick: null, heavy: null });
   for (let i = 0; i < 2; i++) {
@@ -29,7 +32,7 @@ try {
   await app.audioRetention.run();
   browser = await chromium.launch({ executablePath: testBrowser(), headless: true,
     args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'] });
-  await mkdir(resolve('artifacts'), { recursive: true });
+  await mkdir(out, { recursive: true });
   for (const width of [1280, 390]) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
     try {
@@ -40,7 +43,7 @@ try {
       assert.match(await page.locator('#older-audio-text').innerText(), /Remove the audio of 2 older meetings \(0.1 MB\)\? Transcripts and notes are kept\./);
       assert.equal(await page.locator('#audio-removed').isVisible(), false);
       for (const id of ['remove-older-audio', 'keep-older-audio']) assert.ok((await page.locator('#' + id).boundingBox())!.height >= 44);
-      const question = resolve(`artifacts/audio-retention-question-${width}.png`);
+      const question = join(out, `audio-retention-question-${width}.png`);
       await page.screenshot({ path: question }); screenshots.push(question);
       await page.locator('#open-system').click();
       await page.locator('#settings button[data-section="speech"]').click();
@@ -48,7 +51,7 @@ try {
       assert.deepEqual(await page.locator('#audio-retention option').allTextContents(), ['1 day', '1 week', '1 month', 'Always']);
       assert.ok((await page.locator('#audio-retention').boundingBox())!.height >= 44);
       assert.equal(await page.locator('#retry').isVisible(), false);
-      const settings = resolve(`artifacts/audio-retention-settings-${width}.png`);
+      const settings = join(out, `audio-retention-settings-${width}.png`);
       await page.screenshot({ path: settings }); screenshots.push(settings);
       const savedMonth = page.waitForResponse(r => r.url().endsWith('/api/settings') && r.request().method() === 'PUT');
       await page.locator('#audio-retention').selectOption('month');
@@ -72,17 +75,19 @@ try {
   await page.locator('#settings button[data-section="speech"]').click();
   assert.equal(await page.locator('#retry').isVisible(), false);
   await page.locator('#close-settings').click();
+  // The fake microphone must actually deliver audio before Stop: wait for the server to accept its first upload.
+  const firstAudio = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/pcm') && r.ok());
   await page.locator('#start').click();
   await page.locator('#start-mic').click();
   await page.locator('#live-chip').getByText('Recording', { exact: false }).waitFor();
-  await page.waitForTimeout(2500); // the fake microphone must actually deliver frames before Stop
+  await firstAudio;
   await page.locator('#stop').click();
   await page.locator('#live-chip').waitFor({ state: 'hidden' });
   await page.locator('#transcript').getByText('A fresh recording continues this meeting.', { exact: false }).waitFor();
   await page.locator('#audio-removed').waitFor({ state: 'hidden' });
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 });
-    const path = resolve(`artifacts/audio-retention-resumed-${width}.png`);
+    const path = join(out, `audio-retention-resumed-${width}.png`);
     await page.screenshot({ path }); screenshots.push(path);
   }
   console.log(JSON.stringify({ checks: 'passed', screenshots, modelsCalled: false }, null, 2));
