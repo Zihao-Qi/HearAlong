@@ -22,6 +22,7 @@
     "bench:fetch": "node --experimental-strip-types scripts/bench/ami-fetch.ts",
     "bench:wer": "node --experimental-strip-types scripts/bench/wer-run.ts",
     "bench:live": "node --experimental-strip-types scripts/bench/live-run.ts",
+    "bench:call": "node --experimental-strip-types scripts/bench/call-run.ts",
     "bench:rescore": "node --experimental-strip-types scripts/bench/rescore.ts",
     "bench:ihm": "node --experimental-strip-types scripts/bench/ihm-run.ts",
     "bench:report": "node --experimental-strip-types scripts/bench/report.ts"
