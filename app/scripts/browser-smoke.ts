@@ -162,15 +162,18 @@ try {
       if (kind === 'recorded') {
         const start = (await page.locator('#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
         assert.equal(fresh.x - start.x - start.width, compact ? 8 : 10);
-        if (!compact) assert.equal(settings.x - fresh.x - fresh.width, 10);
+        assert.equal(settings.x - fresh.x - fresh.width, compact ? 8 : 10);
       }
       if (compact) {
-        // Two rows, each using the full width: the meeting and Settings, then Add materials and the recording actions.
+        // Two rows: the meeting, then Add materials at the left and the actions and Settings at the right (Tab order),
+        // on the same left and right lines as the tabs below.
         const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
         const meeting = await box('#meeting-button'), settings = await box('#open-system'), action = await box(kind === 'empty' ? '#start' : '#start-new');
-        assert.ok(settings.y + settings.height <= action.y, `${width}: Settings is on the first row`);
-        assert.equal(Math.round(settings.y + settings.height / 2), Math.round(meeting.y + meeting.height / 2), `${width}: Settings beside the meeting`);
-        assert.equal(Math.round(settings.x + settings.width), Math.round(action.x + action.width), `${width}: both rows end on one line`);
+        const tabs = await page.locator('.compact-tabs button:visible').evaluateAll(n => n.map(e => e.getBoundingClientRect()).map(r => ({ x: r.x, right: r.right })));
+        assert.ok(meeting.y + meeting.height <= action.y, `${width}: the meeting is on the first row`);
+        assert.equal(Math.round(settings.y), Math.round(action.y), `${width}: Settings ends the actions row`);
+        assert.equal(Math.round(meeting.x), Math.round(tabs[0].x), `${width}: the rows start on the tabs' line`);
+        assert.equal(Math.round(settings.x + settings.width), Math.round(tabs.at(-1)!.right), `${width}: the actions row ends on the tabs' line`);
         if (width > 600 && kind !== 'none') {
           const materials = await box('#open-meeting');
           assert.equal(Math.round(materials.y), Math.round(action.y), `${width}: Add materials on the actions row`);
@@ -187,6 +190,8 @@ try {
       }
     }
     await page.setViewportSize({ width: 900, height: 900 });
+    // Measure the wide layout itself: in the narrow one the groups are display: contents and have no box.
+    await page.waitForFunction(() => !document.body.classList.contains('layout-compact'));
     const row = await page.locator('.topbar').evaluate(n => {
       const left = n.querySelector('.topbar-left')!.getBoundingClientRect(), right = n.querySelector('.topbar-right')!.getBoundingClientRect();
       return Math.abs(left.y - right.y);

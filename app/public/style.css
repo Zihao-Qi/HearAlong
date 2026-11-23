@@ -44,8 +44,11 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
   .topbar { flex-wrap: nowrap; }
   .topbar-left { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
   .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
-  /* Recording in a window just wide enough: the chip cuts its end (a problem leads it) before the name gets unreadable. */
+  /* A window just wide enough for one row: the chip (a problem leads it) and Materials cut their ends before the name
+     becomes unreadable. Their minimums fit beside the recording actions from 900 px. */
   .topbar-left > #live-chip { flex-shrink: 1; min-width: 96px; }
+  /* Only a long "Materials: <file>" label shortens; "Add materials" always fits. Block, so its text can end in "…". */
+  .topbar-left > #open-meeting { flex-shrink: 1; min-width: 112px; display: block; line-height: calc(var(--topbar-button-height) - 2px); }
   .topbar-left > .meeting-wrap { min-width: 160px; }
   .topbar-right { flex: 0 0 auto; flex-wrap: nowrap; }
 }
@@ -98,20 +101,21 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 body.layout-compact .divider { display: none; }
 body.layout-compact .wide-only, body.layout-compact #connection { display: none; }
 body.layout-compact .compact-only { display: inline; }
-body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: 12px; --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
+/* The top bar's edges follow the tabs row below it: 8 px in, or the centred 720 px column on a wider window. */
+body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: max(8px, calc((100% - 720px) / 2 + 8px)); --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
 /*
- * Narrow window: always two rows, each using the full width. Row 1: the meeting (name, recording chip) and Settings at
- * the right. Row 2: Add materials at the left, the recording actions at the right. The two groups only order their
- * controls here; the name shortens with "…" and the chip shrinks, so row 1 never wraps.
+ * Narrow window: always two rows. Row 1: the meeting (name, then the recording chip). Row 2, using the full width:
+ * Add materials at the left; the recording actions and Settings at the right, in reading (and Tab) order.
+ * Row 1 never wraps: the name grows from nothing up to its full length and the chip keeps its text until it would leave
+ * the name less than 160 px; past that both end in "…".
  */
-body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-end; column-gap: 8px; row-gap: 4px; }
-body.layout-compact .topbar-left, body.layout-compact .topbar-right { display: contents; }
-body.layout-compact .meeting-wrap { order: 1; flex: 0 1 auto; max-width: calc(100% - 60px); }
-body.layout-compact #live-chip { order: 2; flex: 1 1 0; max-width: max-content; }
-body.layout-compact #open-system { order: 3; margin-left: auto; }
-body.layout-compact .topbar::after { content: ""; order: 4; flex: 0 0 100%; height: 0; }
-body.layout-compact #open-meeting { order: 5; margin-right: auto; }
-body.layout-compact .topbar-right > :not(#open-system) { order: 6; }
+body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-start; column-gap: 8px; row-gap: 4px; }
+body.layout-compact .topbar-left { display: contents; }
+body.layout-compact .meeting-wrap { order: 1; flex: 1 1 0; min-width: 0; max-width: max-content; }
+body.layout-compact #live-chip { order: 2; flex: 0 1 auto; max-width: calc(100% - 168px); }
+body.layout-compact .topbar::after { content: ""; order: 3; flex: 0 0 100%; height: 0; }
+body.layout-compact #open-meeting { order: 4; margin-right: auto; }
+body.layout-compact .topbar-right { order: 5; flex: 0 0 auto; flex-wrap: nowrap; margin-left: auto; }
 body.layout-compact .meeting-select { flex: 1 1 auto; min-width: 0; max-width: 480px; }
 body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding: 0; }
 .topbar .button, .update-bar .button { min-height: var(--topbar-button-height); }
@@ -432,7 +436,7 @@ body.layout-compact .start-wrap:not(#add-call-wrap) .start-menu { left: auto; ri
 .icon-button:hover, .icon-button:focus-visible { border-color: var(--line-strong); color: var(--ink); }
 .icon-button:disabled { opacity: .4; cursor: not-allowed; }
 .meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); min-width: 0; }
-body.layout-compact .meeting-name { flex: 1 1 auto; width: auto; }
+body.layout-compact .meeting-name { flex: 1 1 auto; width: auto; min-height: var(--topbar-button-height); }
 body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 
 /* Audio retention shares the app's quiet notice and settings treatment. */
