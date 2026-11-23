@@ -65,6 +65,8 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .button:hover { border-color: var(--muted); }
 .button.primary { background: var(--accent); border-color: var(--accent); color: #FFF; }
 .button.primary:hover { background: var(--accent-ink); }
+/* A blue button's own edge hides the browser's thin ring: the same ring as the meeting name, set off from the button. */
+.button.primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .button:disabled { opacity: .5; cursor: not-allowed; }
 
 .update-bar { flex: none; display: flex; align-items: center; gap: var(--topbar-controls-gap); padding: var(--topbar-pad-y) var(--topbar-pad-x) var(--topbar-pad-y) calc(var(--topbar-pad-x) + var(--meeting-button-pad-x) + var(--meeting-button-border)); background: var(--accent-tint); border-bottom: 1px solid var(--line); }
@@ -112,6 +114,8 @@ body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: max(8px, calc((100% -
 body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-start; column-gap: 8px; row-gap: 4px; }
 body.layout-compact .topbar-left { display: contents; }
 body.layout-compact .meeting-wrap { order: 1; flex: 1 1 0; min-width: 0; max-width: max-content; }
+/* Renaming: the field takes the whole row (beside the chip while recording). */
+body.layout-compact .meeting-wrap:has(> #meeting-name:not([hidden])) { flex: 1 1 auto; max-width: none; }
 body.layout-compact #live-chip { order: 2; flex: 0 1 auto; max-width: calc(100% - 168px); }
 body.layout-compact .topbar::after { content: ""; order: 3; flex: 0 0 100%; height: 0; }
 body.layout-compact #open-meeting { order: 4; margin-right: auto; }
@@ -435,8 +439,8 @@ body.layout-compact .start-wrap:not(#add-call-wrap) .start-menu { left: auto; ri
 .icon-button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; flex: 0 0 auto; }
 .icon-button:hover, .icon-button:focus-visible { border-color: var(--line-strong); color: var(--ink); }
 .icon-button:disabled { opacity: .4; cursor: not-allowed; }
-.meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); min-width: 0; }
-body.layout-compact .meeting-name { flex: 1 1 auto; width: auto; min-height: var(--topbar-button-height); }
+.meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); min-width: 0; min-height: var(--topbar-button-height); }
+body.layout-compact .meeting-name { flex: 1 1 auto; width: auto; }
 body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 
 /* Audio retention shares the app's quiet notice and settings treatment. */
