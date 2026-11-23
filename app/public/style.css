@@ -115,7 +115,7 @@ body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-start; colu
 body.layout-compact .topbar-left { display: contents; }
 body.layout-compact .meeting-wrap { order: 1; flex: 1 1 0; min-width: 0; max-width: max-content; }
 /* Renaming: the field takes the whole row (beside the chip while recording). */
-body.layout-compact .meeting-wrap:has(> #meeting-name:not([hidden])) { flex: 1 1 auto; max-width: none; }
+body.layout-compact .meeting-wrap:has(> #meeting-name:not([hidden])) { max-width: none; }
 body.layout-compact #live-chip { order: 2; flex: 0 1 auto; max-width: calc(100% - 168px); }
 body.layout-compact .topbar::after { content: ""; order: 3; flex: 0 0 100%; height: 0; }
 body.layout-compact #open-meeting { order: 4; margin-right: auto; }
@@ -470,6 +470,8 @@ body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 .menu-item { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; min-height: 44px; padding: 6px 10px; border: none; border-radius: 8px; background: transparent; font: 14px var(--sans); color: var(--ink); text-align: left; cursor: pointer; }
 .menu-item.strong { font-weight: 600; color: var(--accent-ink); }
 .menu-item:hover, .menu-item:focus-visible { background: var(--accent-tint); outline: none; }
+/* The current meeting is already tinted: keyboard focus also draws a ring, so it shows there too. */
+.menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .menu-item:disabled { opacity: .45; cursor: not-allowed; background: transparent; }
 .menu-item { position: relative; }
 .menu-item[aria-checked="true"] { font-weight: 600; background: var(--accent-tint); color: var(--accent-ink); padding-right: 30px; }
