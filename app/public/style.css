@@ -44,6 +44,9 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
   .topbar { flex-wrap: nowrap; }
   .topbar-left { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
   .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
+  /* Recording in a window just wide enough: the chip cuts its end (a problem leads it) before the name gets unreadable. */
+  .topbar-left > #live-chip { flex-shrink: 1; min-width: 96px; }
+  .topbar-left > .meeting-wrap { min-width: 160px; }
   .topbar-right { flex: 0 0 auto; flex-wrap: nowrap; }
 }
 .meeting-select { font: 600 16px var(--sans); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; max-width: 360px; }
@@ -51,7 +54,7 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .chip[hidden] { display: none; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #EEF1F5; color: #3B4657; font-size: 13px; }
 .chip.recording { background: var(--rec-tint); color: #9B1C1C; font-weight: 500; }
-.chip.recording::before, .chip.replay::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
+.chip.recording::before, .chip.replay::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
 .chip.replay { background: var(--accent-tint); color: var(--accent-ink); font-weight: 500; }
 .chip.replay::before { background: var(--accent); }
 
@@ -96,15 +99,20 @@ body.layout-compact .divider { display: none; }
 body.layout-compact .wide-only, body.layout-compact #connection { display: none; }
 body.layout-compact .compact-only { display: inline; }
 body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: 12px; --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
-body.layout-compact .topbar { gap: 8px; }
-body.layout-compact .topbar-left { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; }
+/*
+ * Narrow window: always two rows, each using the full width. Row 1: the meeting (name, recording chip) and Settings at
+ * the right. Row 2: Add materials at the left, the recording actions at the right. The two groups only order their
+ * controls here; the name shortens with "…" and the chip shrinks, so row 1 never wraps.
+ */
+body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-end; column-gap: 8px; row-gap: 4px; }
+body.layout-compact .topbar-left, body.layout-compact .topbar-right { display: contents; }
+body.layout-compact .meeting-wrap { order: 1; flex: 0 1 auto; max-width: calc(100% - 60px); }
+body.layout-compact #live-chip { order: 2; flex: 1 1 0; max-width: max-content; }
+body.layout-compact #open-system { order: 3; margin-left: auto; }
+body.layout-compact .topbar::after { content: ""; order: 4; flex: 0 0 100%; height: 0; }
+body.layout-compact #open-meeting { order: 5; margin-right: auto; }
+body.layout-compact .topbar-right > :not(#open-system) { order: 6; }
 body.layout-compact .meeting-select { flex: 1 1 auto; min-width: 0; max-width: 480px; }
-body.layout-compact .topbar-right { flex: 0 1 auto; justify-content: flex-end; margin-left: auto; }
-/* Two rows only when one does not fit (a column beside a call window, a phone). */
-@media (max-width: 600px) {
-  body.layout-compact .topbar-left { flex-basis: 100%; }
-  body.layout-compact .topbar-right { flex-basis: 100%; }
-}
 body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding: 0; }
 .topbar .button, .update-bar .button { min-height: var(--topbar-button-height); }
 body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 0; padding: 6px max(8px, calc((100% - 640px) / 2)) 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -491,6 +499,7 @@ a.button[aria-disabled="true"] { opacity: .45; pointer-events: none; }
 .replay-dialog:not([open]) { display: none; }
 .replay-dialog::backdrop { background: rgba(24,33,47,.28); }
 body.layout-compact .meeting-button { flex: 1 1 auto; max-width: 480px; }
+.meeting-button > svg { flex: none; }
 body.layout-compact .chip-button { max-width: 120px; }
 
 .material-list:empty::before { content: "No materials yet. Add a project folder or file so answers and the glossary can use it (read-only)."; display: block; font-size: 13px; color: var(--muted); }
@@ -586,9 +595,8 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .meeting-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .live-draft time { opacity: 1; color: var(--muted); }
 input[type="checkbox"] { accent-color: var(--accent); }
-/* The recording chip never wraps: the details are in its tooltip on narrow screens. */
+/* The recording chip never wraps: the details are in its tooltip on narrow screens (its width there: the top bar rules). */
 .chip { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-body.layout-compact #live-chip { max-width: 40vw; }
 
 /* One control height: 40 px (44 px touch targets in compact). */
 .chip-button { min-height: 40px; border-radius: 8px; padding: 0 12px; }
@@ -601,10 +609,8 @@ body.layout-compact .compact-tabs { padding-left: max(8px, calc((100% - 720px) /
 .row[hidden] { display: none; }
 .nav-divider { display: none; }
 @media (max-width: 600px) {
-  /* A phone: two rows leave room for both recording actions; materials are in Settings. */
+  /* A phone: row 2 keeps its room for the recording actions; materials are in Settings. */
   body.layout-compact #open-meeting { display: none; }
-  body.layout-compact .topbar-left, body.layout-compact .topbar-right { flex: 1 1 100%; }
-  body.layout-compact .topbar-right { justify-content: flex-end; }
 }
 @media (max-width: 640px) {
   .settings-nav .nav-divider { display: block; flex: 0 0 100%; height: 0; border-top: 1px solid var(--line); margin: 2px 0; }

@@ -150,7 +150,7 @@ try {
     await page.setViewportSize({ width: 1440, height: 900 });
   };
   const recordingScreens = async (kind: 'recorded' | 'empty' | 'none') => {
-    for (const width of [1280, 600, 440]) {
+    for (const width of [1280, 640, 600, 440]) {
       await page.setViewportSize({ width, height: 900 });
       await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width < 900);
       await recordingButtons(kind);
@@ -162,7 +162,20 @@ try {
       if (kind === 'recorded') {
         const start = (await page.locator('#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
         assert.equal(fresh.x - start.x - start.width, compact ? 8 : 10);
-        assert.equal(settings.x - fresh.x - fresh.width, compact ? 8 : 10);
+        if (!compact) assert.equal(settings.x - fresh.x - fresh.width, 10);
+      }
+      if (compact) {
+        // Two rows, each using the full width: the meeting and Settings, then Add materials and the recording actions.
+        const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
+        const meeting = await box('#meeting-button'), settings = await box('#open-system'), action = await box(kind === 'empty' ? '#start' : '#start-new');
+        assert.ok(settings.y + settings.height <= action.y, `${width}: Settings is on the first row`);
+        assert.equal(Math.round(settings.y + settings.height / 2), Math.round(meeting.y + meeting.height / 2), `${width}: Settings beside the meeting`);
+        assert.equal(Math.round(settings.x + settings.width), Math.round(action.x + action.width), `${width}: both rows end on one line`);
+        if (width > 600 && kind !== 'none') {
+          const materials = await box('#open-meeting');
+          assert.equal(Math.round(materials.y), Math.round(action.y), `${width}: Add materials on the actions row`);
+          assert.equal(Math.round(materials.x), Math.round(meeting.x), `${width}: both rows start on one line`);
+        }
       }
       await page.screenshot({ path: join(outDir, `recording-${kind}-${width}.png`) });
       if (kind === 'recorded') {
