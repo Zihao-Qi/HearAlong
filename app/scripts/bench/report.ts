@@ -119,7 +119,7 @@ function renderCallRuns(runs: CallFile[]): string {
         pair.aec.failures, pair.aec.notices.length ? pair.aec.notices.map(oneLine).join(' / ') : 0]))));
     lines.push('', '#### Per pair', '', ...markdownTable(
       ['Run', 'Pair', 'Echo', 'Me near-only WER', 'Me double-talk WER', 'Far words in Me, echo only', 'Them WER, far alone', 'Genuine Me words hidden', 'Me final p50', 'Them final p50', 'Error'],
-      group.flatMap(run => run.pairs.map(pair => { const t = pair.score; return [n(run), pair.pair, `${pair.delayMs} ms, ${pair.gainDb} dB`, wer(t.nearOnly.me), wer(t.doubleTalk.me),
+      group.flatMap(run => run.pairs.map(pair => { const t = pair.score; return [n(run), pair.pair, run.condition.mode === 'echo' ? `${pair.delayMs} ms, ${pair.gainDb} dB` : 'none', wer(t.nearOnly.me), wer(t.doubleTalk.me),
         formatLeak(t.echoOnly.leak), wer(t.echoOnly.them), formatHidden(t.nearOnly.hidden.genuine + t.doubleTalk.hidden.genuine, t.nearOnly.hidden.recognizedGenuine + t.doubleTalk.hidden.recognizedGenuine),
         formatLag(pair.lag.me.final, 'p50'), formatLag(pair.lag.them.final, 'p50'), pair.error ? oneLine(pair.error) : '']; }))));
     lines.push('', UPPER_BOUNDS);

@@ -88,7 +88,7 @@ Every 1 s, `ps -axo pid=,ppid=,pcpu=,rss=,command=` samples the Node process tha
 
 ### Calls through speakers
 
-`npm run bench:call` measures a call heard through speakers, through the same path v0.3.0 uses: the real page and server, the server's AEC3 echo canceller (its alignment by capture time and its wait for call audio), the read-time echo rule that hides doubled Me lines, and the Me and Them paragraphs. The app is not changed: the microphone is a file played in real time, and the native capture helper is replaced by a stand-in that speaks its protocol.
+`npm run bench:call` measures a call heard through speakers, through the same path v0.3.1 uses: the real page and server, the server's AEC3 echo canceller (its alignment by capture time and its wait for call audio), the read-time echo rule that hides doubled Me lines, and the Me and Them paragraphs. The app is not changed: the microphone is a file played in real time, and the native capture helper is replaced by a stand-in that speaks its protocol.
 
 **Pairs.** Five fixed pairs of AMI individual-headset speakers (`bench:fetch -- --mic Headset`). In each pair the near speaker ("Me") and the far speaker ("Them") come from different meetings, so they share no headset bleed. The pairs, with the simulated echo delay and level:
 
@@ -106,7 +106,7 @@ Every 1 s, `ps -axo pid=,ppid=,pcpu=,rss=,command=` samples the Node process tha
 
 **Control.** By default each pair is played twice (`--condition echo|control|both`, default `both`; the order alternates by pair). The control uses the same microphone without the echo: the same near speech, the same noise, the same common scale, and the same call source played through the same path, so AEC still runs with nothing to cancel. The control microphone has no far speech in it, so the echo-minus-control difference in Me WER removes the difficulty of the near speech itself, and measures three things together: the echo that AEC leaves behind, any damage AEC does to the near speaker, and the near words the echo rule hides. There is no condition with AEC off, or with perfect cancellation, so the benchmark cannot tell AEC damage apart from residual echo. Each condition is its own result file and its own cohort, never pooled; the report places the two side by side for runs of the same batch.
 
-**What is played.** The rehearsal tool plays the microphone file in real time as the page's fake microphone (a disposable headless Chromium, an ephemeral port, a fresh data folder per pair). A stand-in for the native meeting-app capture (`scripts/bench/call-helper.ts`) speaks the helper's HTTP protocol to the server: it announces one app, and the run starts recording through the real call menu (**Microphone + online call**, then that app). The helper then sends the far speaker's clean audio as the `app:` source in one-second float32 frames, each once its last sample has been played, with `X-Capture-Wall-Ms` set to when that sample played (the moment the microphone file started, plus its position) and `X-Start-Ms` from the recording's clock start, as the native helper does. So the echo in the microphone trails the call audio by the pair's delay plus the browser's own capture latency.
+**What is played.** The rehearsal tool plays the microphone file in real time as the page's fake microphone (a disposable headless Chromium, an ephemeral port, a fresh data folder per pair). A stand-in for the native meeting-app capture (`scripts/bench/call-helper.ts`) speaks the helper's HTTP protocol to the server: it announces one app, and the run starts recording through the real call menu (**Microphone + online call**, then that app). The helper then sends the far speaker's clean audio as the `app:` source in one-second float32 frames, each once its last sample has been played, with `X-Capture-Wall-Ms` set to when its first sample played (the moment the microphone file started, plus its position) and `X-Start-Ms` from the recording's clock start, as the native helper does. So the echo in the microphone trails the call audio by the pair's delay plus the browser's own capture latency.
 
 **Scoring.** After the recording settles, the run reads every saved line (raw) and the lines the server still shows after the echo rule (shown). Each recognized word goes to the block holding its start time (a line without word times goes by its start); reference words go by their start. Meeting time is mapped to the file by the median offset of each source's frames. Per talk state, summed over blocks and pairs:
 
@@ -499,7 +499,7 @@ Corpus counts across eligible finished runs. Single-speaker excludes overlap and
 | TS3003d | Mix-Headset | 20.89% | 20.89% | 20.89% | 20.89% | 3 |
 <!-- bench:end -->
 
-### Calls through speakers
+## Results: calls through speakers
 
 <!-- bench-call:begin -->
 AMI Meeting Corpus, CC BY 4.0. Carletta et al., "The AMI Meeting Corpus", 2005. https://creativecommons.org/licenses/by/4.0/
@@ -753,21 +753,21 @@ From the server: microphone frames processed by the AEC worker (`echoStats`), th
 
 | Run | Pair | Echo | Me near-only WER | Me double-talk WER | Far words in Me, echo only | Them WER, far alone | Genuine Me words hidden | Me final p50 | Them final p50 | Error |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 6.82% | 12.26% | 0 of 83 (0.00%) | 9.64% | 0 of 177 (0.00%) | 18.14 s | 13.54 s |  |
-| 1 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 12.66% | 17.81% | 0 of 59 (0.00%) | 8.47% | 0 of 133 (0.00%) | 16.05 s | 12.47 s |  |
-| 1 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 6.45% | 4.88% | 0 of 100 (0.00%) | 5.00% | 0 of 170 (0.00%) | 14.54 s | 13.08 s |  |
-| 1 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 10.29% | 7.14% | 0 of 83 (0.00%) | 9.64% | 0 of 153 (0.00%) | 14.30 s | 12.23 s |  |
-| 1 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 8.60% | 0 of 87 (0.00%) | 27.59% | 0 of 177 (0.00%) | 14.82 s | 13.14 s |  |
-| 2 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 6.82% | 10.38% | 0 of 83 (0.00%) | 10.84% | 0 of 179 (0.00%) | 19.50 s | 14.46 s |  |
-| 2 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 11.39% | 13.70% | 0 of 59 (0.00%) | 5.08% | 0 of 137 (0.00%) | 16.07 s | 12.66 s |  |
-| 2 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 15.05% | 4.88% | 0 of 100 (0.00%) | 5.00% | 0 of 162 (0.00%) | 16.59 s | 13.03 s |  |
-| 2 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 10.29% | 5.10% | 0 of 83 (0.00%) | 10.84% | 0 of 155 (0.00%) | 14.00 s | 12.22 s |  |
-| 2 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 9.68% | 0 of 87 (0.00%) | 26.44% | 0 of 176 (0.00%) | 17.42 s | 13.17 s |  |
-| 3 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 6.82% | 8.49% | 0 of 83 (0.00%) | 9.64% | 0 of 181 (0.00%) | 18.18 s | 13.55 s |  |
-| 3 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 12.66% | 16.44% | 0 of 59 (0.00%) | 8.47% | 0 of 134 (0.00%) | 16.04 s | 12.02 s |  |
-| 3 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 6.45% | 6.10% | 1 of 100 (1.00%) | 5.00% | 0 of 169 (0.00%) | 14.71 s | 13.08 s |  |
-| 3 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 10.29% | 5.10% | 0 of 83 (0.00%) | 10.84% | 0 of 155 (0.00%) | 13.98 s | 12.26 s |  |
-| 3 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 12.37% | 8.60% | 0 of 87 (0.00%) | 26.44% | 0 of 178 (0.00%) | 14.82 s | 13.34 s |  |
+| 1 | ES2004a.B+IS1009a.A | none | 6.82% | 12.26% | 0 of 83 (0.00%) | 9.64% | 0 of 177 (0.00%) | 18.14 s | 13.54 s |  |
+| 1 | IS1009a.D+TS3003a.A | none | 12.66% | 17.81% | 0 of 59 (0.00%) | 8.47% | 0 of 133 (0.00%) | 16.05 s | 12.47 s |  |
+| 1 | TS3003a.D+EN2002a.C | none | 6.45% | 4.88% | 0 of 100 (0.00%) | 5.00% | 0 of 170 (0.00%) | 14.54 s | 13.08 s |  |
+| 1 | EN2002a.B+ES2004b.D | none | 10.29% | 7.14% | 0 of 83 (0.00%) | 9.64% | 0 of 153 (0.00%) | 14.30 s | 12.23 s |  |
+| 1 | ES2004b.A+IS1009b.C | none | 13.40% | 8.60% | 0 of 87 (0.00%) | 27.59% | 0 of 177 (0.00%) | 14.82 s | 13.14 s |  |
+| 2 | ES2004a.B+IS1009a.A | none | 6.82% | 10.38% | 0 of 83 (0.00%) | 10.84% | 0 of 179 (0.00%) | 19.50 s | 14.46 s |  |
+| 2 | IS1009a.D+TS3003a.A | none | 11.39% | 13.70% | 0 of 59 (0.00%) | 5.08% | 0 of 137 (0.00%) | 16.07 s | 12.66 s |  |
+| 2 | TS3003a.D+EN2002a.C | none | 15.05% | 4.88% | 0 of 100 (0.00%) | 5.00% | 0 of 162 (0.00%) | 16.59 s | 13.03 s |  |
+| 2 | EN2002a.B+ES2004b.D | none | 10.29% | 5.10% | 0 of 83 (0.00%) | 10.84% | 0 of 155 (0.00%) | 14.00 s | 12.22 s |  |
+| 2 | ES2004b.A+IS1009b.C | none | 13.40% | 9.68% | 0 of 87 (0.00%) | 26.44% | 0 of 176 (0.00%) | 17.42 s | 13.17 s |  |
+| 3 | ES2004a.B+IS1009a.A | none | 6.82% | 8.49% | 0 of 83 (0.00%) | 9.64% | 0 of 181 (0.00%) | 18.18 s | 13.55 s |  |
+| 3 | IS1009a.D+TS3003a.A | none | 12.66% | 16.44% | 0 of 59 (0.00%) | 8.47% | 0 of 134 (0.00%) | 16.04 s | 12.02 s |  |
+| 3 | TS3003a.D+EN2002a.C | none | 6.45% | 6.10% | 1 of 100 (1.00%) | 5.00% | 0 of 169 (0.00%) | 14.71 s | 13.08 s |  |
+| 3 | EN2002a.B+ES2004b.D | none | 10.29% | 5.10% | 0 of 83 (0.00%) | 10.84% | 0 of 155 (0.00%) | 13.98 s | 12.26 s |  |
+| 3 | ES2004b.A+IS1009b.C | none | 12.37% | 8.60% | 0 of 87 (0.00%) | 26.44% | 0 of 178 (0.00%) | 14.82 s | 13.34 s |  |
 
 Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
 

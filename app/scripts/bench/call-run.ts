@@ -1,4 +1,4 @@
-// A call heard through speakers, through the shipped v0.3.0 path: the real page and server, the server-side AEC3 worker with its
+// A call heard through speakers, through the shipped v0.3.1 path: the real page and server, the server-side AEC3 worker with its
 // alignment and wait, the read-time echo rule, and the Me/Them paragraphs. Usage:
 // npm run bench:call -- [--pairs 1,2,3,4,5] [--smoke] [--run-label text] [--allow-dirty]
 // Per pair, the page records a fake microphone (near speaker + simulated speaker echo of the far speaker) in real time, and a
