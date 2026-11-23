@@ -502,5 +502,318 @@ Corpus counts across eligible finished runs. Single-speaker excludes overlap and
 ### Calls through speakers
 
 <!-- bench-call:begin -->
-not yet measured
+AMI Meeting Corpus, CC BY 4.0. Carletta et al., "The AMI Meeting Corpus", 2005. https://creativecommons.org/licenses/by/4.0/
+
+Accuracy is custom-normalized WER; not directly comparable to published Whisper/NIST scores. Echo is simulated (see Method).
+
+### Call cohort 1 — with echo
+
+3 runs; 3 finished.
+
+Normalizer: hearalong-2. Scoring commit: 635157607c97567d02e36de845d32d4819510b75; scoring dirty: false.
+
+Condition: 6 blocks of 20 s per pair; room lp3k-direct-3refl-diffuse20to80ms-tau20-seed7; pairs 1:ES2004a.B+IS1009a.A, 2:IS1009a.D+TS3003a.A, 3:TS3003a.D+EN2002a.C, 4:EN2002a.B+ES2004b.D, 5:ES2004b.A+IS1009b.C.
+
+| Run | Kind | Date | Label | Model basename | Model SHA-256 | Model bytes | Commit | Dirty | Node | macOS | Chip | RAM | Logical cores | Failed chunks | Unfinished chunks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | call | 2026-11-23T07:10:56.934Z | call run 3 | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | 635157607c97567d02e36de845d32d4819510b75 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+| 2 | call | 2026-11-23T06:48:26.682Z | call run 2 | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | 635157607c97567d02e36de845d32d4819510b75 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+| 3 | call | 2026-11-23T06:25:59.027Z | call run 1 | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | 635157607c97567d02e36de845d32d4819510b75 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+
+#### Me (microphone)
+
+Finished pairs only, counts summed. The shown view is what the transcript displays after the read-time echo rule.
+
+| Run | Pairs | Near-only WER | Double-talk WER | Me words in echo-only blocks | Far words in Me, echo only | Far words in Me, double talk | Genuine Me words hidden |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 5 | 9.88% | 18.58% | 15 | 6 of 412 (1.46%) | 24 of 483 (4.97%) | 0 of 769 (0.00%) |
+| 2 | 5 | 8.94% | 19.47% | 3 | 0 of 412 (0.00%) | 23 of 483 (4.76%) | 0 of 769 (0.00%) |
+| 3 | 5 | 8.94% | 21.02% | 14 | 5 of 412 (1.21%) | 25 of 483 (5.18%) | 0 of 763 (0.00%) |
+
+Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
+
+Median Me near-only WER across 3 eligible runs: 8.94% (min 8.94%, max 9.88%).
+Median Me double-talk WER across 3 eligible runs: 19.47% (min 18.58%, max 21.02%).
+Median far-word rate in Me, echo only across 3 eligible runs: 1.21% (min 0.00%, max 1.46%).
+
+#### Read-time echo rule
+
+Raw is every saved Me line; shown is after the rule. Hidden genuine words are near-speaker reference words recognized correctly in a hidden Me line.
+
+| Run | Talk state | Me lines hidden | Me words hidden | Far words in Me, raw | Far words in Me, shown | Genuine Me words hidden | Me WER raw | Me WER shown |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Echo only | 1 | 3 | 9 of 412 (2.18%) | 6 of 412 (1.46%) | 0 | n/a | n/a |
+| 1 | Near only | 0 | 0 | n/a | n/a | 0 of 396 (0.00%) | 9.88% | 9.88% |
+| 1 | Double talk | 0 | 0 | 24 of 483 (4.97%) | 24 of 483 (4.97%) | 0 of 373 (0.00%) | 18.58% | 18.58% |
+| 2 | Echo only | 2 | 6 | 6 of 412 (1.46%) | 0 of 412 (0.00%) | 0 | n/a | n/a |
+| 2 | Near only | 0 | 0 | n/a | n/a | 0 of 399 (0.00%) | 8.94% | 8.94% |
+| 2 | Double talk | 0 | 0 | 23 of 483 (4.76%) | 23 of 483 (4.76%) | 0 of 370 (0.00%) | 19.47% | 19.47% |
+| 3 | Echo only | 2 | 13 | 17 of 412 (4.13%) | 5 of 412 (1.21%) | 0 | n/a | n/a |
+| 3 | Near only | 0 | 0 | n/a | n/a | 0 of 399 (0.00%) | 8.94% | 8.94% |
+| 3 | Double talk | 0 | 0 | 25 of 483 (5.18%) | 25 of 483 (5.18%) | 0 of 364 (0.00%) | 21.02% | 21.02% |
+
+Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
+
+#### Them (call source)
+
+| Run | Far alone WER (echo-only blocks) | Double-talk WER |
+| --- | --- | --- |
+| 1 | 13.59% | 9.94% |
+| 2 | 12.62% | 8.90% |
+| 3 | 13.11% | 9.94% |
+
+Median Them WER, far alone across 3 eligible runs: 13.11% (min 12.62%, max 13.59%).
+
+#### Lag during a call
+
+Spoken to visible, as in the live benchmark, per source, with preview growth counted per source. Samples pooled across finished pairs. The run waits after Stop until every chunk is final and the page shows every final line, so tail lines are included.
+
+| Run | Source | Preview p50 | Preview p95 | Preview max | Preview n | Final p50 | Final p95 | Final max | Final n |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Me | 3.37 s | 3.97 s | 4.38 s | 289 | 15.42 s | 27.74 s | 31.92 s | 133 |
+| 1 | Them | 2.62 s | 3.36 s | 3.56 s | 271 | 13.15 s | 21.43 s | 23.82 s | 121 |
+| 2 | Me | 3.38 s | 3.99 s | 4.35 s | 294 | 15.50 s | 27.71 s | 31.93 s | 132 |
+| 2 | Them | 2.24 s | 3.15 s | 3.59 s | 267 | 13.18 s | 21.48 s | 23.83 s | 120 |
+| 3 | Me | 3.38 s | 4.01 s | 4.42 s | 302 | 15.62 s | 27.75 s | 31.94 s | 132 |
+| 3 | Them | 2.70 s | 3.39 s | 4.58 s | 275 | 13.18 s | 21.44 s | 23.82 s | 120 |
+
+| Run | Me finals first shown after Stop | Them finals first shown after Stop |
+| --- | --- | --- |
+| 1 | 29 | 24 |
+| 2 | 29 | 24 |
+| 3 | 29 | 24 |
+
+Median Me preview p50 across 3 eligible runs: 3.38 s (min 3.37 s, max 3.38 s).
+Median Me final p50 across 3 eligible runs: 15.50 s (min 15.42 s, max 15.62 s).
+Median Them preview p50 across 3 eligible runs: 2.62 s (min 2.24 s, max 2.70 s).
+Median Them final p50 across 3 eligible runs: 13.18 s (min 13.15 s, max 13.18 s).
+
+#### Echo cancellation
+
+From the server: microphone frames processed by the AEC worker (`echoStats`), the share of their samples that had call audio to cancel against, the wait for that audio, worker failures, and the once-per-recording notices that AEC passed raw audio.
+
+| Run | Pair | Mic frames | Through AEC | Reference covered | Mean wait | Max wait | Worker failures | Raw notices |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | ES2004a.B+IS1009a.A | 131 | 128 | 99.94% | 1005 ms | 1038 ms | 0 | 0 |
+| 1 | IS1009a.D+TS3003a.A | 131 | 129 | 99.43% | 998 ms | 1028 ms | 0 | 0 |
+| 1 | TS3003a.D+EN2002a.C | 131 | 129 | 99.94% | 998 ms | 1026 ms | 0 | 0 |
+| 1 | EN2002a.B+ES2004b.D | 131 | 129 | 99.43% | 998 ms | 1028 ms | 0 | 0 |
+| 1 | ES2004b.A+IS1009b.C | 131 | 129 | 99.44% | 999 ms | 1028 ms | 0 | 0 |
+| 2 | ES2004a.B+IS1009a.A | 131 | 128 | 99.95% | 1006 ms | 1028 ms | 0 | 0 |
+| 2 | IS1009a.D+TS3003a.A | 131 | 129 | 99.32% | 992 ms | 1022 ms | 0 | 0 |
+| 2 | TS3003a.D+EN2002a.C | 131 | 128 | 99.93% | 1004 ms | 1028 ms | 0 | 0 |
+| 2 | EN2002a.B+ES2004b.D | 131 | 129 | 99.94% | 998 ms | 1029 ms | 0 | 0 |
+| 2 | ES2004b.A+IS1009b.C | 131 | 129 | 99.44% | 999 ms | 1029 ms | 0 | 0 |
+| 3 | ES2004a.B+IS1009a.A | 131 | 129 | 99.42% | 998 ms | 1027 ms | 0 | 0 |
+| 3 | IS1009a.D+TS3003a.A | 131 | 129 | 99.44% | 999 ms | 1026 ms | 0 | 0 |
+| 3 | TS3003a.D+EN2002a.C | 131 | 128 | 99.95% | 1006 ms | 1028 ms | 0 | 0 |
+| 3 | EN2002a.B+ES2004b.D | 131 | 129 | 99.94% | 998 ms | 1025 ms | 0 | 0 |
+| 3 | ES2004b.A+IS1009b.C | 131 | 129 | 99.43% | 999 ms | 1028 ms | 0 | 0 |
+
+#### Per pair
+
+| Run | Pair | Echo | Me near-only WER | Me double-talk WER | Far words in Me, echo only | Them WER, far alone | Genuine Me words hidden | Me final p50 | Them final p50 | Error |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 5.68% | 22.64% | 0 of 83 (0.00%) | 9.64% | 0 of 169 (0.00%) | 15.01 s | 13.88 s |  |
+| 1 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 12.66% | 19.18% | 0 of 59 (0.00%) | 8.47% | 0 of 131 (0.00%) | 15.69 s | 12.46 s |  |
+| 1 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 6.45% | 12.20% | 1 of 100 (1.00%) | 5.00% | 0 of 163 (0.00%) | 15.31 s | 13.07 s |  |
+| 1 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 11.76% | 14.29% | 5 of 83 (6.02%) | 10.84% | 0 of 145 (0.00%) | 16.88 s | 12.25 s |  |
+| 1 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 23.66% | 0 of 87 (0.00%) | 33.33% | 0 of 161 (0.00%) | 15.42 s | 13.34 s |  |
+| 2 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 3.41% | 27.36% | 0 of 83 (0.00%) | 8.43% | 0 of 166 (0.00%) | 15.00 s | 14.39 s |  |
+| 2 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 11.39% | 24.66% | 0 of 59 (0.00%) | 5.08% | 0 of 128 (0.00%) | 15.72 s | 12.56 s |  |
+| 2 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 5.38% | 7.32% | 0 of 100 (0.00%) | 4.00% | 0 of 168 (0.00%) | 13.74 s | 13.08 s |  |
+| 2 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 11.76% | 12.24% | 0 of 83 (0.00%) | 10.84% | 0 of 147 (0.00%) | 16.76 s | 12.27 s |  |
+| 2 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 24.73% | 0 of 87 (0.00%) | 33.33% | 0 of 160 (0.00%) | 15.42 s | 13.25 s |  |
+| 3 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 3.41% | 26.42% | 0 of 83 (0.00%) | 9.64% | 0 of 168 (0.00%) | 15.03 s | 14.40 s |  |
+| 3 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 12.66% | 24.66% | 0 of 59 (0.00%) | 5.08% | 0 of 127 (0.00%) | 16.06 s | 12.47 s |  |
+| 3 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 6.45% | 14.63% | 0 of 100 (0.00%) | 6.00% | 0 of 162 (0.00%) | 14.54 s | 13.07 s |  |
+| 3 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 8.82% | 12.24% | 5 of 83 (6.02%) | 9.64% | 0 of 148 (0.00%) | 16.92 s | 12.22 s |  |
+| 3 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 26.88% | 0 of 87 (0.00%) | 33.33% | 0 of 158 (0.00%) | 15.42 s | 13.34 s |  |
+
+Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
+
+##### Diagnostic: reached server to available on server
+
+LagMeter on the segments snapshot, from each source's PCM upload HTTP 201, pooled across finished pairs. A final counts when the line reaches the snapshot, which can be before the page shows it.
+
+| Run | Source | Preview p50 | Preview p95 | Preview max | Preview n | Final p50 | Final p95 | Final max | Final n |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Me | 2.31 s | 2.43 s | 6.41 s | 598 | 14.15 s | 24.10 s | 26.31 s | 133 |
+| 1 | Them | 1.31 s | 1.52 s | 6.55 s | 616 | 12.07 s | 20.81 s | 22.91 s | 121 |
+| 2 | Me | 2.32 s | 2.43 s | 6.64 s | 597 | 14.41 s | 24.12 s | 26.09 s | 132 |
+| 2 | Them | 1.30 s | 1.53 s | 5.63 s | 617 | 12.46 s | 20.91 s | 22.89 s | 120 |
+| 3 | Me | 2.31 s | 2.43 s | 6.64 s | 598 | 14.74 s | 23.67 s | 26.34 s | 132 |
+| 3 | Them | 1.31 s | 1.54 s | 5.59 s | 619 | 12.38 s | 20.89 s | 22.78 s | 120 |
+
+### Call cohort 2 — control, no echo
+
+3 runs; 3 finished.
+
+Normalizer: hearalong-2. Scoring commit: 635157607c97567d02e36de845d32d4819510b75; scoring dirty: false.
+
+Condition: 6 blocks of 20 s per pair; room lp3k-direct-3refl-diffuse20to80ms-tau20-seed7; pairs 1:ES2004a.B+IS1009a.A, 2:IS1009a.D+TS3003a.A, 3:TS3003a.D+EN2002a.C, 4:EN2002a.B+ES2004b.D, 5:ES2004b.A+IS1009b.C.
+
+| Run | Kind | Date | Label | Model basename | Model SHA-256 | Model bytes | Commit | Dirty | Node | macOS | Chip | RAM | Logical cores | Failed chunks | Unfinished chunks |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | call | 2026-11-23T07:10:56.934Z | call run 3 | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | 635157607c97567d02e36de845d32d4819510b75 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+| 2 | call | 2026-11-23T06:48:26.682Z | call run 2 | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | 635157607c97567d02e36de845d32d4819510b75 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+| 3 | call | 2026-11-23T06:25:59.027Z | call run 1 | parakeet-unified-en-0.6b-Q8_0.gguf | 4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795 | 731357568 | 635157607c97567d02e36de845d32d4819510b75 | false | v22.22.2 | 27.0.1 | Apple M2 | 16.0 GiB | 8 | 0 | 0 |
+
+#### Me (microphone)
+
+Finished pairs only, counts summed. The shown view is what the transcript displays after the read-time echo rule.
+
+| Run | Pairs | Near-only WER | Double-talk WER | Me words in echo-only blocks | Far words in Me, echo only | Far words in Me, double talk | Genuine Me words hidden |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 5 | 9.88% | 9.96% | 0 | 0 of 412 (0.00%) | 25 of 483 (5.18%) | 0 of 810 (0.00%) |
+| 2 | 5 | 11.53% | 8.63% | 0 | 0 of 412 (0.00%) | 25 of 483 (5.18%) | 0 of 809 (0.00%) |
+| 3 | 5 | 9.65% | 8.63% | 5 | 1 of 412 (0.24%) | 25 of 483 (5.18%) | 0 of 817 (0.00%) |
+
+Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
+
+Median Me near-only WER across 3 eligible runs: 9.88% (min 9.65%, max 11.53%).
+Median Me double-talk WER across 3 eligible runs: 8.63% (min 8.63%, max 9.96%).
+Median far-word rate in Me, echo only across 3 eligible runs: 0.00% (min 0.00%, max 0.24%).
+
+#### Read-time echo rule
+
+Raw is every saved Me line; shown is after the rule. Hidden genuine words are near-speaker reference words recognized correctly in a hidden Me line.
+
+| Run | Talk state | Me lines hidden | Me words hidden | Far words in Me, raw | Far words in Me, shown | Genuine Me words hidden | Me WER raw | Me WER shown |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Echo only | 0 | 0 | 0 of 412 (0.00%) | 0 of 412 (0.00%) | 0 | n/a | n/a |
+| 1 | Near only | 0 | 0 | n/a | n/a | 0 of 395 (0.00%) | 9.88% | 9.88% |
+| 1 | Double talk | 0 | 0 | 25 of 483 (5.18%) | 25 of 483 (5.18%) | 0 of 415 (0.00%) | 9.96% | 9.96% |
+| 2 | Echo only | 0 | 0 | 0 of 412 (0.00%) | 0 of 412 (0.00%) | 0 | n/a | n/a |
+| 2 | Near only | 0 | 0 | n/a | n/a | 0 of 388 (0.00%) | 11.53% | 11.53% |
+| 2 | Double talk | 0 | 0 | 25 of 483 (5.18%) | 25 of 483 (5.18%) | 0 of 421 (0.00%) | 8.63% | 8.63% |
+| 3 | Echo only | 0 | 0 | 1 of 412 (0.24%) | 1 of 412 (0.24%) | 0 | n/a | n/a |
+| 3 | Near only | 0 | 0 | n/a | n/a | 0 of 396 (0.00%) | 9.65% | 9.65% |
+| 3 | Double talk | 0 | 0 | 25 of 483 (5.18%) | 25 of 483 (5.18%) | 0 of 421 (0.00%) | 8.63% | 8.63% |
+
+Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
+
+#### Them (call source)
+
+| Run | Far alone WER (echo-only blocks) | Double-talk WER |
+| --- | --- | --- |
+| 1 | 12.14% | 9.94% |
+| 2 | 11.89% | 9.11% |
+| 3 | 12.14% | 9.52% |
+
+Median Them WER, far alone across 3 eligible runs: 12.14% (min 11.89%, max 12.14%).
+
+#### Lag during a call
+
+Spoken to visible, as in the live benchmark, per source, with preview growth counted per source. Samples pooled across finished pairs. The run waits after Stop until every chunk is final and the page shows every final line, so tail lines are included.
+
+| Run | Source | Preview p50 | Preview p95 | Preview max | Preview n | Final p50 | Final p95 | Final max | Final n |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Me | 3.34 s | 3.94 s | 4.30 s | 299 | 15.30 s | 28.31 s | 30.79 s | 127 |
+| 1 | Them | 2.67 s | 3.39 s | 4.59 s | 271 | 12.99 s | 21.47 s | 23.76 s | 118 |
+| 2 | Me | 3.33 s | 3.97 s | 5.04 s | 301 | 16.39 s | 27.29 s | 30.78 s | 123 |
+| 2 | Them | 2.70 s | 3.42 s | 4.58 s | 279 | 13.17 s | 21.66 s | 23.76 s | 117 |
+| 3 | Me | 3.34 s | 3.98 s | 6.74 s | 305 | 15.71 s | 28.13 s | 30.76 s | 126 |
+| 3 | Them | 2.67 s | 3.35 s | 3.83 s | 273 | 13.03 s | 21.62 s | 23.82 s | 121 |
+
+| Run | Me finals first shown after Stop | Them finals first shown after Stop |
+| --- | --- | --- |
+| 1 | 29 | 24 |
+| 2 | 28 | 24 |
+| 3 | 28 | 24 |
+
+Median Me preview p50 across 3 eligible runs: 3.34 s (min 3.33 s, max 3.34 s).
+Median Me final p50 across 3 eligible runs: 15.71 s (min 15.30 s, max 16.39 s).
+Median Them preview p50 across 3 eligible runs: 2.67 s (min 2.67 s, max 2.70 s).
+Median Them final p50 across 3 eligible runs: 13.03 s (min 12.99 s, max 13.17 s).
+
+#### Echo cancellation
+
+From the server: microphone frames processed by the AEC worker (`echoStats`), the share of their samples that had call audio to cancel against, the wait for that audio, worker failures, and the once-per-recording notices that AEC passed raw audio.
+
+| Run | Pair | Mic frames | Through AEC | Reference covered | Mean wait | Max wait | Worker failures | Raw notices |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | ES2004a.B+IS1009a.A | 131 | 129 | 99.44% | 998 ms | 1030 ms | 0 | 0 |
+| 1 | IS1009a.D+TS3003a.A | 131 | 129 | 99.43% | 998 ms | 1027 ms | 0 | 0 |
+| 1 | TS3003a.D+EN2002a.C | 131 | 129 | 99.44% | 998 ms | 1028 ms | 0 | 0 |
+| 1 | EN2002a.B+ES2004b.D | 131 | 129 | 99.44% | 998 ms | 1031 ms | 0 | 0 |
+| 1 | ES2004b.A+IS1009b.C | 131 | 129 | 99.43% | 998 ms | 1028 ms | 0 | 0 |
+| 2 | ES2004a.B+IS1009a.A | 131 | 129 | 99.43% | 998 ms | 1031 ms | 0 | 0 |
+| 2 | IS1009a.D+TS3003a.A | 131 | 129 | 99.94% | 999 ms | 1028 ms | 0 | 0 |
+| 2 | TS3003a.D+EN2002a.C | 131 | 129 | 99.43% | 997 ms | 1028 ms | 0 | 0 |
+| 2 | EN2002a.B+ES2004b.D | 131 | 129 | 99.44% | 998 ms | 1031 ms | 0 | 0 |
+| 2 | ES2004b.A+IS1009b.C | 131 | 128 | 99.94% | 1006 ms | 1030 ms | 0 | 0 |
+| 3 | ES2004a.B+IS1009a.A | 131 | 129 | 99.43% | 998 ms | 1032 ms | 0 | 0 |
+| 3 | IS1009a.D+TS3003a.A | 131 | 129 | 99.40% | 997 ms | 1029 ms | 0 | 0 |
+| 3 | TS3003a.D+EN2002a.C | 131 | 129 | 99.45% | 998 ms | 1028 ms | 0 | 0 |
+| 3 | EN2002a.B+ES2004b.D | 131 | 128 | 99.94% | 1005 ms | 1026 ms | 0 | 0 |
+| 3 | ES2004b.A+IS1009b.C | 131 | 129 | 99.44% | 999 ms | 1041 ms | 0 | 0 |
+
+#### Per pair
+
+| Run | Pair | Echo | Me near-only WER | Me double-talk WER | Far words in Me, echo only | Them WER, far alone | Genuine Me words hidden | Me final p50 | Them final p50 | Error |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 6.82% | 12.26% | 0 of 83 (0.00%) | 9.64% | 0 of 177 (0.00%) | 18.14 s | 13.54 s |  |
+| 1 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 12.66% | 17.81% | 0 of 59 (0.00%) | 8.47% | 0 of 133 (0.00%) | 16.05 s | 12.47 s |  |
+| 1 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 6.45% | 4.88% | 0 of 100 (0.00%) | 5.00% | 0 of 170 (0.00%) | 14.54 s | 13.08 s |  |
+| 1 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 10.29% | 7.14% | 0 of 83 (0.00%) | 9.64% | 0 of 153 (0.00%) | 14.30 s | 12.23 s |  |
+| 1 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 8.60% | 0 of 87 (0.00%) | 27.59% | 0 of 177 (0.00%) | 14.82 s | 13.14 s |  |
+| 2 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 6.82% | 10.38% | 0 of 83 (0.00%) | 10.84% | 0 of 179 (0.00%) | 19.50 s | 14.46 s |  |
+| 2 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 11.39% | 13.70% | 0 of 59 (0.00%) | 5.08% | 0 of 137 (0.00%) | 16.07 s | 12.66 s |  |
+| 2 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 15.05% | 4.88% | 0 of 100 (0.00%) | 5.00% | 0 of 162 (0.00%) | 16.59 s | 13.03 s |  |
+| 2 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 10.29% | 5.10% | 0 of 83 (0.00%) | 10.84% | 0 of 155 (0.00%) | 14.00 s | 12.22 s |  |
+| 2 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 13.40% | 9.68% | 0 of 87 (0.00%) | 26.44% | 0 of 176 (0.00%) | 17.42 s | 13.17 s |  |
+| 3 | ES2004a.B+IS1009a.A | 30 ms, -6 dB | 6.82% | 8.49% | 0 of 83 (0.00%) | 9.64% | 0 of 181 (0.00%) | 18.18 s | 13.55 s |  |
+| 3 | IS1009a.D+TS3003a.A | 50 ms, -8 dB | 12.66% | 16.44% | 0 of 59 (0.00%) | 8.47% | 0 of 134 (0.00%) | 16.04 s | 12.02 s |  |
+| 3 | TS3003a.D+EN2002a.C | 70 ms, -9 dB | 6.45% | 6.10% | 1 of 100 (1.00%) | 5.00% | 0 of 169 (0.00%) | 14.71 s | 13.08 s |  |
+| 3 | EN2002a.B+ES2004b.D | 100 ms, -10 dB | 10.29% | 5.10% | 0 of 83 (0.00%) | 10.84% | 0 of 155 (0.00%) | 13.98 s | 12.26 s |  |
+| 3 | ES2004b.A+IS1009b.C | 120 ms, -12 dB | 12.37% | 8.60% | 0 of 87 (0.00%) | 26.44% | 0 of 178 (0.00%) | 14.82 s | 13.34 s |  |
+
+Both counts run slightly high: "far words in Me" in double talk can include a near word that matches a far word, and "genuine Me words" can include a leaked far word that matches a near reference word.
+
+##### Diagnostic: reached server to available on server
+
+LagMeter on the segments snapshot, from each source's PCM upload HTTP 201, pooled across finished pairs. A final counts when the line reaches the snapshot, which can be before the page shows it.
+
+| Run | Source | Preview p50 | Preview p95 | Preview max | Preview n | Final p50 | Final p95 | Final max | Final n |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | Me | 2.32 s | 2.45 s | 6.58 s | 604 | 14.07 s | 23.18 s | 27.10 s | 127 |
+| 1 | Them | 1.31 s | 1.56 s | 6.57 s | 618 | 11.99 s | 20.99 s | 22.79 s | 118 |
+| 2 | Me | 2.32 s | 2.78 s | 6.53 s | 624 | 15.23 s | 24.17 s | 27.09 s | 123 |
+| 2 | Them | 1.31 s | 1.55 s | 6.53 s | 617 | 12.10 s | 20.82 s | 22.79 s | 117 |
+| 3 | Me | 2.32 s | 2.44 s | 6.46 s | 604 | 14.79 s | 23.90 s | 27.31 s | 126 |
+| 3 | Them | 1.31 s | 1.56 s | 6.56 s | 617 | 12.05 s | 20.89 s | 22.79 s | 121 |
+
+### Echo against control 1 (call cohorts 1 and 2)
+
+Me WER with the simulated echo and in the control (the same microphone without echo, AEC still running), from the same runs. 6 blocks per pair; pairs 1:ES2004a.B+IS1009a.A, 2:IS1009a.D+TS3003a.A, 3:TS3003a.D+EN2002a.C, 4:EN2002a.B+ES2004b.D, 5:ES2004b.A+IS1009b.C. The difference is echo minus control, in percentage points.
+
+| Batch | Near only, echo | Near only, control | Near only, difference | Double talk, echo | Double talk, control | Double talk, difference |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-23T07-10-56-934Z | 9.88% | 9.88% | +0.00 pts | 18.58% | 9.96% | +8.63 pts |
+| 2026-11-23T06-48-26-682Z | 8.94% | 11.53% | -2.59 pts | 19.47% | 8.63% | +10.84 pts |
+| 2026-11-23T06-25-59-027Z | 8.94% | 9.65% | -0.71 pts | 21.02% | 8.63% | +12.39 pts |
+
+Median near-only difference across 3 eligible runs: -0.71 pts (min -2.59 pts, max +0.00 pts).
+Median double-talk difference across 3 eligible runs: +10.84 pts (min +8.63 pts, max +12.39 pts).
+
+#### Per pair
+
+| Batch | Pair | Near only, echo | Near only, control | Near only, difference | Double talk, echo | Double talk, control | Double talk, difference |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-11-23T07-10-56-934Z | ES2004a.B+IS1009a.A | 5.68% | 6.82% | -1.14 pts | 22.64% | 12.26% | +10.38 pts |
+| 2026-11-23T07-10-56-934Z | IS1009a.D+TS3003a.A | 12.66% | 12.66% | +0.00 pts | 19.18% | 17.81% | +1.37 pts |
+| 2026-11-23T07-10-56-934Z | TS3003a.D+EN2002a.C | 6.45% | 6.45% | +0.00 pts | 12.20% | 4.88% | +7.32 pts |
+| 2026-11-23T07-10-56-934Z | EN2002a.B+ES2004b.D | 11.76% | 10.29% | +1.47 pts | 14.29% | 7.14% | +7.14 pts |
+| 2026-11-23T07-10-56-934Z | ES2004b.A+IS1009b.C | 13.40% | 13.40% | +0.00 pts | 23.66% | 8.60% | +15.05 pts |
+| 2026-11-23T06-48-26-682Z | ES2004a.B+IS1009a.A | 3.41% | 6.82% | -3.41 pts | 27.36% | 10.38% | +16.98 pts |
+| 2026-11-23T06-48-26-682Z | IS1009a.D+TS3003a.A | 11.39% | 11.39% | +0.00 pts | 24.66% | 13.70% | +10.96 pts |
+| 2026-11-23T06-48-26-682Z | TS3003a.D+EN2002a.C | 5.38% | 15.05% | -9.68 pts | 7.32% | 4.88% | +2.44 pts |
+| 2026-11-23T06-48-26-682Z | EN2002a.B+ES2004b.D | 11.76% | 10.29% | +1.47 pts | 12.24% | 5.10% | +7.14 pts |
+| 2026-11-23T06-48-26-682Z | ES2004b.A+IS1009b.C | 13.40% | 13.40% | +0.00 pts | 24.73% | 9.68% | +15.05 pts |
+| 2026-11-23T06-25-59-027Z | ES2004a.B+IS1009a.A | 3.41% | 6.82% | -3.41 pts | 26.42% | 8.49% | +17.92 pts |
+| 2026-11-23T06-25-59-027Z | IS1009a.D+TS3003a.A | 12.66% | 12.66% | +0.00 pts | 24.66% | 16.44% | +8.22 pts |
+| 2026-11-23T06-25-59-027Z | TS3003a.D+EN2002a.C | 6.45% | 6.45% | +0.00 pts | 14.63% | 6.10% | +8.54 pts |
+| 2026-11-23T06-25-59-027Z | EN2002a.B+ES2004b.D | 8.82% | 10.29% | -1.47 pts | 12.24% | 5.10% | +7.14 pts |
+| 2026-11-23T06-25-59-027Z | ES2004b.A+IS1009b.C | 13.40% | 12.37% | +1.03 pts | 26.88% | 8.60% | +18.28 pts |
 <!-- bench-call:end -->
