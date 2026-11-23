@@ -44,6 +44,12 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
   .topbar { flex-wrap: nowrap; }
   .topbar-left { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
   .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
+  /* A window just wide enough for one row: the chip (a problem leads it) and Materials cut their ends before the name
+     becomes unreadable. Their minimums fit beside the recording actions from 900 px. */
+  .topbar-left > #live-chip { flex-shrink: 1; min-width: 96px; }
+  /* Only a long "Materials: <file>" label shortens; "Add materials" always fits. Block, so its text can end in "…". */
+  .topbar-left > #open-meeting { flex-shrink: 1; min-width: 112px; display: block; line-height: calc(var(--topbar-button-height) - 2px); }
+  .topbar-left > .meeting-wrap { min-width: 160px; }
   .topbar-right { flex: 0 0 auto; flex-wrap: nowrap; }
 }
 .meeting-select { font: 600 16px var(--sans); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; max-width: 360px; }
@@ -51,7 +57,7 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .chip[hidden] { display: none; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #EEF1F5; color: #3B4657; font-size: 13px; }
 .chip.recording { background: var(--rec-tint); color: #9B1C1C; font-weight: 500; }
-.chip.recording::before, .chip.replay::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
+.chip.recording::before, .chip.replay::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
 .chip.replay { background: var(--accent-tint); color: var(--accent-ink); font-weight: 500; }
 .chip.replay::before { background: var(--accent); }
 
@@ -59,6 +65,8 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .button:hover { border-color: var(--muted); }
 .button.primary { background: var(--accent); border-color: var(--accent); color: #FFF; }
 .button.primary:hover { background: var(--accent-ink); }
+/* A blue button's own edge hides the browser's thin ring: the same ring as the meeting name, set off from the button. */
+.button.primary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .button:disabled { opacity: .5; cursor: not-allowed; }
 
 .update-bar { flex: none; display: flex; align-items: center; gap: var(--topbar-controls-gap); padding: var(--topbar-pad-y) var(--topbar-pad-x) var(--topbar-pad-y) calc(var(--topbar-pad-x) + var(--meeting-button-pad-x) + var(--meeting-button-border)); background: var(--accent-tint); border-bottom: 1px solid var(--line); }
@@ -95,16 +103,24 @@ body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none
 body.layout-compact .divider { display: none; }
 body.layout-compact .wide-only, body.layout-compact #connection { display: none; }
 body.layout-compact .compact-only { display: inline; }
-body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: 12px; --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
-body.layout-compact .topbar { gap: 8px; }
-body.layout-compact .topbar-left { flex: 1 1 auto; flex-wrap: nowrap; min-width: 0; }
+/* The top bar's edges follow the tabs row below it: 8 px in, or the centred 720 px column on a wider window. */
+body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: max(8px, calc((100% - 720px) / 2 + 8px)); --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
+/*
+ * Narrow window: always two rows. Row 1: the meeting (name, then the recording chip). Row 2, using the full width:
+ * Add materials at the left; the recording actions and Settings at the right, in reading (and Tab) order.
+ * Row 1 never wraps: the name grows from nothing up to its full length and the chip keeps its text until it would leave
+ * the name less than 160 px; past that both end in "…".
+ */
+body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-start; column-gap: 8px; row-gap: 4px; }
+body.layout-compact .topbar-left { display: contents; }
+body.layout-compact .meeting-wrap { order: 1; flex: 1 1 0; min-width: 0; max-width: max-content; }
+/* Renaming: the field takes the whole row (beside the chip while recording). */
+body.layout-compact .meeting-wrap:has(> #meeting-name:not([hidden])) { max-width: none; }
+body.layout-compact #live-chip { order: 2; flex: 0 1 auto; max-width: calc(100% - 168px); }
+body.layout-compact .topbar::after { content: ""; order: 3; flex: 0 0 100%; height: 0; }
+body.layout-compact #open-meeting { order: 4; margin-right: auto; }
+body.layout-compact .topbar-right { order: 5; flex: 0 0 auto; flex-wrap: nowrap; margin-left: auto; }
 body.layout-compact .meeting-select { flex: 1 1 auto; min-width: 0; max-width: 480px; }
-body.layout-compact .topbar-right { flex: 0 1 auto; justify-content: flex-end; margin-left: auto; }
-/* Two rows only when one does not fit (a column beside a call window, a phone). */
-@media (max-width: 600px) {
-  body.layout-compact .topbar-left { flex-basis: 100%; }
-  body.layout-compact .topbar-right { flex-basis: 100%; }
-}
 body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding: 0; }
 .topbar .button, .update-bar .button { min-height: var(--topbar-button-height); }
 body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 0; padding: 6px max(8px, calc((100% - 640px) / 2)) 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
@@ -423,7 +439,7 @@ body.layout-compact .start-wrap:not(#add-call-wrap) .start-menu { left: auto; ri
 .icon-button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; flex: 0 0 auto; }
 .icon-button:hover, .icon-button:focus-visible { border-color: var(--line-strong); color: var(--ink); }
 .icon-button:disabled { opacity: .4; cursor: not-allowed; }
-.meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); min-width: 0; }
+.meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); min-width: 0; min-height: var(--topbar-button-height); }
 body.layout-compact .meeting-name { flex: 1 1 auto; width: auto; }
 body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 
@@ -454,6 +470,10 @@ body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 .menu-item { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; min-height: 44px; padding: 6px 10px; border: none; border-radius: 8px; background: transparent; font: 14px var(--sans); color: var(--ink); text-align: left; cursor: pointer; }
 .menu-item.strong { font-weight: 600; color: var(--accent-ink); }
 .menu-item:hover, .menu-item:focus-visible { background: var(--accent-tint); outline: none; }
+/* The current meeting is already tinted: keyboard focus also draws a ring, so it shows there too. Menus inside Plans
+   keep the Plans outline instead (one ring, not two). */
+.menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.plans .menu-item:focus-visible { box-shadow: none; }
 .menu-item:disabled { opacity: .45; cursor: not-allowed; background: transparent; }
 .menu-item { position: relative; }
 .menu-item[aria-checked="true"] { font-weight: 600; background: var(--accent-tint); color: var(--accent-ink); padding-right: 30px; }
@@ -491,6 +511,7 @@ a.button[aria-disabled="true"] { opacity: .45; pointer-events: none; }
 .replay-dialog:not([open]) { display: none; }
 .replay-dialog::backdrop { background: rgba(24,33,47,.28); }
 body.layout-compact .meeting-button { flex: 1 1 auto; max-width: 480px; }
+.meeting-button > svg { flex: none; }
 body.layout-compact .chip-button { max-width: 120px; }
 
 .material-list:empty::before { content: "No materials yet. Add a project folder or file so answers and the glossary can use it (read-only)."; display: block; font-size: 13px; color: var(--muted); }
@@ -586,9 +607,8 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .meeting-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .live-draft time { opacity: 1; color: var(--muted); }
 input[type="checkbox"] { accent-color: var(--accent); }
-/* The recording chip never wraps: the details are in its tooltip on narrow screens. */
+/* The recording chip never wraps: the details are in its tooltip on narrow screens (its width there: the top bar rules). */
 .chip { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-body.layout-compact #live-chip { max-width: 40vw; }
 
 /* One control height: 40 px (44 px touch targets in compact). */
 .chip-button { min-height: 40px; border-radius: 8px; padding: 0 12px; }
@@ -601,10 +621,8 @@ body.layout-compact .compact-tabs { padding-left: max(8px, calc((100% - 720px) /
 .row[hidden] { display: none; }
 .nav-divider { display: none; }
 @media (max-width: 600px) {
-  /* A phone: two rows leave room for both recording actions; materials are in Settings. */
+  /* A phone: row 2 keeps its room for the recording actions; materials are in Settings. */
   body.layout-compact #open-meeting { display: none; }
-  body.layout-compact .topbar-left, body.layout-compact .topbar-right { flex: 1 1 100%; }
-  body.layout-compact .topbar-right { justify-content: flex-end; }
 }
 @media (max-width: 640px) {
   .settings-nav .nav-divider { display: block; flex: 0 0 100%; height: 0; border-top: 1px solid var(--line); margin: 2px 0; }
