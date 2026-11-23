@@ -64,6 +64,7 @@ function macho(path) {
   cpSync(join(nodeRoot, 'bin/node'), join(bin, 'node'));
   cpSync(join(nodeRoot, 'LICENSE'), join(resources, 'NODE-LICENSE'));
   run('/usr/bin/swiftc', ['-O', '-target', 'arm64-apple-macosx26.0', '-module-cache-path', join(cache, 'swift'), '-o', join(bin, 'pdf-text'), join(source, 'native/pdf-text.swift')]);
+  run('/usr/bin/swiftc', ['-O', '-target', 'arm64-apple-macosx26.0', '-module-cache-path', join(cache, 'swift'), '-o', join(bin, 'footprint'), join(source, 'native/footprint.swift')]);
   run('/usr/bin/swiftc', ['-O', '-target', 'arm64-apple-macosx26.0', '-module-cache-path', join(cache, 'swift'), '-o', join(bin, 'hearalong-capture'),
     ...['AppAudio.swift', 'AudioPipeline.swift', 'AppCaptureClient.swift', 'capture-main.swift'].map(file => join(source, 'launcher', file))]);
   const iconset = join(out, 'AppIcon.iconset'); mkdirSync(iconset);

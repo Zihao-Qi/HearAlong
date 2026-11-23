@@ -2,16 +2,26 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { execFile, spawn } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { spawnGated, type Gated } from './process-groups.ts';
 import { calculationEnv, sandboxed } from './tool-sandbox.ts';
 
 const MAX_BYTES = 20_000;
-const HEAP_MB = 256, FOOTPRINT_MB = 512, MEMORY_POLL_MS = 100, MEMORY_CHECK_MS = 250, MEMORY_PROBE_MS = 5000;
+const HEAP_MB = 256, FOOTPRINT_MB = 512, MEMORY_POLL_MS = 100, MEMORY_CHECK_MS = 250, MEMORY_PROBE_MS = 5000, READER_MS = 50;
+
+/**
+ * The app's footprint reader (native/footprint.swift; the desktop app sets HEARALONG_FOOTPRINT): the same number as top's
+ * MEM, every 50 ms from one process, instead of one ~0.5 s top run per sample (#46). Without it the guard samples with top.
+ */
+export function footprintReader(env: NodeJS.ProcessEnv = process.env): string | null {
+  const path = env.HEARALONG_FOOTPRINT;
+  if (!path || !isAbsolute(path)) return null;
+  try { accessSync(path, constants.X_OK); return path; } catch { return null; }
+}
 const RUNNER = realpathSync(fileURLToPath(new URL('./calculate-runner.cjs', import.meta.url)));
 
 /** Only the library and its dependency closure, never all of node_modules or the application. */
@@ -118,7 +128,7 @@ export default function calculate(pi: ExtensionAPI) {
         let paused = false, codeSent = false, killedByGuard = false, lastMemorySample: number | undefined;
         let memoryError: string | undefined, memorySignalError: string | undefined;
         let memoryTimer: NodeJS.Timeout | undefined, checkTimer: NodeJS.Timeout | undefined;
-        let memoryProbe: ReturnType<typeof execFile> | undefined;
+        let memoryProbe: ReturnType<typeof execFile> | undefined, memoryReader: ReturnType<typeof spawn> | undefined;
         if (child.pid) groups.add(child.pid);
         // SIGKILL also ends stopped members, including the recording gate and its sentinel.
         const stop = () => { if (stopping) return; stopping = true; if (child.pid) killedByGuard = killGroup(child.pid); };
@@ -131,27 +141,58 @@ export default function calculate(pi: ExtensionAPI) {
         // Stock macOS top's MEM is physical footprint, as in Activity Monitor. Sample from the trusted parent.
         // -F/-R avoid framework/map walks. Probes may take 5 s, but never extend the 250 ms run window.
         // Measured top latency was 58–839 ms: slow samples pause work rather than killing it or leaving it unchecked.
+        const ended = () => finished || stopping || child.exitCode !== null || child.signalCode !== null || !child.pid;
+        /** One valid reading: over the limit stops the group; under it, the group may run for the next 250 ms. */
+        const sampled = (bytes: number): boolean => {
+          if (bytes > FOOTPRINT_MB * 1024 * 1024) { memoryExceeded = true; stop(); return false; }
+          lastMemorySample = performance.now();
+          clearTimeout(checkTimer);
+          if (paused) {
+            try { process.kill(-child.pid!, 'SIGCONT'); paused = false; }
+            catch { memorySignalError = 'could not resume calculation after memory check'; stop(); return false; }
+          }
+          checkTimer = setTimeout(pause, MEMORY_CHECK_MS);
+          // Neither the recording gate nor sandbox-exec can evaluate a snippet before stdin is sent.
+          if (!codeSent) { codeSent = true; child.stdin!.end(params.code); }
+          return true;
+        };
         const sampleMemory = () => {
-          if (finished || stopping || child.exitCode !== null || child.signalCode !== null || !child.pid) return;
+          if (ended()) return;
           memoryProbe = execFile('/usr/bin/top', ['-l', '1', '-F', '-R', '-stats', 'pid,mem', '-pid', String(child.pid)], { env: { LC_ALL: 'C' }, timeout: MEMORY_PROBE_MS }, (error, output) => {
             memoryProbe = undefined;
-            if (finished || stopping || child.exitCode !== null || child.signalCode !== null) return;
+            if (ended()) return;
             const bytes = physicalFootprintBytes(String(output), child.pid!);
             if (error || bytes === null) {
               pause();
               memoryTimer = setTimeout(sampleMemory, MEMORY_POLL_MS); return;
             }
-            if (bytes > FOOTPRINT_MB * 1024 * 1024) { memoryExceeded = true; stop(); return; }
-            lastMemorySample = performance.now();
-            clearTimeout(checkTimer);
-            if (paused) {
-              try { process.kill(-child.pid!, 'SIGCONT'); paused = false; }
-              catch { memorySignalError = 'could not resume calculation after memory check'; stop(); return; }
+            if (sampled(bytes)) memoryTimer = setTimeout(sampleMemory, MEMORY_POLL_MS);
+          });
+        };
+        // The reader runs outside the calculation's process group, so it keeps reading while the group is paused.
+        // Anything unexpected from it (no start, a bad line, an error exit) pauses the group and hands over to top;
+        // a clean exit means the calculation is gone. Readings are only ever trusted as fresh as they arrive.
+        const readMemory = (reader: string) => {
+          let text = '', handedOver = false;
+          const readerProcess = memoryReader = spawn(reader, [String(child.pid), String(READER_MS)], { env: {}, stdio: ['ignore', 'pipe', 'ignore'] });
+          const handOver = () => {
+            if (handedOver) return;
+            handedOver = true; memoryReader = undefined; readerProcess.kill('SIGKILL');
+            if (!ended()) { pause(); sampleMemory(); }
+          };
+          readerProcess.on('error', handOver);
+          readerProcess.on('exit', code => { if (code !== 0) handOver(); else memoryReader = undefined; });
+          readerProcess.stdout!.setEncoding('utf8');
+          readerProcess.stdout!.on('data', (part: string) => {
+            if (handedOver || ended()) return;
+            const lines = (text + part).split('\n');
+            text = lines.pop()!;
+            if (text.length > 24) { handOver(); return; }
+            for (const line of lines) {
+              const bytes = /^[1-9]\d{0,15}$/.test(line) ? Number(line) : NaN;
+              if (!Number.isSafeInteger(bytes)) { handOver(); return; }
+              if (!sampled(bytes)) return;
             }
-            checkTimer = setTimeout(pause, MEMORY_CHECK_MS);
-            // Neither the recording gate nor sandbox-exec can evaluate a snippet before stdin is sent.
-            if (!codeSent) { codeSent = true; child.stdin!.end(params.code); }
-            memoryTimer = setTimeout(sampleMemory, MEMORY_POLL_MS);
           });
         };
         const timer = setTimeout(() => {
@@ -161,7 +202,7 @@ export default function calculate(pi: ExtensionAPI) {
         }, runMs);
         const finish = (value: Outcome) => {
           if (finished) return;
-          finished = true; clearTimeout(timer); clearTimeout(memoryTimer); clearTimeout(checkTimer); memoryProbe?.kill();
+          finished = true; clearTimeout(timer); clearTimeout(memoryTimer); clearTimeout(checkTimer); memoryProbe?.kill(); memoryReader?.kill('SIGKILL');
           signal?.removeEventListener('abort', stop); stop();
           // macOS can reject STOP/CONT on an unreaped zombie. Kill immediately, but use the reaped outcome:
           // the permission-restricted unrecorded child cannot leave descendants. If no KILL was delivered and its exit
@@ -177,7 +218,11 @@ export default function calculate(pi: ExtensionAPI) {
         child.on('exit', stop); // also ends the recording gate's sentinel
         child.on('close', (code, sig) => finish({ code, signal: sig, timedOut }));
         if (signal?.aborted) stop();
-        else { pause(); gated?.release(); sampleMemory(); }
+        else {
+          pause(); gated?.release();
+          const reader = footprintReader();
+          if (reader) readMemory(reader); else sampleMemory();
+        }
       });
       if (gated) await rm(gated.path, { force: true }).catch(() => {});
       const out = stdout.text(), err = stderr.text();

@@ -117,6 +117,7 @@ function serverEnvironment(config, env = process.env) {
     result.PATH = ['/usr/bin', '/bin', '/usr/sbin', '/sbin', dirname(config.node), '/opt/homebrew/bin', '/usr/local/bin'].join(':');
     result.MEETING_PI = require('node:path').join(config.root, 'node_modules/.bin/pi');
     result.HEARALONG_PDF_TEXT = config.pdfText;
+    result.HEARALONG_FOOTPRINT = config.footprint; // the calculation memory guard's reader (pi-extensions/calculate.ts)
     result.HEARALONG_PACKAGED = '1';
     // Do not let development fixtures or Node injection cross the installed runtime boundary.
     for (const name of Object.keys(result)) {

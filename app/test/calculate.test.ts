@@ -10,7 +10,8 @@ import { existsSync } from 'node:fs';
 import childProcess, { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { readRoots, READ_SCOPE_ENV } from '../pi-extensions/read-scope.ts';
-import { physicalFootprintBytes } from '../pi-extensions/calculate.ts';
+import { footprintReader, physicalFootprintBytes } from '../pi-extensions/calculate.ts';
+import { footprintReaderBinary } from './helpers/footprint-reader.ts';
 
 // Startup includes Seatbelt, Node permissions and loading mathjs; it is not the subject of most tests.
 const RUN_MS = 20_000;
@@ -20,6 +21,9 @@ async function fixture(t: any, ms = RUN_MS, runs = 6, recorded = true) {
   const saved = { ...process.env }, previous = process.cwd();
   Object.assign(process.env, { HOME: join(root, 'home'), MEETING_DATA_DIR: join(root, 'data'), CALCULATE_MS: String(ms), CALCULATE_MAX_RUNS: String(runs), MEETING_PROCESS_DIR: join(root, 'processes'), OPENAI_API_KEY: 'FICTIONAL_SECRET', NODE_OPTIONS: '--inspect=0' });
   delete process.env.CALCULATE_USED;
+  // As in the app: the guard reads memory with the footprint reader. Tests of the top path turn it off (injectedTop, topOnly).
+  const reader = await footprintReaderBinary();
+  if (reader) process.env.HEARALONG_FOOTPRINT = reader; else delete process.env.HEARALONG_FOOTPRINT;
   if (!recorded) { delete process.env.MEETING_PROCESS_DIR; await mkdir(join(root, 'processes'), { mode: 0o700 }); }
   process.chdir(cwd);
   t.after(async () => { process.chdir(previous); process.env = saved; await rm(root, { recursive: true, force: true }); });
@@ -55,7 +59,10 @@ async function fixture(t: any, ms = RUN_MS, runs = 6, recorded = true) {
 }
 
 /** Test-only interception of the trusted parent's built-in execFile; no tool parameter or environment seam. */
+/** The guard's fallback path, used without the footprint reader (running from source, or a reader that failed). */
+function topOnly() { delete process.env.HEARALONG_FOOTPRINT; }
 function injectedTop(t: any, plan: (pid: number, samples: { pid: number; bytes: number | null }[]) => 'slow' | 'failed' | 'small' | 'real') {
+  topOnly();
   const execFile = childProcess.execFile, samples: { pid: number; bytes: number | null }[] = [];
   const delays: { pid: number; state: Promise<string> }[] = [], latencies: number[] = [];
   const mocked = t.mock.method(childProcess, 'execFile', (command: string, args: string[], options: any, callback: any) => {
@@ -180,6 +187,7 @@ for (const racedSignal of ['SIGSTOP', 'SIGCONT'] as const) for (const ending of 
     }
   });
   let samples = 0;
+  topOnly(); // this race is in the top path's sample callback
   const mockedExec = t.mock.method(childProcess, 'execFile', (command: string, args: string[], options: any, callback: any) => {
     if (command !== '/usr/bin/top') return originalExec(command, args, options, callback);
     if (++samples === 1) setImmediate(() => {
@@ -428,6 +436,7 @@ test('calculate has a bounded heap and stops external memory growth before its t
 
 test('calculate monitors physical footprint and fails closed when the probe fails', async t => {
   const f = await fixture(t, 1200), execFile = childProcess.execFile;
+  topOnly(); // the reader's own excess, malformed and failed cases are the footprint reader tests below
   for (const probe of ['excess', 'malformed', 'failed']) {
     let samples = 0;
     const mocked = t.mock.method(childProcess, 'execFile', (command: string, args: string[], options: any, callback: any) => {
@@ -543,7 +552,12 @@ test('calculate parent exit kills a group stopped behind the recording gate', as
   const { pid } = JSON.parse(result.stdout);
   // Register the group for the fixture's full non-zombie/stopped-member check, even on assertion failure.
   try { process.kill(-pid, 0); } catch { /* the parent's exit handler has already killed it */ }
-  assert.throws(() => process.kill(pid, 0), /ESRCH/, JSON.stringify(result));
+  // Killed means gone or a zombie: with its parent gone, launchd reaps it a moment later (later still on a busy Mac),
+  // and kill(pid, 0) still finds a zombie. Wait for that state, within the fixture's own 2 s check; never running or stopped.
+  const state = () => { try { return childProcess.execFileSync('/bin/ps', ['-o', 'stat=', '-p', String(pid)], { env: { LC_ALL: 'C' } }).toString().trim(); } catch { return ''; } };
+  let seen = state();
+  for (let n = 0; n < 40 && seen && !seen.startsWith('Z'); n++) { await new Promise(resolve => setTimeout(resolve, 50)); seen = state(); }
+  assert.match(seen, /^(?:Z.*)?$/, `group member still ${seen}: ${JSON.stringify(result)}`);
 });
 
 let mathAvailable = false;
@@ -575,4 +589,92 @@ test('calculate bundles mathjs including BigNumber and fractions', { skip: mathA
   const f = await fixture(t);
   const result = await f.run('console.log(math.sqrt(81)); console.log(math.add(math.bignumber("0.1"), math.bignumber("0.2")).toString()); console.log(math.add(math.fraction(1,3), math.fraction(1,6)).toFraction())');
   assert.equal(result.isError, undefined, JSON.stringify(result)); assert.equal(result.details.stdout, '9\n0.3\n1/2\n', JSON.stringify(result));
+});
+
+// #46: the footprint reader replaces one ~0.5 s top run per sample; top stays the fallback.
+async function withReader(t: any, f: Awaited<ReturnType<typeof fixture>>, script?: string) {
+  let path: string | null;
+  if (script === undefined) path = await footprintReaderBinary();
+  else { path = join(f.root, 'fake-footprint'); await writeFile(path, `#!/bin/sh\n${script}\n`, { mode: 0o700 }); }
+  if (!path) { t.skip('swiftc is not available to build the footprint reader'); return false; }
+  process.env.HEARALONG_FOOTPRINT = path;
+  return true;
+}
+
+test('footprintReader takes only an absolute, executable HEARALONG_FOOTPRINT', async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'footprint-path-')));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const executable = join(root, 'reader'), plain = join(root, 'plain');
+  await writeFile(executable, '#!/bin/sh\n', { mode: 0o700 }); await writeFile(plain, '', { mode: 0o600 });
+  assert.equal(footprintReader({}), null);
+  assert.equal(footprintReader({ HEARALONG_FOOTPRINT: 'reader' }), null, 'relative');
+  assert.equal(footprintReader({ HEARALONG_FOOTPRINT: join(root, 'missing') }), null);
+  assert.equal(footprintReader({ HEARALONG_FOOTPRINT: plain }), null, 'not executable');
+  assert.equal(footprintReader({ HEARALONG_FOOTPRINT: executable }), executable);
+});
+
+test('the footprint reader reads what top reads, and the guard uses it instead of top', async t => {
+  const bin = await footprintReaderBinary();
+  if (!bin) { t.skip('swiftc is not available'); return; }
+  const holder = spawn(process.execPath, ['-e', 'const b = Buffer.alloc(96 * 1024 * 1024, 1); process.stdout.write("ready"); setInterval(() => b[0]++, 1000)'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  t.after(() => holder.kill('SIGKILL'));
+  await new Promise(resolve => holder.stdout!.once('data', resolve));
+  const read = (command: string, args: string[]) => new Promise<string>((resolve, reject) => childProcess.execFile(command, args, { env: { LC_ALL: 'C' }, timeout: 5000 }, (error, output) => error && !output ? reject(error) : resolve(String(output))));
+  const reader = spawn(bin, [String(holder.pid), '50'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const line = await new Promise<string>(resolve => reader.stdout!.once('data', part => resolve(String(part).split('\n')[0])));
+  reader.kill('SIGKILL');
+  const top = physicalFootprintBytes(await read('/usr/bin/top', ['-l', '1', '-F', '-R', '-stats', 'pid,mem', '-pid', String(holder.pid)]), holder.pid!)!;
+  assert.ok(Math.abs(Number(line) - top) / top < 0.05, `reader ${line} vs top ${top}`);
+  assert.ok(Number(line) > 96 * 1024 * 1024);
+  // A gone process ends the reader cleanly; one it may not read (pid 1) is an error exit.
+  holder.kill('SIGKILL'); await new Promise(resolve => holder.once('exit', resolve));
+  const exit = (pid: number) => new Promise<number | null>(resolve => spawn(bin, [String(pid), '50'], { stdio: 'ignore' }).once('exit', resolve));
+  assert.equal(await exit(holder.pid!), 0);
+  assert.equal(await exit(1), 1);
+
+  const f = await fixture(t);
+  const topRuns = injectedTop(t, () => 'real');
+  if (!await withReader(t, f)) return;
+  const started = performance.now();
+  const result = await f.run('console.log(math.sqrt(16))');
+  assert.equal(result.isError, undefined, JSON.stringify(result));
+  assert.equal(result.details.stdout, '4\n');
+  assert.equal(topRuns.samples.length, 0, 'no top run');
+  t.diagnostic(`one calculation with the reader: ${Math.round(performance.now() - started)} ms`);
+});
+
+test('the reader stops a calculation over the footprint limit', async t => {
+  const f = await fixture(t);
+  if (!await withReader(t, f)) return;
+  const result = await f.run('const kept = []; for (let i = 0; i < 40; i++) kept.push(Buffer.alloc(32 * 1024 * 1024, 1)); setInterval(() => {}, 1000)');
+  assert.equal(result.details.memoryExceeded, true, JSON.stringify(result));
+  assert.match(result.details.status, /memory limit exceeded \(512 MB physical footprint\)/);
+  assert.deepEqual(await readdir(join(f.root, 'processes')), [], JSON.stringify(result));
+});
+
+for (const [name, script] of [
+  ['an unreadable line', 'echo not-a-number; exec /bin/sleep 30'],
+  ['an error exit', 'exit 1'],
+  ['a missing program', null],
+] as const) test(`a reader with ${name} hands the guard over to top`, async t => {
+  const f = await fixture(t);
+  const topRuns = injectedTop(t, () => 'real');
+  if (script === null) process.env.HEARALONG_FOOTPRINT = join(f.root, 'removed-reader');
+  else if (!await withReader(t, f, script)) return;
+  const result = await f.run('console.log(6 * 7)');
+  assert.equal(result.isError, undefined, JSON.stringify(result));
+  assert.equal(result.details.stdout, '42\n');
+  assert.ok(topRuns.samples.some(sample => (sample.bytes ?? 0) > 0), script === null ? 'missing reader: the guard starts with top' : 'top took over');
+});
+
+test('a reader that goes silent leaves the calculation paused, never unchecked', async t => {
+  const f = await fixture(t, 2500);
+  // One valid reading, then nothing: the group may run for 250 ms and then stays stopped until the time limit.
+  if (!await withReader(t, f, 'echo 20000000; exec /bin/sleep 30')) return;
+  const result = await f.run('let n = 0; setInterval(() => console.log(++n), 50)');
+  assert.equal(result.details.timedOut, true, JSON.stringify(result));
+  const printed = result.details.stdout.trim().split('\n').filter(Boolean).length;
+  assert.ok(printed <= 8, `ran for about 250 ms, not 2.5 s: ${printed} ticks`);
+  assert.ok(f.signals.some(entry => entry.signal === 'SIGSTOP'), JSON.stringify(f.signals));
+  assert.deepEqual(await readdir(join(f.root, 'processes')), [], JSON.stringify(result));
 });
