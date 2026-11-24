@@ -22,7 +22,7 @@ export function hasDefaultName(meeting: Meeting): boolean {
   if (meeting.autoTitle === null || meeting.title !== meeting.autoTitle) return false;
   if (isAppMadeTitle(meeting.title, meeting.createdAt)) return true;
   // A clock time ("10:17", "18.21") is in every page stamp and in hardly any title: "Meeting 2026 roadmap" is not one.
-  if (/^Meeting [^\n]{0,30}\d{1,2}[:.]\d{2}/.test(meeting.title) && meeting.title.length <= 48) return true;
+  if (/^Meeting [^\n]{0,30}\p{Nd}{1,2}\s?(?:[:.]|h)\s?\p{Nd}{2}/u.test(meeting.title) && meeting.title.length <= 48) return true;
   return Boolean(meeting.replay && meeting.title.endsWith(' (replay)'));
 }
 
@@ -46,20 +46,22 @@ export function titlePrompt(sample: string): string {
 
 /** More words than this in the chosen line is an explanation, not a title: rejected rather than cut. */
 const TITLE_REPLY_MAX_WORDS = 12;
-const REFUSAL = /^(?:i (?:cannot|can't|can not|couldn't|could not|am unable|am not able|don't|do not)\b|i'm (?:sorry|unable|not able|afraid)\b|sorry\b|unfortunately\b|as an ai\b|cannot\b|can't\b|unable\b|no title\b|(?:n\/a|none|unknown|untitled)\W*$)/i;
+const REFUSAL = /^(?:i (?:cannot|can't|can not|couldn't|could not|am unable|am not able|am sorry|am afraid|don't|do not)\b|i'm (?:sorry|unable|not able|afraid)\b|sorry\b|unfortunately\b|as an ai\b|cannot\b|can't\b|unable\b|no title\b|(?:n\/a|none|unknown|untitled(?: meeting)?)\W*$)/i;
 
 /** The model's reply as a meeting name, or '' when it is not usable: markdown and a "Title:" label are removed, a lead-in line
  * ("Here's a title:") is skipped, and a refusal or an explanation is rejected. */
 export function cleanTitleReply(text: string): string {
-  const lines = text.split('\n')
-    .filter(l => !/^\s*```/.test(l)) // a code fence, with or without a language tag
+  const lines = text.replace(/[\u2018\u2019]/g, "'").split('\n')
+    .map(l => l.replace(/^\s*```+\s*(?=\S.*```)/, '').replace(/```+\s*$/, '')) // a one-line fence keeps its content
+    .filter(l => !/^\s*```/.test(l)) // a fence line, with or without a language tag
     .map(l => l.trim().replace(/^(?:[-*•>]+|#+|\d+[.)])\s*/, '').replace(/[*_`]+/g, '').replace(/^title\s*:\s*/i, '').trim())
     .filter(l => l && !/:$/.test(l));
   const line = lines[0] ?? '';
   if (line.split(/\s+/).length > TITLE_REPLY_MAX_WORDS) return '';
   // Checked once quotes and a final full stop are gone: '"I cannot name this."' and 'N/A.' are refusals too.
   const title = cleanSuggestedTitle(line);
-  if (REFUSAL.test(title)) return '';
+  // A refusal, or a name HearAlong itself would make up, is no name.
+  if (REFUSAL.test(title) || /^Meeting \p{Nd}/u.test(title)) return '';
   const words = title.split(' ').filter(Boolean);
   return words.length > TITLE_MAX_WORDS ? cleanSuggestedTitle(words.slice(0, TITLE_MAX_WORDS).join(' ')) : title;
 }
@@ -104,17 +106,23 @@ export class MeetingTitles {
     // Only meetings that still carry an app name: one the user, notes or a title pass named drops out here, in SQL.
     const ended = store.db.prepare(`SELECT id, recordingEndedAt FROM meetings WHERE recordingEndedAt IS NOT NULL AND recordingEndedAt >= ?
       AND autoTitle IS NOT NULL AND title = autoTitle`).all(since) as { id: string; recordingEndedAt: number }[];
-    const transcribed = store.db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(length(text)), 0) AS chars FROM chunks WHERE meetingId=? AND status='completed'");
+    // The transcript's version: new lines, corrected lines (each bumps its revision) and their text.
+    const transcribed = store.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(revision), 0) AS revisions, COALESCE(SUM(length(text)), 0) AS chars FROM segments WHERE meetingId=?');
     for (const row of ended) {
       const key = `${row.id}:${row.recordingEndedAt}`;
       if (this.tried.has(key)) continue;
       let meeting: Meeting;
       try { meeting = store.meeting(row.id); } catch { continue; } // deleted meanwhile
-      // Not crossed off: a replay is marked as one just after its upload ends, and retried chunks can add words later.
-      if (!hasDefaultName(meeting) || stillComing(row.id)) continue;
-      // Too short: counted again only once its transcribed chunks change, so a short meeting costs one query a tick.
-      const { n, chars } = transcribed.get(row.id) as { n: number; chars: number };
-      const version = `${n}:${chars}`;
+      if (!hasDefaultName(meeting)) {
+        // Named by notes or an earlier pass: done. A "(replay)" name is checked again: the meeting is marked as a replay just
+        // after its upload ends.
+        if (!meeting.title.endsWith(' (replay)')) this.tried.add(key);
+        continue;
+      }
+      if (stillComing(row.id)) continue;
+      // Too short: counted again only once its transcript changes (retried chunks, corrections), so it costs one query a tick.
+      const { n, revisions, chars } = transcribed.get(row.id) as { n: number; revisions: number; chars: number };
+      const version = `${n}:${revisions}:${chars}`;
       if (this.short.get(key) === version) continue;
       const words = store.segments(row.id).reduce((count, s) => count + s.text.split(/\s+/).filter(Boolean).length, 0);
       if (words < TITLE_MIN_WORDS) { this.short.set(key, version); continue; }

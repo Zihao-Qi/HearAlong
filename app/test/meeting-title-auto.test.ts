@@ -41,7 +41,9 @@ test('a reply becomes one short clean name, or nothing', () => {
   assert.equal(cleanTitleReply('1. Q3 lantern plan\n2. Kite budget'), 'Q3 lantern plan', 'the first of several');
   assert.equal(cleanTitleReply('```text\nQ3 lantern plan\n```'), 'Q3 lantern plan', 'a fenced block with a language tag');
   assert.equal(cleanTitleReply('I/O performance tuning'), 'I/O performance tuning', 'a title may start with I');
-  for (const refusal of ['"I cannot name this."', 'N/A.', 'None.', 'Untitled', "I'm sorry, I can't tell."]) assert.equal(cleanTitleReply(refusal), '', refusal);
+  for (const refusal of ['"I cannot name this."', 'N/A.', 'None.', 'Untitled', "I'm sorry, I can't tell.", 'I\u2019m sorry, I can\u2019t tell.', 'I am sorry.', 'Untitled meeting', 'Meeting 22 Nov, 18:21'])
+    assert.equal(cleanTitleReply(refusal), '', refusal);
+  assert.equal(cleanTitleReply('```Q3 lantern plan```'), 'Q3 lantern plan', 'a one-line fence');
   // A refusal or an explanation is no name.
   for (const refusal of ['I cannot determine the topic of this noisy transcript.', "Sorry, there isn't enough to go on.", 'Unable to tell', 'N/A',
     'The participants talked about many unrelated things and no single topic stands out clearly here']) assert.equal(cleanTitleReply(refusal), '', refusal);
@@ -59,6 +61,8 @@ test('only a name HearAlong made up counts as default', () => {
   assert.equal(hasDefaultName(meeting('Meeting 22 Nov, 18:21', 'Meeting 22 Nov, 18:21')), true, 'the page\'s stamp in another locale');
   assert.equal(hasDefaultName(meeting('Meeting with the lantern club', 'Meeting with the lantern club')), false, 'no stamp');
   assert.equal(hasDefaultName(meeting('Meeting 2026 roadmap', 'Meeting 2026 roadmap')), false, 'a notes title with digits but no clock time');
+  assert.equal(hasDefaultName(meeting('Meeting 24 nov., 08 h 41', 'Meeting 24 nov., 08 h 41')), true, 'a French Canadian stamp');
+  assert.equal(hasDefaultName(meeting('Meeting \u0662\u0664 \u0646\u0648\u0641\u060c \u0660\u0668:\u0664\u0661', 'Meeting \u0662\u0664 \u0646\u0648\u0641\u060c \u0660\u0668:\u0664\u0661')), true, 'Arabic-Indic digits');
 });
 
 async function server(t: any, ask: (message: string) => Promise<PiAnswer>) {
@@ -186,6 +190,20 @@ test('a meeting that is not ready yet is checked again: a replay marked just aft
   s.app.store.retryChunk(failed.id);
   s.app.store.completeChunk(failed.id, { text: words(100, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
   await until(() => s.title(replay) === 'Kite festival' && s.title(short) === 'Kite festival', 5000, 'both to be named');
+});
+
+test('a meeting named by notes is looked at once, not on every tick', async t => {
+  const s = await server(t, async () => answer('Kite festival'));
+  const id = await s.recorded('Untitled meeting', 200);
+  // Notes name it before the first tick sees it.
+  assert.equal(s.app.store.titleFromNotes(id, 'Lantern parade route'), true);
+  let looks = 0;
+  const meeting = s.app.store.meeting.bind(s.app.store);
+  t.mock.method(s.app.store, 'meeting', (meetingId: string) => { if (meetingId === id) looks++; return meeting(meetingId); });
+  await s.settle(); await s.settle();
+  assert.ok(looks <= 1, `looked at ${looks} times`);
+  assert.deepEqual(s.asked, []);
+  assert.equal(s.title(id), 'Lantern parade route');
 });
 
 test('a short meeting is counted again only when its transcript changes, not on every tick', async t => {
