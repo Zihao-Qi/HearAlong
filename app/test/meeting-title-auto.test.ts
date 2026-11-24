@@ -8,6 +8,7 @@ import { startServer } from '../src/server.ts';
 import type { PiAnswer } from '../src/pi-rpc.ts';
 import type { Meeting } from '../src/store.ts';
 import { until } from './helpers/setup-pi.ts';
+import { AiDeferred } from '../src/ai-deferral.ts';
 
 const answer = (text: string, extra: Partial<PiAnswer> = {}): PiAnswer => ({ text, ms: 1, attempts: 1, aborted: false, stopReason: 'stop', usages: [], ...extra });
 const words = (n: number, word = 'lantern') => Array.from({ length: n }, (_, i) => `${word}${i}`).join(' ');
@@ -31,6 +32,16 @@ test('a reply becomes one short clean name, or nothing', () => {
   assert.equal(cleanTitleReply('\n\n  Lantern parade route  \n'), 'Lantern parade route');
   assert.equal(cleanTitleReply('one two three four five six seven eight nine ten'), 'one two three four five six seven eight', 'at most 8 words');
   for (const empty of ['', '   ', '""', 'Title:']) assert.equal(cleanTitleReply(empty), '', empty);
+  // Markdown, labels and lead-in lines, as models often reply.
+  assert.equal(cleanTitleReply('**Q3 lantern plan**'), 'Q3 lantern plan');
+  assert.equal(cleanTitleReply('# Q3 lantern plan'), 'Q3 lantern plan');
+  assert.equal(cleanTitleReply('- Q3 lantern plan'), 'Q3 lantern plan');
+  assert.equal(cleanTitleReply('**Title:** Q3 lantern plan'), 'Q3 lantern plan');
+  assert.equal(cleanTitleReply("Here's a title:\nQ3 lantern plan"), 'Q3 lantern plan');
+  assert.equal(cleanTitleReply('1. Q3 lantern plan\n2. Kite budget'), 'Q3 lantern plan', 'the first of several');
+  // A refusal or an explanation is no name.
+  for (const refusal of ['I cannot determine the topic of this noisy transcript.', "Sorry, there isn't enough to go on.", 'Unable to tell', 'N/A',
+    'The participants talked about many unrelated things and no single topic stands out clearly here']) assert.equal(cleanTitleReply(refusal), '', refusal);
 });
 
 test('only a name HearAlong made up counts as default', () => {
@@ -42,6 +53,8 @@ test('only a name HearAlong made up counts as default', () => {
   assert.equal(hasDefaultName(meeting('kite.m4a (replay)', 'kite.m4a (replay)')), false, 'not a replay meeting');
   assert.equal(hasDefaultName(meeting('Lantern parade route', 'Lantern parade route')), false, 'already named by notes or a title pass');
   assert.equal(hasDefaultName(meeting('Untitled meeting', null)), false, 'the user typed it');
+  assert.equal(hasDefaultName(meeting('Meeting 22 Nov, 18:21', 'Meeting 22 Nov, 18:21')), true, 'the page\'s stamp in another locale');
+  assert.equal(hasDefaultName(meeting('Meeting with the lantern club', 'Meeting with the lantern club')), false, 'no stamp');
 });
 
 async function server(t: any, ask: (message: string) => Promise<PiAnswer>) {
@@ -139,4 +152,34 @@ test('replays are named when the replay has played to its end', async t => {
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.deepEqual(s.asked, [], 'not while the replay plays');
   await until(() => s.title(id) === 'Kite festival', 5000, 'the replay to be named');
+});
+
+test('a call the model lane postpones is not an attempt: a later tick names the meeting', async t => {
+  let postpone = true;
+  const s = await server(t, async () => {
+    if (postpone) { postpone = false; throw new AiDeferred(); }
+    return answer('Lantern parade route');
+  });
+  const id = await s.recorded('Untitled meeting', 200);
+  await until(() => s.title(id) === 'Lantern parade route', 5000, 'the retry');
+  assert.equal(s.asked.length, 2);
+});
+
+test('a meeting that is not ready yet is checked again: a replay marked just after its upload, words added by a retry', async t => {
+  const s = await server(t, async () => answer('Kite festival'));
+  // Its end is recorded before it is marked as a replay (as /upload then /replay do).
+  const replay = await s.recorded('kite.m4a (replay)', 200);
+  // 100 words came through; the second piece failed, and the user retries it later.
+  const short = s.app.store.createMeeting('Untitled meeting', true).id;
+  const done = await s.app.store.addPcm(short, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  s.app.store.completeChunk(done.id, { text: words(100, 'ribbon'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  const failed = await s.app.store.addPcm(short, 'mic:fixture', 1, 1000, 16000, Buffer.alloc(64000));
+  s.app.store.failChunk(failed.id, 'fictional recognizer failure', null);
+  s.app.store.recordingEnded(short, Date.now());
+  await s.settle();
+  assert.deepEqual(s.asked, []);
+  s.app.store.db.prepare('UPDATE meetings SET replay=? WHERE id=?').run(JSON.stringify({ sourceId: 'r', startedAt: Date.now() - 60_000, speed: 1, baseMs: 0, durationMs: 1000 }), replay);
+  s.app.store.retryChunk(failed.id);
+  s.app.store.completeChunk(failed.id, { text: words(100, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  await until(() => s.title(replay) === 'Kite festival' && s.title(short) === 'Kite festival', 5000, 'both to be named');
 });

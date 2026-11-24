@@ -143,7 +143,7 @@ export async function checkFix2(browser: Browser, out: string) {
       assert.equal(await page.locator('.su-ai-modes').evaluate(e => getComputedStyle(e).display), 'grid');
       assert.equal(await page.locator('label[for="su-ai-main"] strong').innerText(), 'Main model');
       assert.equal(await page.locator('label[for="su-ai-quick"] strong').innerText(), 'Quick model');
-      assert.equal(await page.locator('label[for="su-ai-quick"] .su-muted').innerText(), ' · the Board, corrections');
+      assert.equal(await page.locator('label[for="su-ai-quick"] .su-muted').innerText(), ' · the Board, corrections, meeting names');
       await page.getByRole('button', { name: 'Save', exact: true }).evaluate((e: HTMLButtonElement) => { e.disabled = true; });
       await page.getByRole('button', { name: 'Close', exact: true }).focus(); await page.keyboard.press('Shift+Tab'); assert.equal(await page.evaluate(() => document.activeElement?.id), 'su-ai-quick');
       await pi.configure({ table: table(rows.slice(1)) }); await page.getByRole('radio', { name: 'Off', exact: true }).click(); await page.getByRole('radio', { name: 'On this Mac', exact: true }).click();

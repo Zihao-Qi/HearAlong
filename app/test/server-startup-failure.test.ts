@@ -76,7 +76,7 @@ test('late startup failure leaves no lock, recognizer, Pi admission or repeating
     await assert.rejects(stat(join(directory, 'server.lock')), { code: 'ENOENT' });
     assert.doesNotThrow(() => piLaunch([], { model: 'fictional/model', env: {} }), 'failed startup released process-global Pi admission');
     const failureEvents = [...events], survivingFailureLoops = [...live.values()];
-    assert.deepEqual(created.sort((a, b) => a - b), [1000, 1000, 2000, 5000, 5000, 3600000], 'exercise all six repeating handles, including correction');
+    assert.deepEqual(created.sort((a, b) => a - b), [1000, 1000, 2000, 4000, 5000, 5000, 3600000], 'exercise all seven repeating handles, including correction and meeting names');
     listening.mock.restore();
     app = await startServer(options);
     const response = await fetch(app.url);

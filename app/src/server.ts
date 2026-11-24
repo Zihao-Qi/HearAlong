@@ -556,19 +556,6 @@ export async function startServer(options: {
     }, options.correctionTickMs ?? 5000) : undefined;
     correctionLoop?.unref();
     startupLoops.add(correctionLoop);
-    // Automatic meeting names (meeting-title.ts): once a recording or replay has ended and its transcript is final, the board's
-    // warm lane names a meeting that still has its made-up name. Only recordings ending from now on; local models wait while
-    // any recording runs, as the board does.
-    const titles = new MeetingTitles({ store: appStoreRef, since: clock(), stillComing,
-      ask: () => {
-        if (closing) return null;
-        if (options.titles !== undefined) return options.titles;
-        if (!gate || ai.mode() === 'off' || (ai.mode() === 'local' && recordingAnywhere())) return null;
-        return message => gate.ask(message);
-      } });
-    const titleLoop = setInterval(() => { titles.tick().catch(error => console.warn(`Meeting title: ${(error as Error).message}`)); }, options.titleTickMs ?? 5000);
-    titleLoop.unref();
-    startupLoops.add(titleLoop);
     // End of a meeting: the final scan waits for the tail to be transcribed, but at most 60 s after the speech ended. A meeting
     // stays watched for 10 minutes after that, so corrections finishing late are still scanned; later edits need "Scan this meeting".
     const endedAt = new Map<string, number>();
@@ -663,6 +650,19 @@ export async function startServer(options: {
     }, 1000) : undefined;
     idleLoop?.unref();
     startupLoops.add(idleLoop);
+    // Automatic meeting names (meeting-title.ts), after `closing` exists (a loop may tick as soon as it is scheduled): once a recording or replay has ended and its transcript is final, the board's
+    // warm lane names a meeting that still has its made-up name. Only recordings ending from now on; local models wait while
+    // any recording runs, as the board does.
+    const titles = new MeetingTitles({ store: appStoreRef, since: clock(), stillComing,
+      ask: () => {
+        if (closing) return null;
+        if (options.titles !== undefined) return options.titles;
+        if (!gate || ai.mode() === 'off' || (ai.mode() === 'local' && recordingAnywhere())) return null;
+        return message => gate.ask(message);
+      } });
+    const titleLoop = setInterval(() => { titles.tick().catch(error => console.warn(`Meeting title: ${(error as Error).message}`)); }, options.titleTickMs ?? 4000);
+    titleLoop.unref();
+    startupLoops.add(titleLoop);
     let shuttingDown = false;
     // The mini view (M7 native mini window, docs/design/M7-native-mini.md): drawn from the server alone, so it stays current while
     // the app's page is hidden and throttled (another app in full screen); Stop and cards reach the page through frame replies.
