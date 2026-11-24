@@ -65,10 +65,11 @@ export function cleanTitleReply(text: string): string {
   if (line.split(/\s+/).length > TITLE_REPLY_MAX_WORDS) return '';
   // Checked once quotes and a final full stop are gone: '"I cannot name this."' and 'N/A.' are refusals too.
   const title = cleanSuggestedTitle(line);
-  // A refusal, or a name HearAlong itself would make up, is no name.
-  if (REFUSAL.test(title) || looksLikeStamp(title)) return '';
+  if (REFUSAL.test(title)) return '';
   const words = title.split(' ').filter(Boolean);
-  return words.length > TITLE_MAX_WORDS ? cleanSuggestedTitle(words.slice(0, TITLE_MAX_WORDS).join(' ')) : title;
+  const name = words.length > TITLE_MAX_WORDS ? cleanSuggestedTitle(words.slice(0, TITLE_MAX_WORDS).join(' ')) : title;
+  // A name HearAlong itself would make up is no name, checked on the name as it would be saved (after any cut).
+  return looksLikeStamp(name) ? '' : name;
 }
 
 type Options = {
