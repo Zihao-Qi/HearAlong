@@ -15,14 +15,19 @@ export const TITLE_MAX_WORDS = 8;
 
 export type TitleAsk = (message: string) => Promise<PiAnswer>;
 
+/** "Meeting " and a short stamp with a clock time ("10:17", "18.21", "08 h 41"), as the page makes up in any locale. A clock
+ * time is in every page stamp and in hardly any title: "Meeting 2026 roadmap" is not one. */
+export function looksLikeStamp(title: string): boolean {
+  return title.length <= 48 && /^Meeting [^\n]{0,30}\p{Nd}{1,2}\s?(?:[:.]|h)\s?\p{Nd}{2}/u.test(title);
+}
+
 /** Still the name HearAlong made up, not one from notes, a title pass or the user. The page stamps "Meeting <date and time>" in
  * its own locale, which can differ from this server's: any "Meeting " name with a digit in a short stamp counts too (a model's
  * title is told not to start that way). */
 export function hasDefaultName(meeting: Meeting): boolean {
   if (meeting.autoTitle === null || meeting.title !== meeting.autoTitle) return false;
   if (isAppMadeTitle(meeting.title, meeting.createdAt)) return true;
-  // A clock time ("10:17", "18.21") is in every page stamp and in hardly any title: "Meeting 2026 roadmap" is not one.
-  if (/^Meeting [^\n]{0,30}\p{Nd}{1,2}\s?(?:[:.]|h)\s?\p{Nd}{2}/u.test(meeting.title) && meeting.title.length <= 48) return true;
+  if (looksLikeStamp(meeting.title)) return true;
   return Boolean(meeting.replay && meeting.title.endsWith(' (replay)'));
 }
 
@@ -61,7 +66,7 @@ export function cleanTitleReply(text: string): string {
   // Checked once quotes and a final full stop are gone: '"I cannot name this."' and 'N/A.' are refusals too.
   const title = cleanSuggestedTitle(line);
   // A refusal, or a name HearAlong itself would make up, is no name.
-  if (REFUSAL.test(title) || /^Meeting \p{Nd}/u.test(title)) return '';
+  if (REFUSAL.test(title) || looksLikeStamp(title)) return '';
   const words = title.split(' ').filter(Boolean);
   return words.length > TITLE_MAX_WORDS ? cleanSuggestedTitle(words.slice(0, TITLE_MAX_WORDS).join(' ')) : title;
 }

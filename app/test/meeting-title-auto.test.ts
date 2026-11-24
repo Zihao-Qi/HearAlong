@@ -44,6 +44,8 @@ test('a reply becomes one short clean name, or nothing', () => {
   for (const refusal of ['"I cannot name this."', 'N/A.', 'None.', 'Untitled', "I'm sorry, I can't tell.", 'I\u2019m sorry, I can\u2019t tell.', 'I am sorry.', 'Untitled meeting', 'Meeting 22 Nov, 18:21'])
     assert.equal(cleanTitleReply(refusal), '', refusal);
   assert.equal(cleanTitleReply('```Q3 lantern plan```'), 'Q3 lantern plan', 'a one-line fence');
+  assert.equal(cleanTitleReply('Meeting Nov 24, 02:47 PM'), '', 'the page\'s own stamp');
+  for (const title of ['Meeting 2026 roadmap', 'Meeting 2 follow-up']) assert.equal(cleanTitleReply(title), title, title);
   // A refusal or an explanation is no name.
   for (const refusal of ['I cannot determine the topic of this noisy transcript.', "Sorry, there isn't enough to go on.", 'Unable to tell', 'N/A',
     'The participants talked about many unrelated things and no single topic stands out clearly here']) assert.equal(cleanTitleReply(refusal), '', refusal);
