@@ -39,6 +39,9 @@ test('a reply becomes one short clean name, or nothing', () => {
   assert.equal(cleanTitleReply('**Title:** Q3 lantern plan'), 'Q3 lantern plan');
   assert.equal(cleanTitleReply("Here's a title:\nQ3 lantern plan"), 'Q3 lantern plan');
   assert.equal(cleanTitleReply('1. Q3 lantern plan\n2. Kite budget'), 'Q3 lantern plan', 'the first of several');
+  assert.equal(cleanTitleReply('```text\nQ3 lantern plan\n```'), 'Q3 lantern plan', 'a fenced block with a language tag');
+  assert.equal(cleanTitleReply('I/O performance tuning'), 'I/O performance tuning', 'a title may start with I');
+  for (const refusal of ['"I cannot name this."', 'N/A.', 'None.', 'Untitled', "I'm sorry, I can't tell."]) assert.equal(cleanTitleReply(refusal), '', refusal);
   // A refusal or an explanation is no name.
   for (const refusal of ['I cannot determine the topic of this noisy transcript.', "Sorry, there isn't enough to go on.", 'Unable to tell', 'N/A',
     'The participants talked about many unrelated things and no single topic stands out clearly here']) assert.equal(cleanTitleReply(refusal), '', refusal);
@@ -55,6 +58,7 @@ test('only a name HearAlong made up counts as default', () => {
   assert.equal(hasDefaultName(meeting('Untitled meeting', null)), false, 'the user typed it');
   assert.equal(hasDefaultName(meeting('Meeting 22 Nov, 18:21', 'Meeting 22 Nov, 18:21')), true, 'the page\'s stamp in another locale');
   assert.equal(hasDefaultName(meeting('Meeting with the lantern club', 'Meeting with the lantern club')), false, 'no stamp');
+  assert.equal(hasDefaultName(meeting('Meeting 2026 roadmap', 'Meeting 2026 roadmap')), false, 'a notes title with digits but no clock time');
 });
 
 async function server(t: any, ask: (message: string) => Promise<PiAnswer>) {
@@ -182,4 +186,15 @@ test('a meeting that is not ready yet is checked again: a replay marked just aft
   s.app.store.retryChunk(failed.id);
   s.app.store.completeChunk(failed.id, { text: words(100, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
   await until(() => s.title(replay) === 'Kite festival' && s.title(short) === 'Kite festival', 5000, 'both to be named');
+});
+
+test('a short meeting is counted again only when its transcript changes, not on every tick', async t => {
+  const s = await server(t, async () => answer('Kite festival'));
+  const id = await s.recorded('Untitled meeting', 100);
+  let counts = 0;
+  const segments = s.app.store.segments.bind(s.app.store);
+  t.mock.method(s.app.store, 'segments', (meetingId: string) => { if (meetingId === id) counts++; return segments(meetingId); });
+  await s.settle(); await s.settle();
+  assert.ok(counts <= 1, `counted ${counts} times over about 20 ticks`);
+  assert.deepEqual(s.asked, []);
 });
