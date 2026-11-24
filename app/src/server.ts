@@ -48,6 +48,7 @@ import { CORRECTION_SYSTEM_PROMPT, Corrector, cleanGlossary, glossaryPrompt } fr
 import { NotesJobs, notesMarkdown, piNotesRunner, type NotesRunner } from './notes.ts';
 import { ActionJobs, piActionRunner, type ActionRunner } from './actions.ts';
 import { Boards, type GateAsk } from './board.ts';
+import { MeetingTitles, type TitleAsk } from './meeting-title.ts';
 import { Cooldowns } from './quota.ts';
 import { Explorations, recoverExplorations } from './explorations.ts';
 import { AutoPlanning, PlanTodos, PlanVersions } from './plans/index.ts';
@@ -112,6 +113,8 @@ export async function startServer(options: {
   echo?: EchoOptions | null;
   /** Cloud model access through Pi; null disables it (MEETING_CLOUD=0 does the same). */
   quick?: Quick | null; heavy?: Heavy | null; notes?: NotesRunner | null; actions?: ActionRunner | null; board?: GateAsk | null; clock?: () => number; correctionTickMs?: number;
+  /** Automatic meeting names: a stand-in for the board's model lane (tests); null turns them off. */
+  titles?: TitleAsk | null; titleTickMs?: number;
   /** Pi for the plans (M7b): tests give a stand-in with runPiTask's shape; null turns making plans off (saved ones stay). */
   plans?: typeof runPiTask | null;
   /**
@@ -553,6 +556,19 @@ export async function startServer(options: {
     }, options.correctionTickMs ?? 5000) : undefined;
     correctionLoop?.unref();
     startupLoops.add(correctionLoop);
+    // Automatic meeting names (meeting-title.ts): once a recording or replay has ended and its transcript is final, the board's
+    // warm lane names a meeting that still has its made-up name. Only recordings ending from now on; local models wait while
+    // any recording runs, as the board does.
+    const titles = new MeetingTitles({ store: appStoreRef, since: clock(), stillComing,
+      ask: () => {
+        if (closing) return null;
+        if (options.titles !== undefined) return options.titles;
+        if (!gate || ai.mode() === 'off' || (ai.mode() === 'local' && recordingAnywhere())) return null;
+        return message => gate.ask(message);
+      } });
+    const titleLoop = setInterval(() => { titles.tick().catch(error => console.warn(`Meeting title: ${(error as Error).message}`)); }, options.titleTickMs ?? 5000);
+    titleLoop.unref();
+    startupLoops.add(titleLoop);
     // End of a meeting: the final scan waits for the tail to be transcribed, but at most 60 s after the speech ended. A meeting
     // stays watched for 10 minutes after that, so corrections finishing late are still scanned; later edits need "Scan this meeting".
     const endedAt = new Map<string, number>();
@@ -1598,6 +1614,7 @@ export async function startServer(options: {
       audioRetention.close();
       clearInterval(retentionLoop);
       clearInterval(idleLoop);
+      clearInterval(titleLoop); // a naming call in progress is joined below, before the model lane and the store close
       // Requests in progress get 5 s to finish (an upload being saved); then their connections are closed.
       await new Promise<void>(resolve => {
         const force = setTimeout(() => server.closeAllConnections(), 5000);
@@ -1621,6 +1638,7 @@ export async function startServer(options: {
       await files.close();
       clearInterval(boardLoop);
       await boards.close();
+      await titles.idle();
       await localRpcClosing;
       await gate?.close();
       await aiClosing;

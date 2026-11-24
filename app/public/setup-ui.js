@@ -325,7 +325,7 @@ async function cloudAiControls(ai, changed, { d, body, error, showError }) {
     const consentBox = node('div', undefined, 'su-consent'), consentTitle = node('strong'), consentLabel = node('label'), consentText = node('span');
     const consent = node('input'); consent.type = 'checkbox'; consent.id = 'su-cloud-consent';
     consentLabel.append(consent, consentText);
-    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board and notes. Lines you select and excerpts of your materials, for Explain, plans and automatic answers to clear questions on the Board. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
+    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board, notes and meeting names. Lines you select and excerpts of your materials, for Explain, plans and automatic answers to clear questions on the Board. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
     let consentKey;
     const save = button('Save', async () => {
       save.disabled = true; error.hidden = true;
