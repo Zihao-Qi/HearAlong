@@ -165,7 +165,10 @@ test('FIX1.6 a newer Save aborts and reaps the older tiny process', async t => {
 
 test('FIX1.7 status correctionModel uses the same injected AI environment as correction calls', async t => {
   const f = await fakePi(t); f.env.MEETING_CORRECTION_MODEL = 'example/correction-override';
-  const app = await startServer({ directory: join(f.directory, 'data'), port: 0, recognizer: null, drafts: null, heavy: null,
+  // A set-up cloud install: on a fresh one, first-run setup finding no models turns AI off whenever it finishes first.
+  const data = join(f.directory, 'data'); await mkdir(data, { recursive: true });
+  await writeFile(join(data, 'settings.json'), JSON.stringify({ aiMode: 'cloud', setupSeen: true }));
+  const app = await startServer({ directory: data, port: 0, recognizer: null, drafts: null, heavy: null,
     ai: { env: f.env }, setup: { scan: { home: f.directory, envModelPath: null, hfHome: null }, ffmpeg: async () => ({ found: true }) } });
   try {
     const cookie = (await fetch(app.url)).headers.get('set-cookie')!.split(';')[0];
