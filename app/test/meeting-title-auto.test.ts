@@ -188,11 +188,10 @@ test('while recording, words after a piece still waiting for its retry do not co
   const id = s.app.store.createMeeting('Untitled meeting', true).id;
   s.recording.add(id); s.coming.add(id);
   const first = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
-  s.app.store.failChunk(first.id, 'fictional recognizer failure', null);
+  s.app.store.failChunk(first.id, 'fictional recognizer failure', Date.now() + 60_000);
   await s.chunk(id, 1, 1200, 'ribbon');
   await s.titles.tick();
   assert.equal(s.asked.length, 0, 'the first minute is missing');
-  s.app.store.retryChunk(first.id);
   s.app.store.completeChunk(first.id, { text: words(300, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
   await s.titles.tick();
   assert.equal(s.asked.length, 1);
@@ -217,6 +216,45 @@ test('a rate limit keeps the meeting\'s try: no call for a while, then it is nam
   await s.titles.tick();
   assert.equal(s.asked.length, 2);
   assert.equal(s.title(id), 'Lantern parade route');
+});
+
+test('while recording, a piece that failed for good does not hold the name back', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  const first = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  s.app.store.failChunk(first.id, 'fictional recognizer failure', null);
+  await s.chunk(id, 1, 1200, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  assert.match(s.asked[0]!, /<<<\nribbon0 /);
+});
+
+test('while recording, a piece that ends with no words is counted again: the words after it are no longer held back', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  const silent = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  await s.chunk(id, 1, 1200, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'held back by the piece still queued');
+  s.app.store.completeChunk(silent.id, { text: '', words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+});
+
+test('while recording, mic words past the call audio not yet cut into a piece are held back (their echo is not yet known)', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  await s.chunk(id, 0, 600, 'kite');
+  await s.app.store.addFrame(id, 'tab:fixture', 0, 30_000, Buffer.alloc(64000));
+  await s.chunk(id, 1, 600, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'only the 600 words before the call audio count');
+  s.app.store.db.prepare('DELETE FROM frames WHERE meetingId=?').run(id); // the call window sealed and transcribed (silent)
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
 });
 
 test('a meeting that stops short of the words is named once it ends, though its transcript did not change', async t => {

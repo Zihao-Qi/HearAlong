@@ -123,6 +123,10 @@ export class MeetingTitles {
     for (const id of this.options.recording()) candidates.add(id);
     // The transcript's version: new lines, corrected lines (each bumps its revision) and their text.
     const transcribed = store.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(revision), 0) AS revisions, COALESCE(SUM(length(text)), 0) AS chars FROM segments WHERE meetingId=?');
+    // Where the transcript may still be missing words: the earliest piece waiting to be transcribed (queued, also for an automatic
+    // retry, or running) or audio not yet cut into a piece. A piece that failed for good waits for nothing.
+    const waiting = store.db.prepare(`SELECT MIN(at) AS at FROM (SELECT MIN(startMs) AS at FROM chunks WHERE meetingId=? AND status IN ('queued', 'running')
+      UNION ALL SELECT MIN(startMs) AS at FROM frames WHERE meetingId=? AND windowChunkId IS NULL)`);
     for (const id of candidates) {
       if (this.tried.has(id)) continue;
       let meeting: Meeting;
@@ -138,16 +142,16 @@ export class MeetingTitles {
       const replay = store.replay(id);
       const playing = Boolean(replay && store.replayPositionMs(replay, now()) < replay.durationMs);
       // Too short: counted again only once its transcript changes or stops coming in, so it costs one query a tick.
+      // While more is coming, only the unbroken start counts: words after a gap that may still fill (a piece awaiting its retry,
+      // or the other source's window, whose mic echo would otherwise count twice) could skip or double part of the start.
+      const pending = coming ? (waiting.get(id, id) as { at: number | null }).at ?? Infinity : Infinity;
       let version: string | null = null;
       if (!playing) {
         const { n, revisions, chars } = transcribed.get(id) as { n: number; revisions: number; chars: number };
-        version = `${n}:${revisions}:${chars}:${coming}`;
+        version = `${n}:${revisions}:${chars}:${coming}:${pending}`;
         if (this.short.get(id) === version) continue;
       }
-      // While more is coming, only the unbroken start counts: words after a piece still waiting (a failed one awaiting its retry,
-      // or a call window not yet in, whose mic echo would count twice) could skip or double part of the start.
-      const pending = coming ? Math.min(...store.chunks(id).filter(c => c.status !== 'completed' && c.status !== 'cancelled').map(c => c.startMs)) : Infinity;
-      const lines = store.visibleSegments(id, now()).filter(s => s.startMs < pending).map(s => s.text);
+      const lines = store.visibleSegments(id, now()).filter(s => s.endMs <= pending).map(s => s.text);
       const words = wordsOf(lines).length;
       if (words >= TITLE_WORDS || (!coming && words >= TITLE_MIN_WORDS)) { this.short.delete(id); return { meeting, lines }; }
       if (version) this.short.set(id, version);
