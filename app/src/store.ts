@@ -458,6 +458,14 @@ export class MeetingStore {
     return Number(this.db.prepare('UPDATE meetings SET title=?, autoTitle=? WHERE id=? AND autoTitle IS NOT NULL AND title=autoTitle AND title<>?')
       .run(title, title, id, title).changes) > 0;
   }
+  /** A model's name for a meeting, only while it still has exactly the made-up name `from` (notes or the user may have named it
+   * meanwhile). True when renamed. */
+  titleFromTranscript(id: string, from: string, suggestion: unknown): boolean {
+    const title = cleanSuggestedTitle(suggestion);
+    if (!title || title === from) return false;
+    return Number(this.db.prepare('UPDATE meetings SET title=?, autoTitle=? WHERE id=? AND title=? AND autoTitle=?')
+      .run(title, title, id, from, from).changes) > 0;
+  }
   updateMode(id: string, mode: Mode, intervalSeconds: number) {
     this.meeting(id);
     this.db.prepare('UPDATE meetings SET mode=?, intervalSeconds=? WHERE id=?').run(mode, intervalSeconds, id);

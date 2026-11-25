@@ -48,6 +48,7 @@ import { CORRECTION_SYSTEM_PROMPT, Corrector, cleanGlossary, glossaryPrompt } fr
 import { NotesJobs, notesMarkdown, piNotesRunner, type NotesRunner } from './notes.ts';
 import { ActionJobs, piActionRunner, type ActionRunner } from './actions.ts';
 import { Boards, type GateAsk } from './board.ts';
+import { MeetingTitles, type TitleAsk } from './meeting-title.ts';
 import { Cooldowns } from './quota.ts';
 import { Explorations, recoverExplorations } from './explorations.ts';
 import { AutoPlanning, PlanTodos, PlanVersions } from './plans/index.ts';
@@ -112,6 +113,8 @@ export async function startServer(options: {
   echo?: EchoOptions | null;
   /** Cloud model access through Pi; null disables it (MEETING_CLOUD=0 does the same). */
   quick?: Quick | null; heavy?: Heavy | null; notes?: NotesRunner | null; actions?: ActionRunner | null; board?: GateAsk | null; clock?: () => number; correctionTickMs?: number;
+  /** Automatic meeting names: a stand-in for the board's model lane (tests); null turns them off. */
+  titles?: TitleAsk | null; titleTickMs?: number;
   /** Pi for the plans (M7b): tests give a stand-in with runPiTask's shape; null turns making plans off (saved ones stay). */
   plans?: typeof runPiTask | null;
   /**
@@ -647,6 +650,19 @@ export async function startServer(options: {
     }, 1000) : undefined;
     idleLoop?.unref();
     startupLoops.add(idleLoop);
+    // Automatic meeting names (meeting-title.ts), after `closing` exists (a loop may tick as soon as it is scheduled): once a recording or replay has ended and its transcript is final, the board's
+    // warm lane names a meeting that still has its made-up name. Only recordings ending from now on; local models wait while
+    // any recording runs, as the board does.
+    const titles = new MeetingTitles({ store: appStoreRef, since: clock(), stillComing,
+      ask: () => {
+        if (closing) return null;
+        if (options.titles !== undefined) return options.titles;
+        if (!gate || ai.mode() === 'off' || (ai.mode() === 'local' && recordingAnywhere())) return null;
+        return message => gate.ask(message);
+      } });
+    const titleLoop = setInterval(() => { titles.tick().catch(error => console.warn(`Meeting title: ${(error as Error).message}`)); }, options.titleTickMs ?? 4000);
+    titleLoop.unref();
+    startupLoops.add(titleLoop);
     let shuttingDown = false;
     // The mini view (M7 native mini window, docs/design/M7-native-mini.md): drawn from the server alone, so it stays current while
     // the app's page is hidden and throttled (another app in full screen); Stop and cards reach the page through frame replies.
@@ -1598,6 +1614,7 @@ export async function startServer(options: {
       audioRetention.close();
       clearInterval(retentionLoop);
       clearInterval(idleLoop);
+      clearInterval(titleLoop); // a naming call in progress is joined below, before the model lane and the store close
       // Requests in progress get 5 s to finish (an upload being saved); then their connections are closed.
       await new Promise<void>(resolve => {
         const force = setTimeout(() => server.closeAllConnections(), 5000);
@@ -1621,6 +1638,7 @@ export async function startServer(options: {
       await files.close();
       clearInterval(boardLoop);
       await boards.close();
+      await titles.idle();
       await localRpcClosing;
       await gate?.close();
       await aiClosing;

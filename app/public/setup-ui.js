@@ -325,7 +325,7 @@ async function cloudAiControls(ai, changed, { d, body, error, showError }) {
     const consentBox = node('div', undefined, 'su-consent'), consentTitle = node('strong'), consentLabel = node('label'), consentText = node('span');
     const consent = node('input'); consent.type = 'checkbox'; consent.id = 'su-cloud-consent';
     consentLabel.append(consent, consentText);
-    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board and notes. Lines you select and excerpts of your materials, for Explain, plans and automatic answers to clear questions on the Board. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
+    consentBox.append(consentTitle, node('p', 'Transcript text, for corrections, the live Board, notes and meeting names. Lines you select and excerpts of your materials, for Explain, plans and automatic answers to clear questions on the Board. Project memory. Search terms, for web lookups. Audio never leaves this Mac.'), consentLabel);
     let consentKey;
     const save = button('Save', async () => {
       save.disabled = true; error.hidden = true;
@@ -396,7 +396,7 @@ async function cloudAiControls(ai, changed, { d, body, error, showError }) {
     applied.showError = showError;
     const keys = keyData ? keySection(d, keyData.keys, applied) : node('div');
     body.replaceChildren(count, datalist, keys,
-      field('main', 'Main model', 'notes, plans, Explain'), field('quick', 'Quick model', 'the Board, corrections'),
+      field('main', 'Main model', 'notes, plans, Explain'), field('quick', 'Quick model', 'the Board, corrections, meeting names'),
       node('span', 'Tuned on gpt-6.1-sol and gpt-6-luna.', 'su-tuned'), consentBox, error, footer);
     validate();
     const detail = ai.detail ?? (data.state === 'off' ? 'AI is off for this start.' : 'Couldn’t read Pi’s models.');
@@ -450,7 +450,7 @@ export async function aiDialog(ai, changed) {
         target.append(node('p', `✓ ${servers} · ${items.length} ${items.length === 1 ? 'model' : 'models'} on this Mac`, 'su-ai-grey'));
         for (const role of ['main', 'quick']) {
           const wrap = node('div', undefined, 'su-field'), label = node('label');
-          label.append(node('strong', role === 'main' ? 'Main model' : 'Quick model'), node('span', role === 'main' ? ' · notes, plans, Explain' : ' · the Board, corrections', 'su-muted'));
+          label.append(node('strong', role === 'main' ? 'Main model' : 'Quick model'), node('span', role === 'main' ? ' · notes, plans, Explain' : ' · the Board, corrections, meeting names', 'su-muted'));
           const select = node('select'); select.id = `su-ai-${role}`; label.htmlFor = select.id;
           for (const item of items) { const option = node('option', item.id); option.value = item.id; select.append(option); }
           select.value = data.settings?.[role === 'main' ? 'localMainModel' : 'localQuickModel'] ?? items[0].id;
