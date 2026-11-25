@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cleanTitleReply, hasDefaultName, MeetingTitles, titlePrompt, titleSample, TITLE_WORDS } from '../src/meeting-title.ts';
+import { cleanTitleReply, hasDefaultName, MeetingTitles, titlePrompt, titleSample, TITLE_PAUSE_MS, TITLE_WORDS } from '../src/meeting-title.ts';
 import { startServer } from '../src/server.ts';
 import type { PiAnswer } from '../src/pi-rpc.ts';
 import type { Meeting } from '../src/store.ts';
@@ -152,12 +152,12 @@ test('one call per meeting: a later recording after an unusable answer does not 
 });
 
 /** The naming loop driven by hand: which meetings record, what is still coming in, and the time. */
-async function titlesFor(t: any) {
+async function titlesFor(t: any, reply: () => Promise<PiAnswer> = async () => answer('Lantern parade route')) {
   const s = await server(t, null);
   const asked: string[] = [], recording = new Set<string>(), coming = new Set<string>();
   let at = Date.now();
   const titles = new MeetingTitles({ store: s.app.store, since: at - 1000, now: () => at, recording: () => recording,
-    stillComing: id => coming.has(id), ask: () => async message => { asked.push(message); return answer('Lantern parade route'); }, log: () => {} });
+    stillComing: id => coming.has(id), ask: () => async message => { asked.push(message); return reply(); }, log: () => {} });
   const chunk = async (id: string, sequence: number, n: number, word: string) => {
     const piece = await s.app.store.addPcm(id, 'mic:fixture', sequence, sequence * 60_000, 16000, Buffer.alloc(64000));
     s.app.store.completeChunk(piece.id, { text: words(n, word), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
@@ -181,6 +181,42 @@ test(`during a recording the meeting is named from its first ${TITLE_WORDS} word
   assert.deepEqual([sample[0], sample.at(-1)], ['kite0', 'ribbon99'], 'the first words, nothing later');
   await s.titles.tick();
   assert.equal(s.asked.length, 1, 'one call');
+});
+
+test('while recording, words after a piece still waiting for its retry do not count: the name comes from the real start', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  const first = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  s.app.store.failChunk(first.id, 'fictional recognizer failure', null);
+  await s.chunk(id, 1, 1200, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'the first minute is missing');
+  s.app.store.retryChunk(first.id);
+  s.app.store.completeChunk(first.id, { text: words(300, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  assert.match(s.asked[0]!, /<<<\nkite0 .* ribbon699\n>>>/);
+});
+
+test('a rate limit keeps the meeting\'s try: no call for a while, then it is named', async t => {
+  let limited = true;
+  const s = await titlesFor(t, async () => {
+    if (limited) { limited = false; return answer('', { stopReason: 'error', errorMessage: '429 Too Many Requests' }); }
+    return answer('Lantern parade route');
+  });
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  await s.chunk(id, 0, 300, 'kite'); s.app.store.recordingEnded(id, Date.now());
+  const start = Date.now(); s.setNow(start);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  s.setNow(start + TITLE_PAUSE_MS - 1000);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1, 'paused');
+  s.setNow(start + TITLE_PAUSE_MS + 1);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 2);
+  assert.equal(s.title(id), 'Lantern parade route');
 });
 
 test('a meeting that stops short of the words is named once it ends, though its transcript did not change', async t => {

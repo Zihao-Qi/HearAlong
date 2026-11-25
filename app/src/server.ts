@@ -655,7 +655,9 @@ export async function startServer(options: {
     // they are in, else after it ends. Only meetings recorded or replayed from now on; local models wait while any recording
     // runs, as the board does.
     const titles = new MeetingTitles({ store: appStoreRef, since: clock(), now: clock, stillComing,
-      recording: () => [...new Set([...receivingPcm.keys(), ...recording.keys()])].filter(id => receivingPcm.has(id) || isRecording(id)),
+      // Accepted audio only (a request still being checked is no recording); an open session counts after 60 s of silence too
+      // (a crashed tab never ends it), so its meeting is named once its words are in.
+      recording: () => [...recording.keys()].filter(id => Boolean(recording.get(id)?.size) || isRecording(id)),
       ask: () => {
         if (closing) return null;
         if (options.titles !== undefined) return options.titles;
