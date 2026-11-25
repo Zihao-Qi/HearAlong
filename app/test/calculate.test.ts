@@ -671,13 +671,19 @@ test('a reader that goes silent leaves the calculation paused, never unchecked',
   const f = await fixture(t, 2500);
   // One valid reading, then nothing: the group may run for 250 ms and then stays stopped until the time limit.
   if (!await withReader(t, f, 'echo 20000000; exec /bin/sleep 30')) return;
+  // How late this process's timers fire: a busy machine delays the guard's 250 ms pause timer by the same amount.
+  let lagMs = 0, last = performance.now();
+  const probe = setInterval(() => { const now = performance.now(); lagMs = Math.max(lagMs, now - last - 20); last = now; }, 20);
+  t.after(() => clearInterval(probe));
   const result = await f.run('let n = 0; setInterval(() => console.log(++n), 50)');
+  clearInterval(probe);
   assert.equal(result.details.timedOut, true, JSON.stringify(result));
   // Paused before the code is sent, resumed once by the single reading, paused when its window ends, never resumed.
   const steps = f.signals.filter(entry => entry.signal === 'SIGSTOP' || entry.signal === 'SIGCONT');
   assert.deepEqual(steps.map(entry => entry.signal), ['SIGSTOP', 'SIGCONT', 'SIGSTOP'], JSON.stringify(f.signals));
-  // A busy machine can fire the 250 ms timer late, so count against the time the group was actually let run.
+  // The window is 250 ms, late only by the measured timer delay; ticks count against the time it actually lasted.
   const ranMs = steps[2]!.at - steps[1]!.at;
+  assert.ok(ranMs <= 250 + lagMs + 100, `run window ${Math.round(ranMs)} ms with timers ${Math.round(lagMs)} ms late`);
   const printed = result.details.stdout.trim().split('\n').filter(Boolean).length;
   assert.ok(printed <= Math.floor(ranMs / 50) + 1, `ticked only while let run (${Math.round(ranMs)} ms): ${printed} ticks`);
   assert.deepEqual(await readdir(join(f.root, 'processes')), [], JSON.stringify(result));
