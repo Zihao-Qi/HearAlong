@@ -683,7 +683,7 @@ test('a reader that goes silent leaves the calculation paused, never unchecked',
   assert.deepEqual(steps.map(entry => entry.signal), ['SIGSTOP', 'SIGCONT', 'SIGSTOP'], JSON.stringify(f.signals));
   // The window is 250 ms, late only by the measured timer delay; ticks count against the time it actually lasted.
   const ranMs = steps[2]!.at - steps[1]!.at;
-  const lagMs = Math.max(0, ...gaps.filter(gap => gap.from <= steps[2]!.at && gap.to >= steps[1]!.at).map(gap => gap.to - gap.from - 20));
+  const lagMs = Math.max(0, ...gaps.map(gap => Math.min(gap.to, steps[2]!.at) - Math.max(gap.from, steps[1]!.at) - 20));
   assert.ok(ranMs <= 250 + lagMs + 100, `run window ${Math.round(ranMs)} ms with timers ${Math.round(lagMs)} ms late`);
   const printed = result.details.stdout.trim().split('\n').filter(Boolean).length;
   assert.ok(printed <= Math.floor(ranMs / 50) + 1, `ticked only while let run (${Math.round(ranMs)} ms): ${printed} ticks`);
