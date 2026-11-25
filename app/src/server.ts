@@ -650,10 +650,14 @@ export async function startServer(options: {
     }, 1000) : undefined;
     idleLoop?.unref();
     startupLoops.add(idleLoop);
-    // Automatic meeting names (meeting-title.ts), after `closing` exists (a loop may tick as soon as it is scheduled): once a recording or replay has ended and its transcript is final, the board's
-    // warm lane names a meeting that still has its made-up name. Only recordings ending from now on; local models wait while
-    // any recording runs, as the board does.
-    const titles = new MeetingTitles({ store: appStoreRef, since: clock(), stillComing,
+    // Automatic meeting names (meeting-title.ts), after `closing` exists (a loop may tick as soon as it is scheduled): the board's
+    // warm lane names a meeting that still has its made-up name from its first 1000 words, during the recording or replay once
+    // they are in, else after it ends. Only meetings recorded or replayed from now on; local models wait while any recording
+    // runs, as the board does.
+    const titles = new MeetingTitles({ store: appStoreRef, since: clock(), now: clock, stillComing,
+      // Accepted audio only (a request still being checked is no recording); an open session counts after 60 s of silence too
+      // (a crashed tab never ends it), so its meeting is named once its words are in.
+      recording: () => [...recording.keys()].filter(id => Boolean(recording.get(id)?.size) || isRecording(id)),
       ask: () => {
         if (closing) return null;
         if (options.titles !== undefined) return options.titles;

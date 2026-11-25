@@ -1,15 +1,19 @@
-// Automatic meeting names: after a recording (or replay) ends and its transcript is final, the board's quick model names a
-// meeting that still has the name HearAlong made up ("Meeting <stamp>", "Untitled meeting", "<file> (replay)"). A name the
+// Automatic meeting names: the Board's model names a meeting that still has the name HearAlong made up ("Meeting <stamp>",
+// "Untitled meeting", "<file> (replay)") from the first words of its transcript, as soon as those are in: during the recording
+// or replay once it has TITLE_WORDS words, else after it ends (from at least TITLE_MIN_WORDS). One call per meeting. A name the
 // user gave is never replaced (the rename only applies while title = autoTitle), and later notes may still improve it.
-// Only recordings that end while this server runs are named: older meetings keep their names.
+// Only meetings recorded or replayed while this server runs are named: older meetings keep their names.
 import { isAiDeferred } from './ai-deferral.ts';
+import { RATE_LIMIT } from './quota.ts';
 import type { PiAnswer } from './pi-rpc.ts';
 import { cleanSuggestedTitle, isAppMadeTitle, type Meeting, type MeetingStore } from './store.ts';
 
 /** Fewer words than this give too little to name. */
 export const TITLE_MIN_WORDS = 150;
-/** The transcript part the model reads: the beginning, middle and end, in at most this many words. */
-export const TITLE_SAMPLE_WORDS = 1500;
+/** The model reads the first this-many words, and a meeting is named once it has them (about 7–8 minutes of talk). */
+export const TITLE_WORDS = 1000;
+/** After a rate-limit error, no call for this long; the meeting keeps its try. */
+export const TITLE_PAUSE_MS = 5 * 60_000;
 /** A title longer than this many words is cut. */
 export const TITLE_MAX_WORDS = 8;
 
@@ -31,19 +35,18 @@ export function hasDefaultName(meeting: Meeting): boolean {
   return Boolean(meeting.replay && meeting.title.endsWith(' (replay)'));
 }
 
-/** The whole transcript when short; otherwise its beginning (40%), middle (30%) and end (30%), marked where words are left out. */
-export function titleSample(lines: readonly string[], limit = TITLE_SAMPLE_WORDS): string {
-  const words = lines.join(' ').split(/\s+/).filter(Boolean);
-  if (words.length <= limit) return words.join(' ');
-  const head = Math.floor(limit * 0.4), middle = Math.floor(limit * 0.3), tail = limit - head - middle;
-  const from = Math.floor((words.length - middle) / 2);
-  return [words.slice(0, head), words.slice(from, from + middle), words.slice(words.length - tail)].map(part => part.join(' ')).join(' … ');
+const wordsOf = (lines: readonly string[]) => lines.join(' ').split(/\s+/).filter(Boolean);
+
+/** The first `limit` words of the transcript. */
+export function titleSample(lines: readonly string[], limit = TITLE_WORDS): string {
+  return wordsOf(lines).slice(0, limit).join(' ');
 }
 
 export function titlePrompt(sample: string): string {
   return [
-    'Name this meeting. Below is its transcript (or its beginning, middle and end, joined by "…"). Speakers are not marked.',
-    `Reply with one short title of at most ${TITLE_MAX_WORDS} words, in the language of the transcript: what the meeting was about, as a topic, not a sentence.`,
+    'Name this meeting. Below is the start of its transcript (all of it, if short). Speakers are not marked.',
+    'Opening small talk is not the topic: name what the meeting is about.',
+    `Reply with one short title of at most ${TITLE_MAX_WORDS} words, in the language of the transcript: the topic, not a sentence.`,
     'No quotation marks, no date, no words like "Meeting about" or "Discussion of". Reply with the title only.',
     '', 'Transcript:', '<<<', sample, '>>>',
   ].join('\n');
@@ -76,80 +79,103 @@ type Options = {
   store: MeetingStore;
   /** The model call, or null while AI is off (checked on every tick). */
   ask: () => TitleAsk | null;
-  /** Recording, replaying or still transcribing: wait. */
+  /** Recording, replaying or still transcribing: a meeting short of TITLE_WORDS waits. */
   stillComing: (meetingId: string) => boolean;
+  /** Meetings being recorded now (replays are found by their end time and their visible words). */
+  recording: () => Iterable<string>;
   /** Recordings that ended before this time are not named. */
   since: number;
+  now?: () => number;
   log?: (message: string) => void;
 };
 
 export class MeetingTitles {
-  /** meeting id + recordingEndedAt: each ended recording gets one model call, whatever its outcome (a postponed call is none). */
+  /** Meeting ids: each meeting gets one model call, whatever its outcome (a postponed call is none). */
   private readonly tried = new Set<string>();
-  /** Meetings found too short, by the version of their transcribed chunks then. */
+  /** Meetings found too short, by the version of their transcript (and whether more was coming) then. */
   private readonly short = new Map<string, string>();
   private running: Promise<void> | null = null;
+  private pausedUntil = 0;
   private readonly options: Options;
   constructor(options: Options) { this.options = options; }
 
   /** One meeting at a time; a tick during a call does nothing. */
   tick(): Promise<void> {
     if (this.running) return this.running;
+    if ((this.options.now ?? Date.now)() < this.pausedUntil) return Promise.resolve();
     const ask = this.options.ask();
     if (!ask) return Promise.resolve();
     const next = this.next();
     if (!next) return Promise.resolve();
-    this.tried.add(next.key);
-    this.running = this.name(next.meeting, ask, next.key).finally(() => { this.running = null; });
+    this.tried.add(next.meeting.id);
+    this.running = this.name(next.meeting, next.lines, ask).finally(() => { this.running = null; });
     return this.running;
   }
 
   /** Waits for a call in progress (shutdown). */
   async idle() { await this.running?.catch(() => {}); }
 
-  private next(): { meeting: Meeting; key: string } | null {
-    const { store, since, stillComing } = this.options;
+  private next(): { meeting: Meeting; lines: string[] } | null {
+    const { store, since, stillComing, now = Date.now } = this.options;
     // Only meetings that still carry an app name: one the user, notes or a title pass named drops out here, in SQL.
-    const ended = store.db.prepare(`SELECT id, recordingEndedAt FROM meetings WHERE recordingEndedAt IS NOT NULL AND recordingEndedAt >= ?
-      AND autoTitle IS NOT NULL AND title = autoTitle`).all(since) as { id: string; recordingEndedAt: number }[];
+    const candidates = new Set((store.db.prepare(`SELECT id FROM meetings WHERE recordingEndedAt IS NOT NULL AND recordingEndedAt >= ?
+      AND autoTitle IS NOT NULL AND title = autoTitle`).all(since) as { id: string }[]).map(row => row.id));
+    for (const id of this.options.recording()) candidates.add(id);
     // The transcript's version: new lines, corrected lines (each bumps its revision) and their text.
     const transcribed = store.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(revision), 0) AS revisions, COALESCE(SUM(length(text)), 0) AS chars FROM segments WHERE meetingId=?');
-    for (const row of ended) {
-      const key = `${row.id}:${row.recordingEndedAt}`;
-      if (this.tried.has(key)) continue;
+    // Where the transcript may still be missing words: the earliest piece waiting to be transcribed (queued, also for an automatic
+    // retry, or running) or audio not yet cut into a piece. A piece that failed for good waits for nothing.
+    const waiting = store.db.prepare(`SELECT MIN(at) AS at FROM (SELECT MIN(startMs) AS at FROM chunks WHERE meetingId=? AND status IN ('queued', 'running')
+      UNION ALL SELECT MIN(startMs) AS at FROM frames WHERE meetingId=? AND windowChunkId IS NULL)`);
+    for (const id of candidates) {
+      if (this.tried.has(id)) continue;
       let meeting: Meeting;
-      try { meeting = store.meeting(row.id); } catch { continue; } // deleted meanwhile
+      try { meeting = store.meeting(id); } catch { continue; } // deleted meanwhile
       if (!hasDefaultName(meeting)) {
-        // Named by notes or an earlier pass: done. A "(replay)" name is checked again: the meeting is marked as a replay just
-        // after its upload ends.
-        if (!meeting.title.endsWith(' (replay)')) this.tried.add(key);
+        // Named by notes, the user or an earlier pass: done. A "(replay)" name is checked again: the meeting is marked as a
+        // replay just after its upload ends.
+        if (!meeting.title.endsWith(' (replay)')) this.tried.add(id);
         continue;
       }
-      if (stillComing(row.id)) continue;
-      // Too short: counted again only once its transcript changes (retried chunks, corrections), so it costs one query a tick.
-      const { n, revisions, chars } = transcribed.get(row.id) as { n: number; revisions: number; chars: number };
-      const version = `${n}:${revisions}:${chars}`;
-      if (this.short.get(key) === version) continue;
-      const words = store.segments(row.id).reduce((count, s) => count + s.text.split(/\s+/).filter(Boolean).length, 0);
-      if (words < TITLE_MIN_WORDS) { this.short.set(key, version); continue; }
-      this.short.delete(key);
-      return { meeting, key };
+      const coming = stillComing(id);
+      // A replay shows its words as it plays: those are counted every tick while it plays, as the count grows with no new lines.
+      const replay = store.replay(id);
+      const playing = Boolean(replay && store.replayPositionMs(replay, now()) < replay.durationMs);
+      // Too short: counted again only once its transcript changes or stops coming in, so it costs one query a tick.
+      // While more is coming, only the unbroken start counts: words after a gap that may still fill (a piece awaiting its retry,
+      // or the other source's window, whose mic echo would otherwise count twice) could skip or double part of the start.
+      const pending = coming ? (waiting.get(id, id) as { at: number | null }).at ?? Infinity : Infinity;
+      let version: string | null = null;
+      if (!playing) {
+        const { n, revisions, chars } = transcribed.get(id) as { n: number; revisions: number; chars: number };
+        version = `${n}:${revisions}:${chars}:${coming}:${pending}`;
+        if (this.short.get(id) === version) continue;
+      }
+      const lines = store.visibleSegments(id, now()).filter(s => s.endMs <= pending).map(s => s.text);
+      const words = wordsOf(lines).length;
+      if (words >= TITLE_WORDS || (!coming && words >= TITLE_MIN_WORDS)) { this.short.delete(id); return { meeting, lines }; }
+      if (version) this.short.set(id, version);
     }
     return null;
   }
 
-  private async name(meeting: Meeting, ask: TitleAsk, key: string) {
+  private async name(meeting: Meeting, lines: string[], ask: TitleAsk) {
     const { store, log = message => console.log(message) } = this.options;
     try {
-      const answer = await ask(titlePrompt(titleSample(store.segments(meeting.id).map(s => s.text))));
-      if (answer.aborted || (answer.stopReason !== undefined && answer.stopReason !== 'stop')) throw new Error(`the model stopped early (${answer.stopReason ?? 'aborted'})`);
+      const answer = await ask(titlePrompt(titleSample(lines)));
+      if (answer.aborted || (answer.stopReason !== undefined && answer.stopReason !== 'stop')) throw new Error(`the model stopped early (${answer.stopReason ?? 'aborted'}${answer.errorMessage ? `: ${answer.errorMessage}` : ''})`);
       const title = cleanTitleReply(answer.text);
       if (!title) { log(`Meeting title ${meeting.id.slice(0, 8)}: no usable title in the reply`); return; }
       // Only while the name is still the made-up one read above: notes or the user renaming it meanwhile win.
       if (store.titleFromTranscript(meeting.id, meeting.title, title)) log(`Meeting title ${meeting.id.slice(0, 8)}: named from its transcript`);
     } catch (error) {
       // Postponed by the model lane (a recording started on a local model, a model switch): not an attempt, try again later.
-      if (isAiDeferred(error)) { this.tried.delete(key); return; }
+      if (isAiDeferred(error)) { this.tried.delete(meeting.id); return; }
+      // A rate limit (often from the Board's calls on the same model) is no answer: wait, then try again.
+      if (RATE_LIMIT.test((error as Error).message)) {
+        this.tried.delete(meeting.id); this.pausedUntil = (this.options.now ?? Date.now)() + TITLE_PAUSE_MS;
+        log(`Meeting title ${meeting.id.slice(0, 8)}: rate-limited; trying again in ${TITLE_PAUSE_MS / 60_000} minutes`); return;
+      }
       log(`Meeting title ${meeting.id.slice(0, 8)}: ${(error as Error).message}`);
     }
   }

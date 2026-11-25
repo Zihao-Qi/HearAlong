@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cleanTitleReply, hasDefaultName, titlePrompt, titleSample, TITLE_SAMPLE_WORDS } from '../src/meeting-title.ts';
+import { cleanTitleReply, hasDefaultName, MeetingTitles, titlePrompt, titleSample, TITLE_PAUSE_MS, TITLE_WORDS } from '../src/meeting-title.ts';
 import { startServer } from '../src/server.ts';
 import type { PiAnswer } from '../src/pi-rpc.ts';
 import type { Meeting } from '../src/store.ts';
@@ -14,15 +14,11 @@ const answer = (text: string, extra: Partial<PiAnswer> = {}): PiAnswer => ({ tex
 const words = (n: number, word = 'lantern') => Array.from({ length: n }, (_, i) => `${word}${i}`).join(' ');
 const stamp = (at: number) => new Date(at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-test('the sample is the whole transcript when short, else its beginning, middle and end', () => {
-  assert.equal(titleSample(['one two', 'three']), 'one two three');
-  const long = Array.from({ length: 5000 }, (_, i) => `w${i}`);
-  const sample = titleSample([long.join(' ')]);
-  const parts = sample.split(' … ');
-  assert.equal(parts.length, 3);
-  assert.equal(parts.join(' ').split(' ').length, TITLE_SAMPLE_WORDS);
-  assert.ok(parts[0].startsWith('w0 ') && parts[2].endsWith(' w4999'), 'beginning and end');
-  assert.ok(parts[1].split(' ').includes('w2500'), 'the middle');
+test('the sample is the whole transcript when short, else its first words', () => {
+  assert.equal(titleSample(['one  two', 'three']), 'one two three');
+  const sample = titleSample([words(3000, 'w')]).split(' ');
+  assert.equal(sample.length, TITLE_WORDS);
+  assert.equal(sample[0], 'w0'); assert.equal(sample.at(-1), `w${TITLE_WORDS - 1}`);
   assert.match(titlePrompt('fictional words'), /<<<\nfictional words\n>>>$/);
 });
 
@@ -68,19 +64,19 @@ test('only a name HearAlong made up counts as default', () => {
   assert.equal(hasDefaultName(meeting('Meeting \u0662\u0664 \u0646\u0648\u0641\u060c \u0660\u0668:\u0664\u0661', 'Meeting \u0662\u0664 \u0646\u0648\u0641\u060c \u0660\u0668:\u0664\u0661')), true, 'Arabic-Indic digits');
 });
 
-async function server(t: any, ask: (message: string) => Promise<PiAnswer>) {
+async function server(t: any, ask: ((message: string) => Promise<PiAnswer>) | null) {
   const directory = await mkdtemp(join(tmpdir(), 'meeting-title-auto-'));
   const asked: string[] = [];
   const app = await startServer({ directory, port: 0, recognizer: null, drafts: null, quick: null, heavy: null, notes: null, board: null, actions: null, plans: null,
-    titles: message => { asked.push(message); return ask(message); }, titleTickMs: 20 });
+    titles: ask && (message => { asked.push(message); return ask(message); }), titleTickMs: 20 });
   t.after(async () => { await app.close(); await rm(directory, { recursive: true, force: true }); });
   /** A meeting with `n` transcript words whose recording has just ended. */
-  const recorded = async (title: string, n: number, madeUp = true, word = 'lantern', replay?: object) => {
+  const recorded = async (title: string, n: number, madeUp = true, word = 'lantern', replayFrom?: number) => {
     const meeting = app.store.createMeeting(title, madeUp);
     const chunk = await app.store.addPcm(meeting.id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
     app.store.completeChunk(chunk.id, { text: words(n, word), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
     // A replay meeting takes no new audio: it becomes one after its transcript is in, before its end is recorded.
-    if (replay) app.store.db.prepare('UPDATE meetings SET replay=? WHERE id=?').run(JSON.stringify(replay), meeting.id);
+    if (replayFrom !== undefined) app.store.startReplay(meeting.id, 'mic:fixture', 1, replayFrom);
     app.store.recordingEnded(meeting.id, Date.now());
     return meeting.id;
   };
@@ -143,23 +139,171 @@ test('notes or the user naming the meeting during the call win', async t => {
   assert.equal(s.title(id), 'Lantern parade route');
 });
 
-test('a later recording in a meeting that still has its made-up name gets one more try', async t => {
+test('one call per meeting: a later recording after an unusable answer does not ask again', async t => {
   let reply = '';
   const s = await server(t, async () => answer(reply));
   const id = await s.recorded('Untitled meeting', 200);
   await until(() => s.asked.length === 1, 5000, 'the first call');
-  await s.settle();
-  assert.equal(s.title(id), 'Untitled meeting');
   reply = 'Lantern parade route';
   s.app.store.recordingEnded(id, Date.now() + 1);
-  await until(() => s.title(id) === 'Lantern parade route', 5000, 'the second try');
+  await s.settle();
+  assert.equal(s.asked.length, 1);
+  assert.equal(s.title(id), 'Untitled meeting');
+});
+
+/** The naming loop driven by hand: which meetings record, what is still coming in, and the time. */
+async function titlesFor(t: any, reply: () => Promise<PiAnswer> = async () => answer('Lantern parade route')) {
+  const s = await server(t, null);
+  const asked: string[] = [], recording = new Set<string>(), coming = new Set<string>();
+  let at = Date.now();
+  const titles = new MeetingTitles({ store: s.app.store, since: at - 1000, now: () => at, recording: () => recording,
+    stillComing: id => coming.has(id), ask: () => async message => { asked.push(message); return reply(); }, log: () => {} });
+  const chunk = async (id: string, sequence: number, n: number, word: string) => {
+    const piece = await s.app.store.addPcm(id, 'mic:fixture', sequence, sequence * 60_000, 16000, Buffer.alloc(64000));
+    s.app.store.completeChunk(piece.id, { text: words(n, word), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  };
+  return { ...s, titles, asked, recording, coming, chunk, setNow: (value: number) => { at = value; } };
+}
+
+test(`during a recording the meeting is named from its first ${TITLE_WORDS} words as soon as they are in`, async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  await s.chunk(id, 0, 900, 'kite');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'still short of the words it needs');
+  await s.chunk(id, 1, 900, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  assert.equal(s.title(id), 'Lantern parade route', 'named while still recording');
+  const sample = s.asked[0].split('<<<\n')[1].split('\n>>>')[0].split(' ');
+  assert.equal(sample.length, TITLE_WORDS);
+  assert.deepEqual([sample[0], sample.at(-1)], ['kite0', 'ribbon99'], 'the first words, nothing later');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1, 'one call');
+});
+
+test('while recording, words after a piece still waiting for its retry do not count: the name comes from the real start', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  const first = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  s.app.store.failChunk(first.id, 'fictional recognizer failure', Date.now() + 60_000);
+  await s.chunk(id, 1, 1200, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'the first minute is missing');
+  s.app.store.completeChunk(first.id, { text: words(300, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  assert.match(s.asked[0]!, /<<<\nkite0 .* ribbon699\n>>>/);
+});
+
+test('a rate limit keeps the meeting\'s try: no call for a while, then it is named', async t => {
+  let limited = true;
+  const s = await titlesFor(t, async () => {
+    if (limited) { limited = false; return answer('', { stopReason: 'error', errorMessage: '429 Too Many Requests' }); }
+    return answer('Lantern parade route');
+  });
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  await s.chunk(id, 0, 300, 'kite'); s.app.store.recordingEnded(id, Date.now());
+  const start = Date.now(); s.setNow(start);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  s.setNow(start + TITLE_PAUSE_MS - 1000);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1, 'paused');
+  s.setNow(start + TITLE_PAUSE_MS + 1);
+  await s.titles.tick();
   assert.equal(s.asked.length, 2);
+  assert.equal(s.title(id), 'Lantern parade route');
+});
+
+test('while recording, a piece that failed for good does not hold the name back', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  const first = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  s.app.store.failChunk(first.id, 'fictional recognizer failure', null);
+  await s.chunk(id, 1, 1200, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+  assert.match(s.asked[0]!, /<<<\nribbon0 /);
+});
+
+test('while recording, a piece that ends with no words is counted again: the words after it are no longer held back', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  const silent = await s.app.store.addPcm(id, 'mic:fixture', 0, 0, 16000, Buffer.alloc(64000));
+  await s.chunk(id, 1, 1200, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'held back by the piece still queued');
+  s.app.store.completeChunk(silent.id, { text: '', words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+});
+
+test('while recording, mic words past the call audio not yet cut into a piece are held back (their echo is not yet known)', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  await s.chunk(id, 0, 600, 'kite');
+  await s.app.store.addFrame(id, 'tab:fixture', 0, 30_000, Buffer.alloc(64000));
+  await s.chunk(id, 1, 600, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'only the 600 words before the call audio count');
+  s.app.store.db.prepare('DELETE FROM frames WHERE meetingId=?').run(id); // the call window sealed and transcribed (silent)
+  await s.titles.tick();
+  assert.equal(s.asked.length, 1);
+});
+
+test('a meeting that stops short of the words is named once it ends, though its transcript did not change', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  s.recording.add(id); s.coming.add(id);
+  await s.chunk(id, 0, 300, 'kite');
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0);
+  s.recording.delete(id); s.coming.delete(id); s.app.store.recordingEnded(id, Date.now());
+  await s.titles.tick();
+  assert.equal(s.title(id), 'Lantern parade route');
+  assert.match(s.asked[0], /kite0 .* kite299\n>>>/);
+});
+
+test('a meeting that ended before the app started is named when it is recorded again', async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('Untitled meeting', true).id;
+  await s.chunk(id, 0, 600, 'kite');
+  s.app.store.recordingEnded(id, Date.now() - 3_600_000);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'an old meeting keeps its name');
+  s.recording.add(id); s.coming.add(id);
+  await s.chunk(id, 1, 600, 'ribbon');
+  await s.titles.tick();
+  assert.equal(s.title(id), 'Lantern parade route');
+});
+
+test(`a replay is named once ${TITLE_WORDS} words have played, from those words only`, async t => {
+  const s = await titlesFor(t);
+  const id = s.app.store.createMeeting('kite.m4a (replay)', true).id;
+  await s.chunk(id, 0, 600, 'kite'); await s.chunk(id, 1, 600, 'ribbon');
+  const startedAt = Date.now();
+  s.app.store.startReplay(id, 'mic:fixture', 1, startedAt);
+  s.app.store.recordingEnded(id, startedAt);
+  s.coming.add(id);
+  s.setNow(startedAt + 30_000);
+  await s.titles.tick();
+  assert.equal(s.asked.length, 0, 'only the first 600 words have played');
+  s.setNow(startedAt + 62_000);
+  await s.titles.tick();
+  assert.equal(s.title(id), 'Lantern parade route', 'named before the replay ends');
+  assert.match(s.asked[0], /kite0 .* ribbon399\n>>>/);
 });
 
 test('replays are named when the replay has played to its end', async t => {
   const s = await server(t, async () => answer('Kite festival'));
-  // Still playing for a moment: still coming in, so it waits; then it has played to its end.
-  const id = await s.recorded('kite.m4a (replay)', 200, true, 'kite', { sourceId: 'r', startedAt: Date.now(), speed: 1, baseMs: 0, durationMs: 400 });
+  // Its 1 s of audio still playing for a moment: still coming in, so it waits; then it has played to its end.
+  const id = await s.recorded('kite.m4a (replay)', 200, true, 'kite', Date.now() - 500);
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.deepEqual(s.asked, [], 'not while the replay plays');
   await until(() => s.title(id) === 'Kite festival', 5000, 'the replay to be named');
@@ -189,7 +333,7 @@ test('a meeting that is not ready yet is checked again: a replay marked just aft
   s.app.store.recordingEnded(short, Date.now());
   await s.settle();
   assert.deepEqual(s.asked, []);
-  s.app.store.db.prepare('UPDATE meetings SET replay=? WHERE id=?').run(JSON.stringify({ sourceId: 'r', startedAt: Date.now() - 60_000, speed: 1, baseMs: 0, durationMs: 1000 }), replay);
+  s.app.store.startReplay(replay, 'mic:fixture', 1, Date.now() - 60_000);
   s.app.store.retryChunk(failed.id);
   s.app.store.completeChunk(failed.id, { text: words(100, 'kite'), words: [], backend: 'fixture', computeMs: 1, decodeMs: 1, audioSeconds: 1, processRssBytes: 0, timestampKind: 'none' });
   await until(() => s.title(replay) === 'Kite festival' && s.title(short) === 'Kite festival', 5000, 'both to be named');
