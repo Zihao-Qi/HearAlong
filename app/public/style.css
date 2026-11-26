@@ -606,7 +606,7 @@ body.layout-compact .board-bar .sort-toggle { margin-left: 0; }
 .board-pane .pane-head .options-button:hover, .board-pane .pane-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
 .board-pane .pane-head .notes-menu { top: 100%; z-index: 30; }
 .notes-options-wrap:not(:has(> .options-button:not([hidden]))),
-.notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]), > .notes-options-wrap:not([hidden]) > .options-button:not([hidden]))) { display: none; }
+.notes-bar:not(.tuck-options):not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]), > .notes-options-wrap:not([hidden]) > .options-button:not([hidden]))) { display: none; }
 .notes-body .board-empty { margin-left: 0; margin-right: 0; }
 .link-button { min-height: 32px; }
 /* Card header: one row, centred; the time is a quiet link, the dismiss button a real target. */
@@ -862,31 +862,28 @@ body.layout-compact .plans-head > .plans-menu { width: min(280px, calc(100vw - 2
 .inline-settings-link::after { content: ""; position: absolute; inset: -6px -4px; }
 .notes-ai-hint { flex-basis: 100%; padding-top: 6px; }
 
-/* Compact Notes / Plans Options ▾: quiet text action tucked into the card header row only when it owns the top cleanly. */
+/* Compact Notes Options ▾: quiet text action inside the card's first heading row when it owns the top cleanly; Plans keeps its own row. */
 body.layout-compact .notes-bar { min-height: 44px; padding: 14px 12px 10px; }
-body.layout-compact .notes-bar .notes-menu { top: 48px; }
+body.layout-compact .notes-options-wrap > .notes-menu { top: 48px; }
 body.layout-compact .plans-head { min-height: 44px; }
 body.layout-compact .plans-head > .plans-menu { top: 48px; }
-body.layout-compact .notes-bar .options-button,
+body.layout-compact .notes-options-wrap .options-button,
 body.layout-compact .plans-head .options-button { gap: 4px; min-width: 44px; min-height: 44px; padding: 0 8px; border: none; background: none; color: var(--accent-ink); font: 500 13px var(--sans); white-space: nowrap; position: relative; }
-body.layout-compact .notes-bar .options-button:not([aria-expanded="true"]),
+body.layout-compact .notes-options-wrap .options-button:not([aria-expanded="true"]),
 body.layout-compact .plans-head .options-button:not([aria-expanded="true"]) { box-shadow: none; }
-body.layout-compact .notes-bar .options-button svg,
+body.layout-compact .notes-options-wrap .options-button svg,
 body.layout-compact .plans-head .options-button svg { color: inherit; }
-body.layout-compact .notes-bar .options-button:hover,
-body.layout-compact .notes-bar .options-button[aria-expanded="true"],
+body.layout-compact .notes-options-wrap .options-button:hover,
+body.layout-compact .notes-options-wrap .options-button[aria-expanded="true"],
 body.layout-compact .plans-head .options-button:hover,
 body.layout-compact .plans-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
-body.layout-compact .notes-bar.tuck-options { position: relative; z-index: 2; height: 14px; min-height: 0; padding: 0; overflow: visible; }
-body.layout-compact .notes-bar.tuck-options > .notes-options-wrap { position: absolute; top: 16px; right: 16px; }
-body.layout-compact .notes-bar.tuck-options .notes-menu { top: 46px; }
-body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-section,
-body.layout-compact .notes-body.tuck-options > .notes-fold:first-child > summary { padding-right: 84px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) { position: relative; z-index: 2; height: 14px; min-height: 0; margin-top: -14px; margin-bottom: -14px; overflow: visible; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .options-button { position: absolute; top: 16px; right: 12px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .plans-menu { top: 62px; right: 12px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card > .plans-list:first-child > .plan:first-child .plan-label { padding-right: 84px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card > .plans-list:first-child > .plan:first-child .plan-chev { margin-top: 28px; }
+body.layout-compact #notes-panel > .notes-bar.tuck-options { display: block; height: 14px; min-height: 0; padding: 0; }
+body.layout-compact .notes-body.tuck-options > .notes-group:first-child { padding-top: 4px; }
+body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin-bottom: 4px; }
+body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-group-head > .notes-section { flex: 1; min-width: 0; margin-bottom: 0; }
+body.layout-compact .notes-body.tuck-options > .notes-fold-row:first-child { display: flex; align-items: flex-start; gap: 8px; padding: 4px 16px 0; }
+body.layout-compact .notes-body.tuck-options > .notes-fold-row:first-child > .notes-fold { flex: 1; min-width: 0; padding: 0; }
+body.layout-compact .notes-body.tuck-options > .notes-fold-row:first-child > .notes-options-wrap { flex: none; }
 
 /* Expanded interactive targets without growing visual bounds, row heights, or overlapping neighbours. */
 .board-card .dismiss,

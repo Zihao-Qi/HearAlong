@@ -491,6 +491,7 @@ function selectMeeting(id) {
   closeTranscriptMenu();
   // Invalidate everything shown for the previous meeting's notes, including in-flight requests and the export link.
   notesView.owner = null; notesView.signature = null; notesView.data = null; notesView.sequence++; notesView.busy = false;
+  parkNotesOptions();
   $('notes-body').replaceChildren(); $('notes-body').classList.remove('has-notes'); delete $('notes-body').dataset.record;
   $('notes-warnings').replaceChildren(); $('notes-status').textContent = ''; $('notes-status').hidden = true;
   $('notes-progress').replaceChildren(); $('notes-progress').hidden = true;
@@ -617,9 +618,7 @@ const layoutView = {
 function boardVisible() { return notesView.tab === 'board' && (!layoutView.compact || layoutView.tab === 'board'); }
 /** Keep a single Notes menu and let Plans render its tools into the active layout's slot. */
 function syncPaneTools() {
-  const wrap = $('notes-options').parentElement;
-  const target = layoutView.compact ? document.querySelector('.notes-bar') : document.querySelector('.board-pane .pane-head');
-  if (wrap.parentElement !== target) target.insertBefore(wrap, layoutView.compact ? $('notes-status') : null);
+  if (typeof syncNotesBarTuck === 'function') syncNotesBarTuck();
 }
 /** Opens the board or notes in whichever layout is active. */
 function openPane(tab, jumping = false) { if (layoutView.compact) showCompactTab(tab, jumping); else showTab(tab); }
@@ -906,6 +905,7 @@ function renderNotes(data, owner) {
   }
   $('notes-warnings').replaceChildren(...warningNodes);
   if (!record) {
+    parkNotesOptions();
     $('notes-body').replaceChildren(...(running ? [] : [el('p', 'After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.', 'board-empty')]));
     syncNotesBarTuck();
     return;
@@ -919,7 +919,9 @@ function renderNotes(data, owner) {
     const items = record.notes[section];
     if (!items.length) continue;
     const group = el('section', undefined, 'notes-group');
-    group.append(el('h4', SECTION_TITLES[section], 'notes-section'));
+    const head = el('div', undefined, 'notes-group-head');
+    head.append(el('h4', SECTION_TITLES[section], 'notes-section'));
+    group.append(head);
     if (section === 'summary') {
       const paragraph = el('p', undefined, 'notes-summary');
       for (const item of items) paragraph.append(noteControl(item.text, item.cites, record, owner), ' ');
@@ -960,26 +962,59 @@ function renderNotes(data, owner) {
     body.push(fold(`Needs review (${record.notes.needsReview.length})`, [list]));
   }
   const hint = el('span', 'Shows this in the transcript'); hint.id = 'note-transcript-hint'; hint.hidden = true;
+  parkNotesOptions();
   host.replaceChildren(...body, hint);
   host.dataset.record = key;
   syncNotesBarTuck();
+}
+function parkNotesOptions() {
+  const bar = document.querySelector?.('.notes-bar');
+  const body = $('notes-body');
+  const wrap = $('notes-options')?.parentElement;
+  if (!bar || !body || !wrap || !body.contains(wrap)) return;
+  const compact = Boolean(document.body?.classList?.contains('layout-compact'));
+  const target = compact ? bar : document.querySelector('.board-pane .pane-head');
+  if (target) target.insertBefore(wrap, compact ? $('notes-status') : null);
 }
 function syncNotesBarTuck() {
   const bar = document.querySelector?.('.notes-bar');
   const body = $('notes-body');
   if (!bar || !body) return;
+  const compact = Boolean(document.body?.classList?.contains('layout-compact'));
+  const wrap = $('notes-options')?.parentElement;
   const first = body.firstElementChild ?? body.children?.[0];
+  const foldRow = first?.classList?.contains('notes-fold-row') ? first : null;
+  const firstItem = foldRow ? foldRow.querySelector('.notes-fold') : first;
   const hasCardHeader = body.classList.contains('has-notes')
-    && Boolean(first && (first.classList.contains('notes-group') || first.classList.contains('notes-fold')));
+    && Boolean(firstItem && (firstItem.classList.contains('notes-group') || firstItem.classList.contains('notes-fold')));
   const barOnlyOptions = !$('notes-options').hidden
     && $('write-notes').hidden
     && $('notes-stale').hidden
     && $('notes-status').hidden
     && ($('notes-ai-hint')?.hidden ?? true)
     && $('notes-progress').hidden;
-  const tuck = hasCardHeader && barOnlyOptions;
+  const tuck = compact && hasCardHeader && barOnlyOptions;
   bar.classList.toggle('tuck-options', tuck);
   body.classList.toggle('tuck-options', tuck);
+  if (!wrap) return;
+  if (tuck) {
+    if (firstItem.classList.contains('notes-group')) {
+      const head = firstItem.querySelector(':scope > .notes-group-head') ?? firstItem;
+      if (wrap.parentElement !== head) head.append(wrap);
+    } else {
+      let row = foldRow;
+      if (!row) {
+        row = el('div', undefined, 'notes-fold-row');
+        firstItem.replaceWith(row);
+        row.append(firstItem);
+      }
+      if (wrap.parentElement !== row) row.append(wrap);
+    }
+  } else {
+    const target = compact ? bar : document.querySelector('.board-pane .pane-head');
+    if (target && wrap.parentElement !== target) target.insertBefore(wrap, compact ? $('notes-status') : null);
+    if (foldRow && firstItem) foldRow.replaceWith(firstItem);
+  }
 }
 async function refreshNotes() {
   if (!meetingId || notesView.busy) return;
