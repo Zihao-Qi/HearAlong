@@ -117,7 +117,8 @@ try {
   await page.locator('#close-settings').click();
   await checkCase('Space downloads plain text and closes the meeting menu', async () => {
     await page.locator('#meeting-button').focus(); await page.keyboard.press('ArrowDown');
-    for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowDown');
+    // Viewport stays at 390 px compact after the loop above, so #meeting-materials is visible before #open-replay.
+    for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowDown');
     assert.equal(await page.locator('#meeting-export-plain').evaluate(n => n === document.activeElement), true);
     const download = page.waitForEvent('download', { timeout: 5000 });
     await page.keyboard.press('Space');
