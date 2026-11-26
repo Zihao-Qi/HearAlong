@@ -881,9 +881,6 @@ body.layout-compact #notes-panel > .notes-bar.tuck-options { display: block; hei
 body.layout-compact .notes-body.tuck-options > .notes-group:first-child { padding-top: 4px; }
 body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 44px; margin-bottom: 4px; }
 body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-group-head > .notes-section { flex: 1; min-width: 0; margin-bottom: 0; }
-body.layout-compact .notes-body.tuck-options > .notes-fold-row:first-child { display: flex; align-items: flex-start; gap: 8px; padding: 4px 16px 0; }
-body.layout-compact .notes-body.tuck-options > .notes-fold-row:first-child > .notes-fold { flex: 1; min-width: 0; padding: 0; }
-body.layout-compact .notes-body.tuck-options > .notes-fold-row:first-child > .notes-options-wrap { flex: none; }
 
 /* Expanded interactive targets without growing visual bounds, row heights, or overlapping neighbours. */
 .board-card .dismiss,

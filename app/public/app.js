@@ -967,26 +967,48 @@ function renderNotes(data, owner) {
   host.dataset.record = key;
   syncNotesBarTuck();
 }
+let notesTuckPending = false;
+let parkingNotesOptions = false;
+function notesOptionsInUse(wrap, leavingWrap = false) {
+  if (!wrap) return false;
+  const menu = $('notes-menu');
+  if (menu && !menu.hidden) return true;
+  if (leavingWrap) return false;
+  const active = document.activeElement;
+  return Boolean(active && wrap.contains?.(active));
+}
 function parkNotesOptions() {
   const bar = document.querySelector?.('.notes-bar');
   const body = $('notes-body');
   const wrap = $('notes-options')?.parentElement;
   if (!bar || !body || !wrap || !body.contains(wrap)) return;
+  const active = document.activeElement;
+  const restoreFocus = active && wrap.contains?.(active) ? active : null;
+  const menuOpen = !$('notes-menu').hidden;
   const compact = Boolean(document.body?.classList?.contains('layout-compact'));
   const target = compact ? bar : document.querySelector('.board-pane .pane-head');
-  if (target) target.insertBefore(wrap, compact ? $('notes-status') : null);
+  parkingNotesOptions = true;
+  try {
+    if (target) target.insertBefore(wrap, compact ? $('notes-status') : null);
+    bar.classList.remove('tuck-options');
+    body.classList.remove('tuck-options');
+    if (menuOpen) {
+      $('notes-menu').hidden = false;
+      $('notes-options').setAttribute('aria-expanded', 'true');
+    }
+    if (restoreFocus && !restoreFocus.hidden && typeof restoreFocus.focus === 'function') restoreFocus.focus();
+  } finally {
+    parkingNotesOptions = false;
+  }
 }
-function syncNotesBarTuck() {
+function syncNotesBarTuck(leavingWrap = false) {
   const bar = document.querySelector?.('.notes-bar');
   const body = $('notes-body');
   if (!bar || !body) return;
   const compact = Boolean(document.body?.classList?.contains('layout-compact'));
   const wrap = $('notes-options')?.parentElement;
   const first = body.firstElementChild ?? body.children?.[0];
-  const foldRow = first?.classList?.contains('notes-fold-row') ? first : null;
-  const firstItem = foldRow ? foldRow.querySelector('.notes-fold') : first;
-  const hasCardHeader = body.classList.contains('has-notes')
-    && Boolean(firstItem && (firstItem.classList.contains('notes-group') || firstItem.classList.contains('notes-fold')));
+  const hasCardHeader = body.classList.contains('has-notes') && Boolean(first?.classList?.contains('notes-group'));
   const barOnlyOptions = !$('notes-options').hidden
     && $('write-notes').hidden
     && $('notes-stale').hidden
@@ -994,27 +1016,27 @@ function syncNotesBarTuck() {
     && ($('notes-ai-hint')?.hidden ?? true)
     && $('notes-progress').hidden;
   const tuck = compact && hasCardHeader && barOnlyOptions;
-  bar.classList.toggle('tuck-options', tuck);
-  body.classList.toggle('tuck-options', tuck);
-  if (!wrap) return;
-  if (tuck) {
-    if (firstItem.classList.contains('notes-group')) {
-      const head = firstItem.querySelector(':scope > .notes-group-head') ?? firstItem;
-      if (wrap.parentElement !== head) head.append(wrap);
-    } else {
-      let row = foldRow;
-      if (!row) {
-        row = el('div', undefined, 'notes-fold-row');
-        firstItem.replaceWith(row);
-        row.append(firstItem);
+  if (wrap) {
+    const target = tuck
+      ? (first.querySelector(':scope > .notes-group-head') ?? first)
+      : (compact ? bar : document.querySelector('.board-pane .pane-head'));
+    if (target && wrap.parentElement !== target) {
+      if (notesOptionsInUse(wrap, leavingWrap)) {
+        notesTuckPending = true;
+      } else {
+        notesTuckPending = false;
+        if (tuck) target.append(wrap);
+        else target.insertBefore(wrap, compact ? $('notes-status') : null);
       }
-      if (wrap.parentElement !== row) row.append(wrap);
+    } else {
+      notesTuckPending = false;
     }
   } else {
-    const target = compact ? bar : document.querySelector('.board-pane .pane-head');
-    if (target && wrap.parentElement !== target) target.insertBefore(wrap, compact ? $('notes-status') : null);
-    if (foldRow && firstItem) foldRow.replaceWith(firstItem);
+    notesTuckPending = false;
   }
+  const wrappedInBody = Boolean(wrap && body.contains(wrap));
+  bar.classList.toggle('tuck-options', tuck && wrappedInBody);
+  body.classList.toggle('tuck-options', wrappedInBody);
 }
 async function refreshNotes() {
   if (!meetingId || notesView.busy) return;
@@ -1070,6 +1092,7 @@ function closeNotesMenu(returnFocus = false) {
   const opener = notesMenuOpener;
   notesMenuOpener = null;
   if (returnFocus && wasOpen) (opener && !opener.hidden ? opener : $('notes-options')).focus();
+  if (notesTuckPending && typeof syncNotesBarTuck === 'function') syncNotesBarTuck();
 }
 function openNotesMenu(opener = $('notes-options'), last = false) {
   if ($('notes-options').hidden) return;
@@ -1100,6 +1123,12 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('focusin', event => {
   if (!event.target.closest?.('.notes-options-wrap, #notes-stale')) closeNotesMenu(true);
+});
+$('notes-options-wrap')?.addEventListener('focusout', event => {
+  if (parkingNotesOptions) return;
+  const wrap = $('notes-options-wrap');
+  if (!wrap || (event.relatedTarget && wrap.contains(event.relatedTarget))) return;
+  if (notesTuckPending && typeof syncNotesBarTuck === 'function') syncNotesBarTuck(true);
 });
 
 $('write-notes').onclick = $('rewrite-notes').onclick = guarded(async () => {
