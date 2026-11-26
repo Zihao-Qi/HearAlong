@@ -3063,8 +3063,9 @@ function setProject(project) {
   renderMeetingMenu();
   renderSettingsNav();
   renderPlanSetting();
-  // The Project tab chosen earlier comes back once a project meeting is shown (it fell back to the board meanwhile).
-  if (project && notesView.tab !== 'project' && (layoutView.compact ? layoutView.tab === 'project' : store.get('right-tab') === 'project')) showTab('project');
+  // The Project tab chosen earlier comes back once a project meeting is shown (it fell back to the board or Transcript meanwhile).
+  if (project && layoutView.compact && store.get('compact-tab') === 'project' && layoutView.tab !== 'project') showCompactTab('project');
+  else if (project && notesView.tab !== 'project' && (layoutView.compact ? layoutView.tab === 'project' : store.get('right-tab') === 'project')) showTab('project');
   else if (project && (notesView.tab === 'project' || layoutView.tab === 'project')) void refreshProject();
   if (!project) updateProjectBadge();
 }
@@ -4396,7 +4397,14 @@ try {
   }
   showTab(notesView.tab);
   applyLayout();
-  if (layoutView.compact && !projectView.project && layoutView.tab === 'project') showCompactTab('live');
+  if (layoutView.compact && !projectView.project && layoutView.tab === 'project') {
+    closeNotesMenu();
+    plansView?.closeMenu();
+    layoutView.tab = 'live';
+    selectCompactTab('live');
+    restoreScroll();
+    updateBoardBadge();
+  }
   startupDone = true;
 }
 setInterval(refreshSegments, 1000);
