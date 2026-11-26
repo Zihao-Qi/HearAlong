@@ -3064,7 +3064,7 @@ function setProject(project) {
   renderSettingsNav();
   renderPlanSetting();
   // The Project tab chosen earlier comes back once a project meeting is shown (it fell back to the board or Transcript meanwhile).
-  if (project && layoutView.compact && store.get('compact-tab') === 'project' && layoutView.tab !== 'project') showCompactTab('project');
+  if (project && layoutView.compact && store.get('compact-tab') === 'project' && layoutView.tab !== 'project' && !document.querySelector('dialog[open]') && $('selection-menu').hidden) showCompactTab('project');
   else if (project && notesView.tab !== 'project' && (layoutView.compact ? layoutView.tab === 'project' : store.get('right-tab') === 'project')) showTab('project');
   else if (project && (notesView.tab === 'project' || layoutView.tab === 'project')) void refreshProject();
   if (!project) updateProjectBadge();
