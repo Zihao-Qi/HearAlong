@@ -139,6 +139,8 @@ body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat
 .compact-tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(24,33,47,.14), inset 0 0 0 1px var(--line-strong); }
 body.layout-compact .board-pane { flex: 1 1 auto; width: auto; border: none; }
 body.layout-compact .board-pane .tabs { display: none; }
+body.layout-compact:not([data-tab]) .transcript-pane,
+body.layout-compact:not([data-tab]) .board-pane { display: none; }
 body.layout-compact[data-tab="live"] .board-pane { display: none; }
 body.layout-compact:not([data-tab="live"]) .transcript-pane { display: none; }
 body.layout-compact .pinned-card:not([hidden]) { display: flex; }
@@ -415,6 +417,10 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .para-mark::before { content: ""; position: absolute; top: -8px; bottom: -8px; left: -6px; right: 0; }
 body.layout-compact .para-mark { left: -15px; top: 11px; padding: 0 2px; }
 body.layout-compact .para-mark::before { left: -1px; right: 0; }
+body.layout-compact .para:has(.para-mark) .listen-time { margin-left: 0; padding-left: 0; }
+body.layout-compact .para:has(.para-mark) .listen-time::before { content: none; }
+body:not(.layout-compact) .para:has(.listen-time:hover) .para-mark { visibility: hidden; }
+body:not(.layout-compact) .para:has(.listen-time:focus-visible) .para-mark { visibility: visible; opacity: 0; pointer-events: none; }
 .more { margin-top: 6px; font-size: 13px; }
 .more > summary { cursor: pointer; color: var(--accent-ink); }
 .auto-answer { margin-top: 8px; font-size: 13px; }

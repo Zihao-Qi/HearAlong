@@ -2534,7 +2534,8 @@ async function refreshCallApps() {
         $('call-apps').append(row);
       }
     }
-    const lostFocus = [...known.values()].includes(document.activeElement);
+    const lostFocus = [...known.values()].includes(document.activeElement)
+      || (apps.length > 0 && document.activeElement === $('call-empty'));
     for (const row of known.values()) row.remove();
     $('call-empty').textContent = window.hearalong?.desktop && !result.available
       ? 'Meeting-app audio is not available right now. You can record the microphone.'
@@ -4284,8 +4285,14 @@ async function renderProjectFiles() {
 }
 $('settings').querySelector('.settings-nav button[data-section="project"]').addEventListener('click', () => void renderProjectFiles());
 
-// Apply compact and narrow/tiny classes synchronously before first paint and startup awaits.
-applyLayout();
+// Prevent the wide-bar flash before startup awaits without touching tab, layoutView, notesView, or storage state.
+function applyInitialLayoutClasses() {
+  document.body.classList.toggle('layout-compact', window.innerWidth < COMPACT_BELOW);
+  const width = topbarWidth();
+  document.body.classList.toggle('topbar-narrow', width < 620);
+  document.body.classList.toggle('topbar-tiny', width < 480);
+}
+applyInitialLayoutClasses();
 
 // ---------- Plans (M7b): its meeting tab, and the project's "Plan after the notes" ----------
 plansApi = await choosePlansApi({ pageId, pageHeaders, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
