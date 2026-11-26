@@ -187,7 +187,9 @@ for (const button of $('selection-menu').querySelectorAll('.selection-actions bu
     const action = button.dataset.action;
     if (!menuSelection) return;
     if (MATERIAL_ACTIONS.has(action) && !actionsView.materials) {
-      $('selection-hint').textContent = 'This needs your project files: add them under Materials (the chip next to the meeting name).';
+      $('selection-hint').textContent = typeof layoutView !== 'undefined' && layoutView.compact
+        ? 'This needs your project files: add them under Materials (in the meeting menu, top left).'
+        : 'This needs your project files: add them under Materials (the chip next to the meeting name).';
       $('selection-hint').hidden = false;
       return;
     }
@@ -227,8 +229,12 @@ function renderLive(snapshot) {
     const notices = captureNotices(snapshot);
     const problems = notices.map(n => ` · ${n.short}`).join('');
     // In an inner span: a chip that is too narrow ends in "…" (the full text is in its title) instead of cutting a letter.
-    chip.replaceChildren(el('span', notices.length ? `Recording${problems}` : `Recording${what}${off ? ' · no live preview' : partly || (mine.some(d => d.behind) ? ' · live preview behind' : '')}`, 'chip-text'));
-    chip.title = notices.length ? notices.map(n => n.text).join('\n') : `${chip.textContent}. The final transcript arrives in 16–24 s pieces; the grey live preview fills in until then.`;
+    const fullChip = notices.length ? `Recording${problems}` : `Recording${what}${off ? ' · no live preview' : partly || (mine.some(d => d.behind) ? ' · live preview behind' : '')}`;
+    const chipSpan = el('span', undefined, 'chip-text');
+    if (notices.length) chipSpan.append('Rec', el('span', 'ording', 'chip-full'), problems);
+    else chipSpan.append('Rec', el('span', fullChip.slice(3), 'chip-full'));
+    chip.replaceChildren(chipSpan);
+    chip.title = notices.length ? notices.map(n => n.text).join('\n') : `${fullChip}. The final transcript arrives in 16–24 s pieces; the grey live preview fills in until then.`;
   }
   else if (snapshot?.replay && snapshot.replay.positionMs < snapshot.replay.durationMs) {
     const r = snapshot.replay;
@@ -541,6 +547,7 @@ function controls() {
   $('rename-meeting').disabled = busy || !meetingId;
   for (const item of $('meeting-list').querySelectorAll('button')) item.disabled = locked && item.getAttribute('aria-checked') !== 'true';
   $('replay').disabled = recording || busy || requestingMic || !status?.config.available;
+  if (typeof syncTopbarMore === 'function') syncTopbarMore();
 }
 
 // ---------- Notes (right pane tab) ----------
@@ -647,6 +654,7 @@ function applyLayout() {
   for (const id of ['board', 'notes', 'plans', 'project']) $(`${id}-panel`).setAttribute('aria-labelledby', `${compact ? 'ctab' : 'tab'}-${id}`);
   if (changed) restoreScroll();
   fitStartMenu();
+  if (typeof syncTopbarMore === 'function') syncTopbarMore();
   updateBoardBadge();
   renderMeetingChip();
 }
@@ -847,6 +855,20 @@ function renderNotes(data, owner) {
 
   $('notes-status').textContent = statusText;
   $('notes-status').hidden = !statusText;
+  const aiHint = $('notes-ai-hint');
+  if (aiHint) {
+    if (!data.enabled && !running && !record) {
+      const link = el('a', 'see Settings', 'inline-settings-link');
+      link.href = '#settings-ai';
+      link.onclick = event => { event.preventDefault(); openSettings('cloud'); };
+      aiHint.replaceChildren();
+      aiHint.append('Writing notes needs AI models, which are off (', link, ').');
+      aiHint.hidden = false;
+    } else {
+      aiHint.hidden = true;
+      aiHint.replaceChildren();
+    }
+  }
   $('notes-body').classList.toggle('has-notes', Boolean(record));
   const warnings = [];
   if (record) {
@@ -862,7 +884,16 @@ function renderNotes(data, owner) {
     if (newGaps.length) warnings.push(['warn', `Speech missing since these notes were written: ${gapText(newGaps)}.`]);
   }
   if (record) warnings.push(['draft', 'AI notes: check a quote before relying on it.']);
-  $('notes-warnings').replaceChildren(...warnings.map(([, text]) => el('p', text, 'notes-warning')));
+  const warningNodes = warnings.map(([, text]) => el('p', text, 'notes-warning'));
+  if (record && !data.enabled) {
+    const p = el('p', 'Writing notes needs AI models, which are off (', 'notes-warning');
+    const link = el('a', 'see Settings', 'inline-settings-link');
+    link.href = '#settings-ai';
+    link.onclick = event => { event.preventDefault(); closeNotesMenu(); openSettings('cloud'); };
+    p.append(link, ').');
+    warningNodes.push(p);
+  }
+  $('notes-warnings').replaceChildren(...warningNodes);
   if (!record) {
     $('notes-body').replaceChildren(...(running ? [] : [el('p', 'After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.', 'board-empty')]));
     return;
@@ -1725,7 +1756,7 @@ function markTranscript(owner) {
     const mark = el('button', cards.length > 1 ? String(cards.length) : '', 'para-mark');
     mark.title = cards.map(c => `${TYPE_LABELS[c.type]}: ${c.text}`).join('\n');
     mark.onclick = () => { if (sameMeeting(owner)) revealCard(owner, cards[0].id); };
-    para.append(mark);
+    (para.querySelector('time') ?? para).append(mark);
   }
 }
 async function refreshBoard() {
@@ -1879,6 +1910,7 @@ function renderMeetingMenu() {
   $('meeting-list-label').textContent = scope ? `${scopeName ?? 'Project'} · meetings` : projectView.projects.length ? 'Meetings without a project' : 'Meetings';
   $('switch-project').hidden = !projectView.projects.length;
   $('move-meeting').disabled = !meetingId;
+  if ($('meeting-materials')) $('meeting-materials').hidden = !layoutView.compact || !meetingId;
   keepFocus($('meeting-list'), () => $('meeting-list').replaceChildren(...(status?.meetings ?? []).filter(m => (m.projectId ?? null) === scope).map(m => {
     const item = focusKey(el('button', undefined, 'menu-item'), m.id);
     item.setAttribute('role', 'menuitemradio');
@@ -2066,6 +2098,7 @@ $('settings').querySelector('.settings-nav').addEventListener('keydown', event =
   showSettingsSection(next.dataset.section);
 });
 $('open-meeting').onclick = () => openSettings('materials');
+$('meeting-materials').onclick = () => openSettings('materials');
 // With a warning on the dot, the cog opens where the problem is.
 $('open-system').onclick = () => openSettings($('status-dot').classList.contains('error') ? 'setup' : $('status-dot').classList.contains('warn') ? 'speech' : 'microphone');
 $('close-settings').onclick = () => $('settings').close();
@@ -2079,6 +2112,8 @@ function renderMeetingChip() {
   const full = roots.length ? `Materials: ${roots[0].label}${roots.length > 1 ? ` +${roots.length - 1}` : ''}${glossary ? ` · Glossary v${glossary.version}` : ''}` : 'Add materials';
   $('open-meeting').textContent = layoutView.compact ? (roots.length ? 'Materials' : 'Add materials') : full;
   $('open-meeting').title = `This meeting: materials, glossary and export${roots.length ? ` (${full})` : ''}`;
+  $('meeting-materials').hidden = !layoutView.compact || !meetingId;
+  $('meeting-materials').textContent = roots.length ? 'Materials…' : 'Add materials…';
 }
 /** Green: ready with cloud models. Grey "Local": ready without them (a normal setup). Amber: audio waiting or failed. Red: no local model. */
 function renderStatusDot() {
@@ -2424,7 +2459,9 @@ let helperCheckedAt = 0;
 function hasAppCapture() { return helperAvailable && Date.now() - helperCheckedAt < 3000; }
 function closeStartMenu() {
   $('start-menu').hidden = true;
+  if ($('start-menu').dataset) delete $('start-menu').dataset.host;
   for (const id of ['start', 'start-new', 'add-tab']) $(id).setAttribute('aria-expanded', 'false');
+  $('topbar-more')?.setAttribute('aria-expanded', 'false');
   clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null; callMenuFocusPending = false;
 }
 function startMenuStep(apps) {
@@ -2472,21 +2509,23 @@ function fitStartMenu() {
   const left = Math.max(12, Math.min(box.left, innerWidth - 12 - box.width));
   menu.style.transform = `translateX(${left - box.left}px)`;
 }
-function openStartMenu(anchor) {
-  const open = $('start-menu').hidden || callMenuAnchor !== anchor;
+function openStartMenu(anchor, host = anchor) {
+  const open = $('start-menu').hidden || callMenuAnchor !== anchor || $('start-menu').dataset?.host !== host;
   closeStartMenu();
   if (!open) return;
   callMenuAnchor = anchor;
-  $(anchor).parentElement.append($('start-menu')); startMenuStep(false);
-  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
+  if ($('start-menu').dataset) $('start-menu').dataset.host = host;
+  $(host).parentElement.append($('start-menu')); startMenuStep(false);
+  $('start-menu').hidden = false; $(host).setAttribute('aria-expanded', 'true');
   fitStartMenu();
   $('start-mic').focus();
 }
-function openCallMenu(anchor) {
+function openCallMenu(anchor, host = anchor) {
   closeStartMenu(); callMenuAnchor = anchor;
-  $(anchor).parentElement.append($('start-menu'));
+  if ($('start-menu').dataset) $('start-menu').dataset.host = host;
+  $(host).parentElement.append($('start-menu'));
   startMenuStep(true); $('call-back').hidden = anchor === 'add-tab';
-  $('start-menu').hidden = false; $(anchor).setAttribute('aria-expanded', 'true');
+  $('start-menu').hidden = false; $(host).setAttribute('aria-expanded', 'true');
   fitStartMenu();
   const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
   callMenuFocusPending = !first;
@@ -2497,14 +2536,14 @@ $('start').onclick = () => openStartMenu('start');
 $('start-new').onclick = () => openStartMenu('start-new');
 document.addEventListener('click', event => { if (!event.target.closest?.('.start-wrap')) closeStartMenu(); });
 $('start-menu').addEventListener('keydown', event => {
-  if (event.key === 'Escape') { const anchor = callMenuAnchor ?? 'start'; closeStartMenu(); $(anchor).focus(); }
+  if (event.key === 'Escape') { const host = $('start-menu').dataset?.host || callMenuAnchor || 'start'; closeStartMenu(); $(host).focus(); }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
     const rows = [...$('start-menu').querySelectorAll('[role="menuitem"]')].filter(n => !n.hidden && n.offsetParent);
     rows[(rows.indexOf(document.activeElement) + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus();
   }
 });
-$('call-back').onclick = () => { const anchor = callMenuAnchor; closeStartMenu(); openStartMenu(anchor); $('start-online').focus(); };
+$('call-back').onclick = () => { const anchor = callMenuAnchor, host = $('start-menu').dataset?.host || anchor; closeStartMenu(); openStartMenu(anchor, host); $('start-online').focus(); };
 $('call-tab').onclick = guarded(() => {
   const fresh = callMenuAnchor === 'start-new';
   closeStartMenu();
@@ -2638,14 +2677,83 @@ async function pollAppCapture() {
   finally { appCapturePolling = false; }
 }
 $('start-mic').onclick = guarded(() => startRecording(false, null, { fresh: callMenuAnchor === 'start-new' }));
-$('start-online').onclick = guarded(() => window.hearalong?.desktop || hasAppCapture() ? openCallMenu(callMenuAnchor) : startRecording(true, null, { fresh: callMenuAnchor === 'start-new' }));
-$('add-tab').onclick = guarded(async () => {
+$('start-online').onclick = guarded(() => window.hearalong?.desktop || hasAppCapture() ? openCallMenu(callMenuAnchor, $('start-menu').dataset?.host || callMenuAnchor) : startRecording(true, null, { fresh: callMenuAnchor === 'start-new' }));
+async function addCallAction(host = 'add-tab') {
   const session = capture;
   if (!session) return;
-  if (window.hearalong?.desktop || hasAppCapture()) { openCallMenu('add-tab'); return; }
+  if (window.hearalong?.desktop || hasAppCapture()) { openCallMenu('add-tab', host); return; }
   await attachTab(session, pickMeetingTab().then(stream => ({ stream }), error => ({ error }))); // called from the click: the picker needs it
-});
+}
+$('add-tab').onclick = guarded(() => addCallAction('add-tab'));
 $('stop').onclick = guarded(() => { closeStartMenu(); return stopCapture(); });
+// Narrow top bar overflow menu (⋯): holds Mini view (< 620 px) and slot 1 (< 480 px).
+function moreMenuItems() {
+  return [...$('topbar-more-menu').querySelectorAll('[role="menuitem"]')].filter(n => !n.hidden && !n.disabled);
+}
+function closeMoreMenu(returnFocus = false) {
+  const menu = $('topbar-more-menu');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  $('topbar-more').setAttribute('aria-expanded', 'false');
+  if (returnFocus) {
+    const active = document.activeElement;
+    if (!active || active === document.body || $('topbar-more-wrap').contains(active)) $('topbar-more').focus();
+  }
+}
+function openMoreMenu(focusLast = false) {
+  const items = moreMenuItems();
+  if (!items.length) return;
+  closeStartMenu();
+  closeMeetingMenu();
+  $('topbar-more-menu').hidden = false;
+  $('topbar-more').setAttribute('aria-expanded', 'true');
+  for (const n of items) n.tabIndex = -1;
+  (focusLast ? items.at(-1) : items[0])?.focus();
+}
+function syncTopbarMore() {
+  const wrap = $('topbar-more-wrap');
+  if (!wrap) return;
+  const narrow = window.innerWidth < 620, tiny = window.innerWidth < 480;
+  const showContinue = tiny && !$('start').hidden && !$('start').classList.contains('primary');
+  const showAddCall = tiny && !$('add-tab').hidden;
+  const showMini = narrow && !$('mini-view').hidden;
+  $('more-continue').hidden = !showContinue;
+  $('more-continue').disabled = $('start').disabled;
+  $('more-add-call').hidden = !showAddCall;
+  $('more-mini').hidden = !showMini;
+  const any = showContinue || showAddCall || showMini;
+  wrap.hidden = !any;
+  if (!any) {
+    closeMoreMenu();
+    if ($('start-menu').dataset?.host === 'topbar-more') closeStartMenu();
+  } else if (!tiny && $('start-menu').dataset?.host === 'topbar-more') {
+    closeStartMenu();
+  }
+}
+$('topbar-more').onclick = () => {
+  if ($('topbar-more-menu').hidden) openMoreMenu(); else closeMoreMenu(true);
+};
+$('topbar-more').addEventListener('keydown', event => {
+  if (event.key === 'ArrowDown') { event.preventDefault(); openMoreMenu(false); }
+  if (event.key === 'ArrowUp') { event.preventDefault(); openMoreMenu(true); }
+});
+$('topbar-more-menu').addEventListener('keydown', event => {
+  const items = moreMenuItems();
+  const at = items.indexOf(document.activeElement);
+  const go = i => { event.preventDefault(); items[(i + items.length) % items.length]?.focus(); };
+  if (event.key === 'ArrowDown') go(at + 1);
+  else if (event.key === 'ArrowUp') go(at - 1);
+  else if (event.key === 'Home') go(0);
+  else if (event.key === 'End') go(items.length - 1);
+  else if (event.key === 'Escape') { event.preventDefault(); closeMoreMenu(true); }
+  else if (event.key === 'Tab') closeMoreMenu();
+});
+document.addEventListener('click', event => {
+  if (!event.target.closest?.('#topbar-more-wrap')) closeMoreMenu(true);
+});
+$('more-continue').onclick = () => { closeMoreMenu(); openStartMenu('start', 'topbar-more'); };
+$('more-add-call').onclick = guarded(() => { closeMoreMenu(); return addCallAction('topbar-more'); });
+$('more-mini').onclick = () => { closeMoreMenu(true); openMini(); };
 void pollAppCapture();
 setInterval(pollAppCapture, 1000);
 window.addEventListener('pagehide', () => { for (const source of capture?.sources.values() ?? []) source.stream?.getTracks().forEach(track => track.stop()); });
@@ -2686,7 +2794,7 @@ function openMini() {
       if (mini.win !== win) return;
       mini.win = null;
       controls();
-      if (capture && !capture.stopping && (!document.activeElement || document.activeElement === document.body)) $('mini-view').focus();
+      if (capture && !capture.stopping && (!document.activeElement || document.activeElement === document.body)) (window.innerWidth < 620 ? $('topbar-more') : $('mini-view')).focus();
     });
     controls();
   }).catch(error => log(`The mini view could not open: ${error.message}`, true));
@@ -4018,6 +4126,7 @@ plansView = createPlansView({
     noteCounts: () => notesView.owner === meetingId && notesView.data?.notes ? {
       questions: notesView.data.notes.notes.openQuestions.length, actions: notesView.data.notes.notes.actions.length,
     } : null,
+    openSettings: name => openSettings(name),
     log,
   },
 });

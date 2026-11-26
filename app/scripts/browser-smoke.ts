@@ -100,7 +100,9 @@ try {
       const fresh = document.getElementById('start-new') as HTMLButtonElement;
       return start.hidden === !showStart && fresh.hidden === !showNew && fresh.disabled === playing && start.disabled === startDisabled;
     }, { showStart, showNew: kind !== 'empty', playing, startDisabled });
-    assert.equal(await page.locator('#start').isVisible(), showStart, kind);
+    const narrowSlot1 = kind === 'recorded' && (page.viewportSize()?.width ?? 1440) < 480;
+    assert.equal(await page.locator('#start').isVisible(), showStart && !narrowSlot1, kind);
+    assert.equal(await page.locator('#topbar-more').isVisible(), narrowSlot1, kind);
     assert.equal(await page.locator('#start-new').isVisible(), kind !== 'empty', kind);
     assert.equal(await page.locator('#start-new').textContent(), 'New recording');
     assert.equal(await page.locator('#start-new').getAttribute('class'), 'button primary');
@@ -155,34 +157,51 @@ try {
       await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width < 900);
       await recordingButtons(kind);
       const compact = width < 900;
-      if (kind !== 'none') assert.equal((await page.locator('#start').innerText()).replace(/\s+/g, ' ').trim(), compact ? kind === 'recorded' ? 'Continue' : 'Start' : `${kind === 'recorded' ? 'Continue' : 'Start'} recording`);
+      const tiny = width < 480;
+      if (kind !== 'none' && !(kind === 'recorded' && tiny)) {
+        assert.equal((await page.locator('#start').innerText()).replace(/\s+/g, ' ').trim(), compact ? kind === 'recorded' ? 'Continue' : 'Start' : `${kind === 'recorded' ? 'Continue' : 'Start'} recording`);
+      }
+      if (kind !== 'empty') {
+        assert.equal((await page.locator('#start-new').innerText()).replace(/\s+/g, ' ').trim(), compact ? 'New' : 'New recording');
+      }
       const height = await page.locator(kind === 'empty' ? '#start' : '#start-new').evaluate(n => n.getBoundingClientRect().height);
       assert.equal(height, compact ? 44 : 40);
       assert.equal(await page.locator('#meeting-button').evaluate(n => n.getBoundingClientRect().height), height, `${width}: meeting control height`);
+      assert.equal(Math.round(await page.locator('.topbar').evaluate(n => n.getBoundingClientRect().height)), 61, `${width}: fixed 61 px top bar`);
       if (kind === 'recorded') {
-        const start = (await page.locator('#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
-        assert.equal(fresh.x - start.x - start.width, compact ? 8 : 10);
-        assert.equal(settings.x - fresh.x - fresh.width, compact ? 8 : 10);
+        const leftControl = (await page.locator(tiny ? '#topbar-more' : '#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
+        assert.equal(Math.round(fresh.x - leftControl.x - leftControl.width), compact ? 8 : 10);
+        assert.equal(Math.round(settings.x - fresh.x - fresh.width), compact ? 8 : 10);
       }
       if (compact) {
-        // Two rows: the meeting, then Add materials at the left and the actions and Settings at the right (Tab order),
-        // on the same left and right lines as the tabs below.
+        // One row: the meeting at the left, fixed-slot actions and Settings at the right (Tab order),
+        // on the same left and right lines as the tabs below; Add materials moves into the meeting menu.
         const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
         const meeting = await box('#meeting-button'), settings = await box('#open-system'), action = await box(kind === 'empty' ? '#start' : '#start-new');
         const tabs = await page.locator('.compact-tabs button:visible').evaluateAll(n => n.map(e => e.getBoundingClientRect()).map(r => ({ x: r.x, right: r.right })));
-        assert.ok(meeting.y + meeting.height <= action.y, `${width}: the meeting is on the first row`);
-        assert.equal(Math.round(settings.y), Math.round(action.y), `${width}: Settings ends the actions row`);
-        assert.equal(Math.round(meeting.x), Math.round(tabs[0].x), `${width}: the rows start on the tabs' line`);
-        assert.equal(Math.round(settings.x + settings.width), Math.round(tabs.at(-1)!.right), `${width}: the actions row ends on the tabs' line`);
-        if (width > 600 && kind !== 'none') {
-          const materials = await box('#open-meeting');
-          assert.equal(Math.round(materials.y), Math.round(action.y), `${width}: Add materials on the actions row`);
-          assert.equal(Math.round(materials.x), Math.round(meeting.x), `${width}: both rows start on one line`);
-        }
+        assert.equal(Math.round(meeting.y), Math.round(action.y), `${width}: meeting and actions share one row`);
+        assert.equal(Math.round(settings.y), Math.round(action.y), `${width}: Settings ends the row`);
+        assert.equal(Math.round(meeting.x), Math.round(tabs[0].x), `${width}: the bar starts on the tabs' line`);
+        assert.equal(Math.round(settings.x + settings.width), Math.round(tabs.at(-1)!.right), `${width}: the bar ends on the tabs' line`);
+        assert.equal(await page.locator('#open-meeting').isVisible(), false, `${width}: Add materials moves into the meeting menu`);
       }
       await page.screenshot({ path: join(outDir, `recording-${kind}-${width}.png`) });
       if (kind === 'recorded') {
-        await menuAt('start', 'Continue recording');
+        if (tiny) {
+          await page.locator('#topbar-more').click();
+          await page.locator('#more-continue').click();
+          assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'Continue recording');
+          assert.ok(await page.locator('#topbar-more').evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
+          assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');
+          const button = (await page.locator('#topbar-more').boundingBox())!, menu = (await page.locator('#start-menu').boundingBox())!;
+          assert.equal(Math.round(menu.y), Math.round(button.y + button.height + 6));
+          assert.ok(menu.x >= 0 && menu.x + menu.width <= page.viewportSize()!.width, `topbar-more: menu stays within viewport`);
+          await page.keyboard.press('Escape');
+          assert.ok(await page.locator('#topbar-more').evaluate(n => n === document.activeElement));
+          assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'false');
+        } else {
+          await menuAt('start', 'Continue recording');
+        }
         await menuAt('start-new', 'New recording');
         await page.locator('#start-new').click();
         await page.screenshot({ path: join(outDir, `recording-new-menu-${width}.png`) });

@@ -5,6 +5,8 @@
   --topbar-pad-x: 20px;
   --topbar-controls-gap: 10px;
   --topbar-button-height: 40px;
+  --slot1-w: 148px;
+  --slot2-w: 122px;
   --meeting-button-pad-x: 10px;
   --meeting-button-border: 1px;
   --ground: #F4F6F9;
@@ -30,6 +32,7 @@
 html, body { height: 100%; }
 body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); font-size: 15px; display: flex; flex-direction: column; }
 a { color: var(--accent); } a:hover { color: var(--accent-ink); }
+:where(button, a, select, input, textarea, summary, [tabindex="0"]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
@@ -37,20 +40,24 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .conn.warn { white-space: nowrap; }
 .conn .act { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 
-.topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: var(--topbar-pad-y) var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
-.topbar-left, .topbar-right { display: flex; flex-wrap: wrap; align-items: center; gap: var(--topbar-controls-gap); }
+.topbar { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 10px; height: 61px; padding: 0 var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
+.topbar-left { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; align-items: center; gap: 8px; }
+.topbar-right { display: flex; flex: 0 0 auto; flex-wrap: nowrap; align-items: center; gap: var(--topbar-controls-gap); }
+.topbar .button { padding: 0 10px; white-space: nowrap; }
+#start:not(.primary), #add-tab { width: var(--slot1-w); flex: none; }
+#start.primary, #start-new, #stop { width: var(--slot2-w); flex: none; }
+.more-button { flex: none; min-width: 44px; width: 44px; min-height: 44px; padding: 0; }
+#topbar-more-menu { left: auto; right: 0; width: 220px; }
 #connection:empty { display: none; }
 @media (min-width: 900px) {
-  .topbar { flex-wrap: nowrap; }
-  .topbar-left { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
   .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
   /* A window just wide enough for one row: the chip (a problem leads it) and Materials cut their ends before the name
      becomes unreadable. Their minimums fit beside the recording actions from 900 px. */
-  .topbar-left > #live-chip { flex-shrink: 1; min-width: 96px; }
+  .topbar-left > #live-chip { flex-shrink: 1; min-width: 102px; }
   /* Only a long "Materials: <file>" label shortens; "Add materials" always fits. Block, so its text can end in "…". */
-  .topbar-left > #open-meeting { flex-shrink: 1; min-width: 112px; display: block; line-height: calc(var(--topbar-button-height) - 2px); }
-  .topbar-left > .meeting-wrap { min-width: 160px; }
-  .topbar-right { flex: 0 0 auto; flex-wrap: nowrap; }
+  .topbar-left > #open-meeting { flex-shrink: 1; min-width: 106px; padding: 0 10px; display: block; line-height: calc(var(--topbar-button-height) - 2px); }
+  .topbar-left > .meeting-wrap { flex: 0 1 auto; min-width: 140px; }
+  .topbar-left > .meeting-wrap:has(> #meeting-name:not([hidden])) { flex: 1 1 auto; }
 }
 .meeting-select { font: 600 16px var(--sans); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; max-width: 360px; }
 .meeting-select:hover, .meeting-select:focus { border-color: var(--line-strong); }
@@ -91,7 +98,7 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .divider::before { content: ""; position: absolute; inset: 0 -2px; } /* 12 px hit area */
 .divider::after { content: ""; position: absolute; top: 50%; left: 2px; width: 3px; height: 36px; margin-top: -18px; border-radius: 2px; background: var(--line-strong); }
 .divider:hover::after, .divider:focus-visible::after, body.resizing .divider::after { background: var(--accent); }
-.divider:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.divider:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
 body.resizing { cursor: col-resize; user-select: none; -webkit-user-select: none; }
 .wide-only { display: inline; }
 .compact-only { display: none; }
@@ -104,24 +111,28 @@ body.layout-compact .divider { display: none; }
 body.layout-compact .wide-only, body.layout-compact #connection { display: none; }
 body.layout-compact .compact-only { display: inline; }
 /* The top bar's edges follow the tabs row below it: 8 px in, or the centred 720 px column on a wider window. */
-body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: max(8px, calc((100% - 720px) / 2 + 8px)); --topbar-controls-gap: 8px; --topbar-button-height: 44px; }
+body.layout-compact { --topbar-pad-y: 8px; --topbar-pad-x: max(8px, calc((100% - 720px) / 2 + 8px)); --topbar-controls-gap: 8px; --topbar-button-height: 44px; --slot1-w: 104px; --slot2-w: 76px; }
 /*
- * Narrow window: always two rows. Row 1: the meeting (name, then the recording chip). Row 2, using the full width:
- * Add materials at the left; the recording actions and Settings at the right, in reading (and Tab) order.
- * Row 1 never wraps: the name grows from nothing up to its full length and the chip keeps its text until it would leave
- * the name less than 160 px; past that both end in "…".
+ * Compact window: one fixed 61 px row (option B fixed slots), aligned to the tabs' left and right edges.
+ * Slot 1 (#start Continue ↔ #add-tab Add call) and slot 2 (#start-new New / #start Start ↔ #stop Stop) keep fixed widths.
+ * Materials moves into the meeting menu; below 620 px Mini view moves into ⋯; below 480 px slot 1 also moves into ⋯.
  */
-body.layout-compact .topbar { flex-wrap: wrap; justify-content: flex-start; column-gap: 8px; row-gap: 4px; }
-body.layout-compact .topbar-left { display: contents; }
-body.layout-compact .meeting-wrap { order: 1; flex: 1 1 0; min-width: 0; max-width: max-content; }
-/* Renaming: the field takes the whole row (beside the chip while recording). */
-body.layout-compact .meeting-wrap:has(> #meeting-name:not([hidden])) { max-width: none; }
-body.layout-compact #live-chip { order: 2; flex: 0 1 auto; max-width: calc(100% - 168px); }
-body.layout-compact .topbar::after { content: ""; order: 3; flex: 0 0 100%; height: 0; }
-body.layout-compact #open-meeting { order: 4; margin-right: auto; }
-body.layout-compact .topbar-right { order: 5; flex: 0 0 auto; flex-wrap: nowrap; margin-left: auto; }
+body.layout-compact .topbar { gap: 8px; }
+body.layout-compact .meeting-wrap { flex: 0 1 auto; min-width: 140px; max-width: 100%; }
+body.layout-compact .meeting-wrap:has(> #meeting-name:not([hidden])) { flex: 1 1 auto; }
+body.layout-compact #live-chip { flex: 0 1 auto; min-width: 102px; }
+body.layout-compact #open-meeting { display: none; }
 body.layout-compact .meeting-select { flex: 1 1 auto; min-width: 0; max-width: 480px; }
 body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding: 0; }
+@media (max-width: 619.98px) {
+  .chip-full { display: none; }
+  #mini-view { display: none; }
+  body.layout-compact .meeting-wrap { min-width: 96px; }
+  body.layout-compact #live-chip { padding: 4px 8px; min-width: 58px; }
+}
+@media (max-width: 479.98px) {
+  .topbar-right > .start-wrap:has(> #start:not(.primary)), #add-call-wrap { display: none; }
+}
 .topbar .button, .update-bar .button { min-height: var(--topbar-button-height); }
 body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 0; padding: 6px max(8px, calc((100% - 640px) / 2)) 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .compact-tabs button { position: relative; min-height: 44px; min-width: 0; padding: 0 2px; border: none; border-radius: 8px; background: #E9EDF3; font: 13px var(--sans); color: #3B4657; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -179,9 +190,9 @@ body.layout-compact .listen-player { gap: 6px; padding: 10px 12px; }
 ::selection { background: var(--select); }
 .jump { position: absolute; right: 28px; bottom: 20px; box-shadow: 0 4px 12px rgba(24,33,47,.15); }
 
-.selection-menu { position: absolute; z-index: 5; width: min(520px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 8px 24px rgba(24,33,47,.14); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.selection-menu { position: absolute; z-index: 5; width: min(560px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 8px 24px rgba(24,33,47,.14); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .selection-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.selection-actions button { min-height: 38px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); font: 14px var(--sans); color: var(--ink); }
+.selection-actions button { position: relative; min-height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); font: 14px var(--sans); color: var(--ink); cursor: pointer; }
 .selection-actions button:disabled { color: var(--muted); }
 .selection-other { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
 .selection-other input { min-height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-strong); font: 14px var(--sans); }
@@ -400,8 +411,9 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .answer.compact { max-height: 7.2em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
 .new-cards { position: sticky; top: 4px; z-index: 3; display: block; margin: 0 auto 6px; padding: 4px 12px; border-radius: 999px; border: none; background: var(--accent); color: #FFF; font: 12px var(--sans); cursor: pointer; box-shadow: 0 2px 6px rgba(24,33,47,.2); }
 .para { position: relative; }
-.para-mark { position: absolute; left: -20px; top: 12px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; border: none; background: var(--accent-tint); color: var(--accent-ink); font: 10px/14px var(--sans); cursor: pointer; }
+.para-mark { position: relative; display: inline-flex; align-items: center; justify-content: center; margin-top: 4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; border: none; background: var(--accent-tint); color: var(--accent-ink); font: 10px/16px var(--sans); cursor: pointer; }
 .para-mark:empty::after { content: "•"; }
+.para-mark::before { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
 .more { margin-top: 6px; font-size: 13px; }
 .more > summary { cursor: pointer; color: var(--accent-ink); }
 .auto-answer { margin-top: 8px; font-size: 13px; }
@@ -429,8 +441,7 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .call-apps { display: contents; }
 .call-apps button { width: 100%; }
 .call-empty { margin: 6px 6px 2px; font-size: 13px; color: var(--muted); }
-body.layout-compact .start-menu { left: 0; right: auto; }
-body.layout-compact .start-wrap:not(#add-call-wrap) .start-menu { left: auto; right: 0; }
+body.layout-compact .start-menu { left: auto; right: 0; }
 /* Speaker labels in online meetings: capture channels, under the paragraph time. */
 .para time .speaker { display: block; margin-top: 2px; font: 600 11px var(--sans); letter-spacing: .03em; text-transform: uppercase; color: var(--accent-ink); }
 .para.them time .speaker { color: #8A4B08; }
@@ -496,7 +507,7 @@ body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 .status-dot.local { background: #6B7586; }
 .status-dot.warn { background: #C98A00; }
 .status-dot.error { background: var(--rec); }
-.system-button { gap: 6px; }
+.system-button { gap: 6px; padding: 0 12px; }
 .status-word { font-size: 13px; }
 .layout { position: relative; }
 body.layout-compact .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -510,7 +521,7 @@ a.button[aria-disabled="true"] { opacity: .45; pointer-events: none; }
 .replay-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
 .replay-dialog:not([open]) { display: none; }
 .replay-dialog::backdrop { background: rgba(24,33,47,.28); }
-body.layout-compact .meeting-button { flex: 1 1 auto; max-width: 480px; }
+body.layout-compact .meeting-button { flex: 0 1 auto; max-width: 100%; }
 .meeting-button > svg { flex: none; }
 body.layout-compact .chip-button { max-width: 120px; }
 
@@ -522,7 +533,6 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 @media (max-width: 600px) {
   /* Under 900 px the layout is compact anyway: the switch has nothing to switch. */
   body.layout-compact .layout-switch { display: none; }
-  body.layout-compact .topbar-right { justify-content: space-between; }
 }
 
 /* Microphone settings (M5 step 4). */
@@ -537,14 +547,14 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 /* Settings dialog (replaces the side panels): a sidebar of sections and one section at a time, as in mockup B. */
 .settings { width: min(860px, calc(100vw - 32px)); height: min(620px, calc(100vh - 48px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 16px; color: var(--ink); background: var(--panel); box-shadow: 0 24px 64px rgba(24,33,47,.22); overflow: hidden; }
 .settings[open] { display: flex; flex-direction: column; }
-.settings::backdrop { background: transparent; }
+.settings::backdrop { background: rgba(24,33,47,.25); }
 .settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 14px; border-bottom: 1px solid var(--line); }
 .settings-head h2 { margin: 0; font-size: 18px; font-weight: 600; }
 .settings-head p { margin: 2px 0 0; }
 .settings-body { flex: 1; min-height: 0; display: flex; }
-.settings-nav { flex: 0 0 200px; display: flex; flex-direction: column; gap: 2px; padding: 12px 10px; background: var(--ground); border-right: 1px solid var(--line); overflow-y: auto; }
-.settings-nav .nav-label { padding: 10px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.settings-nav button { display: flex; align-items: center; min-height: 44px; padding: 0 10px; border: none; border-radius: 8px; background: transparent; font: 14px var(--sans); color: var(--ink); text-align: left; cursor: pointer; }
+.settings-nav { flex: 0 0 200px; display: flex; flex-direction: column; gap: 1px; padding: 8px 10px 12px; background: var(--ground); border-right: 1px solid var(--line); overflow-y: auto; }
+.settings-nav .nav-label { padding: 6px 10px 2px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.settings-nav button { flex: 0 0 auto; display: flex; align-items: center; min-height: 44px; padding: 0 10px; border: none; border-radius: 8px; background: transparent; font: 14px var(--sans); color: var(--ink); text-align: left; cursor: pointer; }
 .settings-nav button:hover { background: #E9EDF3; }
 .settings-nav button[aria-current="page"] { background: var(--panel); color: var(--accent-ink); font-weight: 600; box-shadow: 0 1px 2px rgba(24,33,47,.10); }
 .settings-content { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 24px 24px; }
@@ -556,11 +566,11 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .settings-section > .button { align-self: flex-start; }
 /* Narrow windows: the sidebar becomes a row of tabs above the section. */
 @media (max-width: 640px) {
-  .settings { width: calc(100vw - 16px); height: fit-content; max-height: calc(100vh - 16px); border-radius: 12px; }
+  .settings { width: calc(100vw - 16px); height: min(620px, calc(100vh - 16px)); max-height: calc(100vh - 16px); border-radius: 12px; }
   .settings-body { flex-direction: column; }
   .settings-nav { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; border-right: none; border-bottom: 1px solid var(--line); padding: 8px; gap: 4px; }
   .settings-nav .nav-label { display: none; }
-  .settings-nav button { flex: 0 0 auto; white-space: nowrap; }
+  .settings-nav button { flex: 0 0 auto; min-width: 44px; min-height: 44px; justify-content: center; white-space: nowrap; }
   .settings-content { padding: 14px 16px 20px; }
 }
 
@@ -580,6 +590,7 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .board-pane .tabs { gap: 0; }
 .board-pane .tabs button { padding: 0 10px; letter-spacing: 0; text-transform: none; }
 .sort-toggle { margin-left: auto; min-height: 34px; padding: 0 8px; border: none; border-radius: 8px; background: none; font: 500 13px var(--sans); color: var(--accent-ink); white-space: nowrap; cursor: pointer; }
+body.layout-compact .board-bar .sort-toggle { margin-left: 0; }
 .sort-toggle:hover { background: var(--accent-tint); }
 /* The active tab's tool shares the head, without adding a row inside its panel. */
 .board-pane .pane-head > .notes-options-wrap, .plans-options-wrap { position: relative; margin-left: auto; }
@@ -588,7 +599,7 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .board-pane .pane-head .options-button:hover, .board-pane .pane-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
 .board-pane .pane-head .notes-menu { top: 100%; z-index: 30; }
 .notes-options-wrap:not(:has(> .options-button:not([hidden]))),
-.notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > .notes-options-wrap:not([hidden]) > .options-button:not([hidden]))) { display: none; }
+.notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]), > .notes-options-wrap:not([hidden]) > .options-button:not([hidden]))) { display: none; }
 .notes-body .board-empty { margin-left: 0; margin-right: 0; }
 .link-button { min-height: 32px; }
 /* Card header: one row, centred; the time is a quiet link, the dismiss button a real target. */
@@ -603,8 +614,8 @@ select:disabled, input:disabled { opacity: .5; cursor: not-allowed; background: 
 .board-card.type-action .tag { background: #FDF0DC; color: #7A4A06; }
 .board-card.type-other .tag { background: #EEF1F5; color: #4A5466; }
 /* Focus you can see. */
-.transcript:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
-.meeting-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.transcript:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent); }
+.meeting-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .live-draft time { opacity: 1; color: var(--muted); }
 input[type="checkbox"] { accent-color: var(--accent); }
 /* The recording chip never wraps: the details are in its tooltip on narrow screens (its width there: the top bar rules). */
@@ -620,10 +631,6 @@ body.layout-compact .layout { max-width: 720px; width: 100%; margin: 0 auto; }
 body.layout-compact .compact-tabs { padding-left: max(8px, calc((100% - 720px) / 2 + 8px)); padding-right: max(8px, calc((100% - 720px) / 2 + 8px)); }
 .row[hidden] { display: none; }
 .nav-divider { display: none; }
-@media (max-width: 600px) {
-  /* A phone: row 2 keeps its room for the recording actions; materials are in Settings. */
-  body.layout-compact #open-meeting { display: none; }
-}
 @media (max-width: 640px) {
   .settings-nav .nav-divider { display: block; flex: 0 0 100%; height: 0; border-top: 1px solid var(--line); margin: 2px 0; }
 }
@@ -734,7 +741,7 @@ body.layout-compact .topbar #mini-view { min-height: 44px; }
 /* Dialog headers: title and Close on one row (the replay dialog too). */
 .replay-dialog .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .mem-meta .link-button { padding: 0 4px; vertical-align: middle; }
-.settings-section label.small { display: block; }
+.settings-section label.small:not(.stack) { display: block; }
 .settings-section label.check { display: flex; } /* a box beside its words, their second line under the first */
 
 /* Quit (M7 launcher): the app has stopped; nothing behind this works any more. */
@@ -743,8 +750,6 @@ body.layout-compact .topbar #mini-view { min-height: 44px; }
 
 /* The live chip's text (M7): cut with "…" when narrow; the chip's title has all of it. */
 .chip-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Wide layout: when the right-hand controls wrap to a second row (recording at about 1024 px), they stay at the right edge. */
-.topbar-right { margin-left: auto; }
 
 /* ---------- Plans (M7b, layout D1 "one tidy row"; docs/design/M7b-exploration.md §3) ---------- */
 /* The section measures its own width (the board pane is resizable): below 520 px the Add moves under the step. */
@@ -843,3 +848,52 @@ body.layout-compact .plans-head > .plans-menu { width: min(280px, calc(100vw - 2
 .plans-more, .plans-aside { padding: 6px 16px 0; }
 .plans-aside-list { display: flex; flex-direction: column; gap: 8px; padding-bottom: 14px; font-size: 14px; color: #3B4657; }
 .plans-aside-list b { font-weight: 600; }
+
+/* Inline AI-Settings link (Notes & Plans). */
+.inline-settings-link { position: relative; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.inline-settings-link:hover { color: var(--accent-ink); }
+.inline-settings-link::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
+.notes-ai-hint { flex-basis: 100%; padding-top: 6px; }
+
+/* Compact Notes / Plans Options ▾: quiet text action tucked into the card header row, no row of its own when alone. */
+body.layout-compact .notes-bar .options-button,
+body.layout-compact .plans-head .options-button { gap: 4px; min-height: 32px; padding: 0 8px; border: none; background: none; box-shadow: none; color: var(--accent-ink); font: 500 13px var(--sans); white-space: nowrap; position: relative; }
+body.layout-compact .notes-bar .options-button::after,
+body.layout-compact .plans-head .options-button::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
+body.layout-compact .notes-bar .options-button svg,
+body.layout-compact .plans-head .options-button svg { color: inherit; }
+body.layout-compact .notes-bar .options-button:hover,
+body.layout-compact .notes-bar .options-button[aria-expanded="true"],
+body.layout-compact .plans-head .options-button:hover,
+body.layout-compact .plans-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) { position: relative; z-index: 2; height: 0; min-height: 0; padding: 0; overflow: visible; }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) > .notes-options-wrap { position: absolute; top: 8px; right: 20px; }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) .notes-menu { top: 38px; }
+body.layout-compact .notes-body.has-notes > .notes-group:first-child > .notes-section { padding-right: 84px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card) { position: relative; z-index: 2; height: 0; min-height: 0; margin-bottom: -14px; overflow: visible; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card) > .options-button { position: absolute; top: 8px; right: 12px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card) > .plans-menu { top: 44px; right: 12px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card .plans-list > .plan:first-child .plan-label { padding-right: 84px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card .plans-list > .plan:first-child .plan-chev { margin-top: 28px; }
+
+/* 44 px interactive targets without growing visual bounds or row heights. */
+.board-card .dismiss,
+.card-time,
+.small-button,
+#scan-board,
+.link-button,
+#board-sort,
+.listen-time,
+.selection-actions button,
+dialog .button { position: relative; }
+.board-card .dismiss::after,
+.card-time::after,
+.small-button::after,
+#scan-board::after,
+.link-button::after,
+#board-sort::after,
+.listen-time::after,
+.selection-actions button::after,
+dialog .button::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
+.board-filter { min-height: 44px; margin: -5px 0; }
+#replay-file { min-height: 44px; padding: 6px 0; }
