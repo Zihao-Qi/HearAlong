@@ -154,10 +154,17 @@ try {
   const recordingScreens = async (kind: 'recorded' | 'empty' | 'none') => {
     for (const width of [1280, 640, 600, 440]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.waitForFunction(compact => document.body.classList.contains('layout-compact') === compact, width < 900);
-      await recordingButtons(kind);
       const compact = width < 900;
+      const narrow = width < 620;
       const tiny = width < 480;
+      const expectMore = kind === 'recorded' && tiny;
+      await page.waitForFunction(({ compact, narrow, tiny, expectMore }) =>
+        document.body.classList.contains('layout-compact') === compact
+        && document.body.classList.contains('topbar-narrow') === narrow
+        && document.body.classList.contains('topbar-tiny') === tiny
+        && document.getElementById('topbar-more-wrap')!.hidden === !expectMore,
+      { compact, narrow, tiny, expectMore });
+      await recordingButtons(kind);
       if (kind !== 'none' && !(kind === 'recorded' && tiny)) {
         assert.equal((await page.locator('#start').innerText()).replace(/\s+/g, ' ').trim(), compact ? kind === 'recorded' ? 'Continue' : 'Start' : `${kind === 'recorded' ? 'Continue' : 'Start'} recording`);
       }
@@ -168,37 +175,47 @@ try {
       assert.equal(height, compact ? 44 : 40);
       assert.equal(await page.locator('#meeting-button').evaluate(n => n.getBoundingClientRect().height), height, `${width}: meeting control height`);
       assert.equal(Math.round(await page.locator('.topbar').evaluate(n => n.getBoundingClientRect().height)), 61, `${width}: fixed 61 px top bar`);
+      const firstRightSelector = kind === 'recorded' ? (tiny ? '#topbar-more' : '#start') : kind === 'empty' ? '#start' : '#start-new';
+      const meetingBox = (await page.locator('#meeting-button').boundingBox())!, firstRightBox = (await page.locator(firstRightSelector).boundingBox())!;
+      assert.ok(meetingBox.x + meetingBox.width < firstRightBox.x, `${width}: meeting button and right-hand controls do not overlap`);
       if (kind === 'recorded') {
-        const leftControl = (await page.locator(tiny ? '#topbar-more' : '#start').boundingBox())!, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
+        const leftControl = firstRightBox, fresh = (await page.locator('#start-new').boundingBox())!, settings = (await page.locator('#open-system').boundingBox())!;
         assert.equal(Math.round(fresh.x - leftControl.x - leftControl.width), compact ? 8 : 10);
         assert.equal(Math.round(settings.x - fresh.x - fresh.width), compact ? 8 : 10);
+        if (tiny) assert.equal(Math.round(leftControl.height), 44, `${width}: #topbar-more is 44 px tall`);
       }
       if (compact) {
         // One row: the meeting at the left, fixed-slot actions and Settings at the right (Tab order),
         // on the same left and right lines as the tabs below; Add materials moves into the meeting menu.
         const box = async (selector: string) => (await page.locator(selector).boundingBox())!;
-        const meeting = await box('#meeting-button'), settings = await box('#open-system'), action = await box(kind === 'empty' ? '#start' : '#start-new');
+        const meeting = meetingBox, settings = await box('#open-system'), action = await box(kind === 'empty' ? '#start' : '#start-new');
         const tabs = await page.locator('.compact-tabs button:visible').evaluateAll(n => n.map(e => e.getBoundingClientRect()).map(r => ({ x: r.x, right: r.right })));
         assert.equal(Math.round(meeting.y), Math.round(action.y), `${width}: meeting and actions share one row`);
         assert.equal(Math.round(settings.y), Math.round(action.y), `${width}: Settings ends the row`);
         assert.equal(Math.round(meeting.x), Math.round(tabs[0].x), `${width}: the bar starts on the tabs' line`);
         assert.equal(Math.round(settings.x + settings.width), Math.round(tabs.at(-1)!.right), `${width}: the bar ends on the tabs' line`);
         assert.equal(await page.locator('#open-meeting').isVisible(), false, `${width}: Add materials moves into the meeting menu`);
+        await page.locator('#meeting-button').click();
+        assert.equal(await page.locator('#meeting-materials').isVisible(), kind !== 'none', `${width}: #meeting-materials visibility in meeting menu`);
+        await page.keyboard.press('Escape');
       }
       await page.screenshot({ path: join(outDir, `recording-${kind}-${width}.png`) });
       if (kind === 'recorded') {
         if (tiny) {
           await page.locator('#topbar-more').click();
+          assert.equal((await page.locator('#more-continue').innerText()).trim(), 'Continue recording');
           await page.locator('#more-continue').click();
           assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'Continue recording');
           assert.ok(await page.locator('#topbar-more').evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
           assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');
+          assert.equal(await page.locator('#topbar-more').getAttribute('aria-controls'), 'start-menu');
           const button = (await page.locator('#topbar-more').boundingBox())!, menu = (await page.locator('#start-menu').boundingBox())!;
           assert.equal(Math.round(menu.y), Math.round(button.y + button.height + 6));
           assert.ok(menu.x >= 0 && menu.x + menu.width <= page.viewportSize()!.width, `topbar-more: menu stays within viewport`);
           await page.keyboard.press('Escape');
           assert.ok(await page.locator('#topbar-more').evaluate(n => n === document.activeElement));
           assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'false');
+          assert.equal(await page.locator('#topbar-more').getAttribute('aria-controls'), 'topbar-more-menu');
         } else {
           await menuAt('start', 'Continue recording');
         }
@@ -209,7 +226,7 @@ try {
       }
     }
     await page.setViewportSize({ width: 900, height: 900 });
-    // Measure the wide layout itself: in the narrow one the groups are display: contents and have no box.
+    // Measure the wide layout at the 900 px threshold: left and right clusters share one row.
     await page.waitForFunction(() => !document.body.classList.contains('layout-compact'));
     const row = await page.locator('.topbar').evaluate(n => {
       const left = n.querySelector('.topbar-left')!.getBoundingClientRect(), right = n.querySelector('.topbar-right')!.getBoundingClientRect();
@@ -335,6 +352,26 @@ try {
   await page.screenshot({ path: join(outDir, 'desktop-call-focus-1280.png') });
   await page.keyboard.press('Escape');
   assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement));
+  // Narrow (< 480 px): call menu Back keeps host topbar-more, and clicking ⋯ toggles the hosted start menu closed.
+  await page.setViewportSize({ width: 440, height: 900 });
+  await page.waitForFunction(() => document.body.classList.contains('topbar-tiny') && !document.getElementById('topbar-more-wrap')!.hidden);
+  await page.locator('#topbar-more').click();
+  await page.locator('#more-continue').click();
+  await page.locator('#start-online').click();
+  await appOne.waitFor();
+  await page.locator('#call-back').click();
+  assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'Continue recording');
+  assert.ok(await page.locator('#topbar-more').evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-controls'), 'start-menu');
+  assert.ok(await page.locator('#start-online').evaluate(n => n === document.activeElement));
+  await page.locator('#topbar-more').click();
+  assert.equal(await page.locator('#start-menu').isVisible(), false);
+  assert.equal(await page.locator('#topbar-more-menu').isVisible(), false);
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-controls'), 'topbar-more-menu');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(() => !document.body.classList.contains('layout-compact'));
   await page.evaluate(() => { delete (window as any).hearalong; });
   await page.unroute('**/api/live/apps');
   const beforeFresh = app.store.meetings().length;
@@ -350,6 +387,52 @@ try {
   assert.equal(await page.locator('#start-new').isVisible(), false);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.screenshot({ path: join(outDir, 'recording-active-1280.png') });
+  // Narrow (< 480 px) while recording: visible "Rec" chip with full status for assistive tech, plus Add online call and Mini view in ⋯.
+  let miniOpened = false;
+  await page.route('**/api/live/apps', route => route.fulfill({ json: { available: true, apps: [{ id: 'fictional.call.one', name: 'Fictional Call One' }] } }));
+  await page.route('**/api/live/mini', route => { miniOpened = JSON.parse(route.request().postData() ?? '{}').action === 'open'; return route.fulfill({ json: { ok: true } }); });
+  await page.evaluate(() => { (window as any).hearalong = { desktop: true }; });
+  await page.setViewportSize({ width: 440, height: 900 });
+  await page.waitForFunction(() => document.body.classList.contains('topbar-tiny')
+    && !document.getElementById('topbar-more-wrap')!.hidden
+    && !document.getElementById('more-add-call')!.hidden
+    && !document.getElementById('more-mini')!.hidden);
+  const chipInfo = await page.locator('#live-chip').evaluate(n => {
+    const shortEl = n.querySelector('.chip-short') as HTMLElement | null;
+    const longEl = n.querySelector('.chip-long') as HTMLElement | null;
+    const shortRect = shortEl?.getBoundingClientRect(), longRect = longEl?.getBoundingClientRect();
+    return {
+      shortText: shortEl?.textContent, shortAriaHidden: shortEl?.getAttribute('aria-hidden'), shortVisible: Boolean(shortRect && shortRect.width > 1 && shortRect.height > 1),
+      longText: longEl?.textContent, longAriaHidden: longEl?.getAttribute('aria-hidden'), longVisuallyHidden: Boolean(longRect && longRect.width <= 1 && longRect.height <= 1),
+    };
+  });
+  assert.equal(chipInfo.shortText, 'Rec');
+  assert.equal(chipInfo.shortAriaHidden, 'true');
+  assert.equal(chipInfo.shortVisible, true);
+  assert.match(chipInfo.longText ?? '', /^Recording/);
+  assert.equal(chipInfo.longAriaHidden, null);
+  assert.equal(chipInfo.longVisuallyHidden, true);
+  await page.locator('#topbar-more').click();
+  await page.locator('#more-add-call').waitFor({ state: 'visible' });
+  await page.locator('#more-mini').waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');
+  await page.locator('#more-add-call').click();
+  assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'Where is the call?');
+  assert.ok(await page.locator('#topbar-more').evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-controls'), 'start-menu');
+  await page.keyboard.press('Escape');
+  assert.ok(await page.locator('#topbar-more').evaluate(n => n === document.activeElement));
+  assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'false');
+  await page.locator('#topbar-more').click();
+  await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname === '/api/live/mini'), page.locator('#more-mini').click()]);
+  assert.equal(miniOpened, true, 'Mini view opened from ⋯');
+  assert.ok(await page.locator('#topbar-more').evaluate(n => n === document.activeElement));
+  await page.evaluate(() => { delete (window as any).hearalong; });
+  await page.unroute('**/api/live/apps');
+  await page.unroute('**/api/live/mini');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForFunction(() => !document.body.classList.contains('layout-compact'));
   await page.locator('#stop').click();
   await page.locator('#live-chip').waitFor({ state: 'hidden' });
   await recordingButtons('recorded');

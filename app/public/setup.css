@@ -69,6 +69,6 @@ dialog.setup-ui::backdrop{background:rgba(24,33,47,.45)}
 .su-ai-grey{margin:0;background:#F4F6F9;border-radius:10px;padding:12px 14px;font-size:14px;line-height:1.5;color:#3B4657}
 .su-field select{width:100%;min-width:0;min-height:44px;border:1px solid #C9D0DB;border-radius:8px;padding:0 10px;font:inherit;background:#FFF}
 .setup-ui select:focus-visible{outline:2px solid #2F56C6;outline-offset:2px}
-.ai-cloud-notice{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid #DDE2EA;background:#EEF2FD;color:#1F3E99;font-size:14px}
+.ai-cloud-notice{flex:none;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:var(--topbar-pad-y, 10px) var(--topbar-pad-x, 20px) var(--topbar-pad-y, 10px) calc(var(--topbar-pad-x, 20px) + var(--meeting-button-pad-x, 0px) + var(--meeting-button-border, 0px));border-bottom:1px solid #DDE2EA;background:#EEF2FD;color:#1F3E99;font-size:14px}
 .ai-cloud-notice>span{flex:1 1 280px}.ai-cloud-notice button{min-height:44px}
 .ai-cloud-notice #ai-notice-keep{border:0;background:transparent;color:inherit;box-shadow:none;font-weight:600;text-decoration:none}

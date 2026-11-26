@@ -32,7 +32,7 @@
 html, body { height: 100%; }
 body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); font-size: 15px; display: flex; flex-direction: column; }
 a { color: var(--accent); } a:hover { color: var(--accent-ink); }
-:where(button, a, select, input, textarea, summary, [tabindex="0"]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:where(button, a, select, input:not(.meeting-name), textarea, summary, [tabindex="0"]):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
@@ -40,7 +40,7 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .conn.warn { white-space: nowrap; }
 .conn .act { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 
-.topbar { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 10px; height: 61px; padding: 0 var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
+.topbar { flex: none; display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 10px; height: 61px; padding: 0 var(--topbar-pad-x); background: var(--panel); border-bottom: 1px solid var(--line); }
 .topbar-left { display: flex; flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; align-items: center; gap: 8px; }
 .topbar-right { display: flex; flex: 0 0 auto; flex-wrap: nowrap; align-items: center; gap: var(--topbar-controls-gap); }
 .topbar .button { padding: 0 10px; white-space: nowrap; }
@@ -49,20 +49,18 @@ a { color: var(--accent); } a:hover { color: var(--accent-ink); }
 .more-button { flex: none; min-width: 44px; width: 44px; min-height: 44px; padding: 0; }
 #topbar-more-menu { left: auto; right: 0; width: 220px; }
 #connection:empty { display: none; }
-@media (min-width: 900px) {
-  .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
-  /* A window just wide enough for one row: the chip (a problem leads it) and Materials cut their ends before the name
-     becomes unreadable. Their minimums fit beside the recording actions from 900 px. */
-  .topbar-left > #live-chip { flex-shrink: 1; min-width: 102px; }
-  /* Only a long "Materials: <file>" label shortens; "Add materials" always fits. Block, so its text can end in "…". */
-  .topbar-left > #open-meeting { flex-shrink: 1; min-width: 106px; padding: 0 10px; display: block; line-height: calc(var(--topbar-button-height) - 2px); }
-  .topbar-left > .meeting-wrap { flex: 0 1 auto; min-width: 140px; }
-  .topbar-left > .meeting-wrap:has(> #meeting-name:not([hidden])) { flex: 1 1 auto; }
-}
+body:not(.layout-compact) .topbar-left > :not(.meeting-wrap) { flex-shrink: 0; }
+/* A window just wide enough for one row: the chip (a problem leads it) and Materials cut their ends before the name
+   becomes unreadable. Their minimums fit beside the recording actions from 900 px. */
+body:not(.layout-compact) .topbar-left > #live-chip { flex-shrink: 1; min-width: 102px; }
+/* Only a long "Materials: <file>" label shortens; "Add materials" always fits. Block, so its text can end in "…". */
+body:not(.layout-compact) .topbar-left > #open-meeting { flex-shrink: 1; min-width: 106px; padding: 0 10px; display: block; line-height: calc(var(--topbar-button-height) - 2px); }
+body:not(.layout-compact) .topbar-left > .meeting-wrap { flex: 0 1 auto; min-width: 140px; }
 .meeting-select { font: 600 16px var(--sans); color: var(--ink); border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; background: transparent; max-width: 360px; }
 .meeting-select:hover, .meeting-select:focus { border-color: var(--line-strong); }
 .chip[hidden] { display: none; }
-.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #EEF1F5; color: #3B4657; font-size: 13px; }
+.chip { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #EEF1F5; color: #3B4657; font-size: 13px; }
+.chip-short { display: none; }
 .chip.recording { background: var(--rec-tint); color: #9B1C1C; font-weight: 500; }
 .chip.recording::before, .chip.replay::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); }
 .chip.replay { background: var(--accent-tint); color: var(--accent-ink); font-weight: 500; }
@@ -124,15 +122,16 @@ body.layout-compact #live-chip { flex: 0 1 auto; min-width: 102px; }
 body.layout-compact #open-meeting { display: none; }
 body.layout-compact .meeting-select { flex: 1 1 auto; min-width: 0; max-width: 480px; }
 body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding: 0; }
-@media (max-width: 619.98px) {
-  .chip-full { display: none; }
-  #mini-view { display: none; }
-  body.layout-compact .meeting-wrap { min-width: 96px; }
-  body.layout-compact #live-chip { padding: 4px 8px; min-width: 58px; }
-}
-@media (max-width: 479.98px) {
-  .topbar-right > .start-wrap:has(> #start:not(.primary)), #add-call-wrap { display: none; }
-}
+body.topbar-narrow .chip-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+body.topbar-narrow .chip-short { display: inline-block; }
+body.topbar-narrow #mini-view { display: none; }
+body.topbar-narrow .meeting-wrap { min-width: 96px; }
+body.topbar-narrow #live-chip { padding: 4px 8px; min-width: 58px; }
+body.topbar-narrow #live-chip.replay { min-width: 168px; font-variant-numeric: tabular-nums; }
+body.topbar-tiny #live-chip.replay { min-width: 115px; gap: 4px; padding: 4px 7px; }
+body.topbar-tiny .chip-replay-word { display: none; }
+body.topbar-tiny .topbar-right > .start-wrap:has(> #start:not(.primary)),
+body.topbar-tiny #add-call-wrap { display: none; }
 .topbar .button, .update-bar .button { min-height: var(--topbar-button-height); }
 body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; margin: 0; padding: 6px max(8px, calc((100% - 640px) / 2)) 8px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .compact-tabs button { position: relative; min-height: 44px; min-width: 0; padding: 0 2px; border: none; border-radius: 8px; background: #E9EDF3; font: 13px var(--sans); color: #3B4657; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -160,7 +159,7 @@ body.layout-compact .para p { font-size: 16px; }
 
 .transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: 4px 28px 80px; outline: none; }
 .para { display: flex; gap: 16px; padding: 8px 10px; border-radius: 10px; }
-.para time { flex: 0 0 56px; min-width: 0; font: 13px var(--mono); color: var(--muted); padding-top: 4px; user-select: none; }
+.para time { position: relative; flex: 0 0 56px; min-width: 0; font: 13px var(--mono); color: var(--muted); padding-top: 4px; user-select: none; }
 .para p { flex: 1; min-width: 0; max-width: 80ch; margin: 0; font: 18px/1.6 var(--serif); }
 .listen-time { position: relative; display: inline-flex; align-items: center; vertical-align: top; min-height: 32px; margin: -8px 0 0 -20px; padding: 0 8px 0 20px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
 .listen-time::before { content: '▶'; position: absolute; left: 5px; width: 10px; text-align: center; font-size: 10px; opacity: 0; }
@@ -411,9 +410,11 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .answer.compact { max-height: 7.2em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
 .new-cards { position: sticky; top: 4px; z-index: 3; display: block; margin: 0 auto 6px; padding: 4px 12px; border-radius: 999px; border: none; background: var(--accent); color: #FFF; font: 12px var(--sans); cursor: pointer; box-shadow: 0 2px 6px rgba(24,33,47,.2); }
 .para { position: relative; }
-.para-mark { position: relative; display: inline-flex; align-items: center; justify-content: center; margin-top: 4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; border: none; background: var(--accent-tint); color: var(--accent-ink); font: 10px/16px var(--sans); cursor: pointer; }
+.para-mark { position: absolute; left: 0; top: 30px; display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; border: none; background: var(--accent-tint); color: var(--accent-ink); font: 10px/16px var(--sans); cursor: pointer; }
+.para time:has(.speaker) .para-mark { left: auto; right: 0; top: 30px; }
+body.layout-compact .para time:has(.speaker) .para-mark { left: 36px; right: auto; top: 30px; }
 .para-mark:empty::after { content: "•"; }
-.para-mark::before { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
+.para-mark::before { content: ""; position: absolute; top: 0; bottom: -6px; left: -6px; right: -6px; }
 .more { margin-top: 6px; font-size: 13px; }
 .more > summary { cursor: pointer; color: var(--accent-ink); }
 .auto-answer { margin-top: 8px; font-size: 13px; }
@@ -443,14 +444,15 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .call-empty { margin: 6px 6px 2px; font-size: 13px; color: var(--muted); }
 body.layout-compact .start-menu { left: auto; right: 0; }
 /* Speaker labels in online meetings: capture channels, under the paragraph time. */
-.para time .speaker { display: block; margin-top: 2px; font: 600 11px var(--sans); letter-spacing: .03em; text-transform: uppercase; color: var(--accent-ink); }
+.para time .speaker { display: block; width: fit-content; margin-top: 2px; font: 600 11px var(--sans); letter-spacing: .03em; text-transform: uppercase; color: var(--accent-ink); }
 .para.them time .speaker { color: #8A4B08; }
 
 /* New meeting and rename, beside the meeting name. */
 .icon-button { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; flex: 0 0 auto; }
 .icon-button:hover, .icon-button:focus-visible { border-color: var(--line-strong); color: var(--ink); }
 .icon-button:disabled { opacity: .4; cursor: not-allowed; }
-.meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); min-width: 0; min-height: var(--topbar-button-height); }
+.meeting-name { font: 600 16px var(--sans); color: var(--ink); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 8px; width: min(360px, 60vw); max-width: 100%; min-width: 0; min-height: var(--topbar-button-height); }
+.meeting-name:focus-visible { outline: none; }
 body.layout-compact .meeting-name { flex: 1 1 auto; width: auto; }
 body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
 
@@ -485,7 +487,7 @@ body.layout-compact .icon-button { min-width: 44px; min-height: 44px; }
    keep the Plans outline instead (one ring, not two). */
 .menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .plans .menu-item:focus-visible { box-shadow: none; }
-.menu-item:disabled { opacity: .45; cursor: not-allowed; background: transparent; }
+.menu-item:disabled, .menu-item[aria-disabled="true"] { opacity: .45; cursor: not-allowed; background: transparent; }
 .menu-item { position: relative; }
 .menu-item[aria-checked="true"] { font-weight: 600; background: var(--accent-tint); color: var(--accent-ink); padding-right: 30px; }
 .menu-item[aria-checked="true"]::after { content: "✓"; position: absolute; right: 12px; top: 50%; transform: translateY(-50%); font-size: 14px; }
@@ -741,7 +743,7 @@ body.layout-compact .topbar #mini-view { min-height: 44px; }
 /* Dialog headers: title and Close on one row (the replay dialog too). */
 .replay-dialog .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .mem-meta .link-button { padding: 0 4px; vertical-align: middle; }
-.settings-section label.small:not(.stack) { display: block; }
+.settings-section label.small:not(.stack):not(.check) { display: block; }
 .settings-section label.check { display: flex; } /* a box beside its words, their second line under the first */
 
 /* Quit (M7 launcher): the app has stopped; nothing behind this works any more. */
@@ -852,10 +854,14 @@ body.layout-compact .plans-head > .plans-menu { width: min(280px, calc(100vw - 2
 /* Inline AI-Settings link (Notes & Plans). */
 .inline-settings-link { position: relative; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .inline-settings-link:hover { color: var(--accent-ink); }
-.inline-settings-link::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
+.inline-settings-link::after { content: ""; position: absolute; inset: -6px -4px; }
 .notes-ai-hint { flex-basis: 100%; padding-top: 6px; }
 
-/* Compact Notes / Plans Options ▾: quiet text action tucked into the card header row, no row of its own when alone. */
+/* Compact Notes / Plans Options ▾: quiet text action tucked into the card header row only when it owns the top cleanly. */
+body.layout-compact .notes-bar { min-height: 32px; padding: 0 12px 10px; }
+body.layout-compact .notes-bar .notes-menu { top: 38px; }
+body.layout-compact .plans-head { min-height: 32px; }
+body.layout-compact .plans-head > .plans-menu { top: 38px; }
 body.layout-compact .notes-bar .options-button,
 body.layout-compact .plans-head .options-button { gap: 4px; min-height: 32px; padding: 0 8px; border: none; background: none; box-shadow: none; color: var(--accent-ink); font: 500 13px var(--sans); white-space: nowrap; position: relative; }
 body.layout-compact .notes-bar .options-button::after,
@@ -866,17 +872,18 @@ body.layout-compact .notes-bar .options-button:hover,
 body.layout-compact .notes-bar .options-button[aria-expanded="true"],
 body.layout-compact .plans-head .options-button:hover,
 body.layout-compact .plans-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) { position: relative; z-index: 2; height: 0; min-height: 0; padding: 0; overflow: visible; }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) > .notes-options-wrap { position: absolute; top: 8px; right: 20px; }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) .notes-menu { top: 38px; }
-body.layout-compact .notes-body.has-notes > .notes-group:first-child > .notes-section { padding-right: 84px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card) { position: relative; z-index: 2; height: 0; min-height: 0; margin-bottom: -14px; overflow: visible; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card) > .options-button { position: absolute; top: 8px; right: 12px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card) > .plans-menu { top: 44px; right: 12px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card .plans-list > .plan:first-child .plan-label { padding-right: 84px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card .plans-list > .plan:first-child .plan-chev { margin-top: 28px; }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))):has(+ #notes-progress[hidden] + #notes-body.has-notes:has(> .notes-group, > .notes-fold)) { position: relative; z-index: 2; height: 0; min-height: 0; padding: 0; overflow: visible; }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))):has(+ #notes-progress[hidden] + #notes-body.has-notes:has(> .notes-group, > .notes-fold)) > .notes-options-wrap { position: absolute; top: 8px; right: 20px; }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))):has(+ #notes-progress[hidden] + #notes-body.has-notes:has(> .notes-group, > .notes-fold)) .notes-menu { top: 38px; }
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) + #notes-progress[hidden] + .notes-body.has-notes > .notes-group:first-child > .notes-section,
+body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) + #notes-progress[hidden] + .notes-body.has-notes > .notes-fold:first-child > summary { padding-right: 84px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) { position: relative; z-index: 2; height: 0; min-height: 0; margin-bottom: -14px; overflow: visible; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .options-button { position: absolute; top: 8px; right: 12px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .plans-menu { top: 44px; right: 12px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card > .plans-list:first-child > .plan:first-child .plan-label { padding-right: 84px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card > .plans-list:first-child > .plan:first-child .plan-chev { margin-top: 28px; }
 
-/* 44 px interactive targets without growing visual bounds or row heights. */
+/* Expanded interactive targets without growing visual bounds, row heights, or overlapping neighbours. */
 .board-card .dismiss,
 .card-time,
 .small-button,
@@ -886,14 +893,22 @@ body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card .plans-lis
 .listen-time,
 .selection-actions button,
 dialog .button { position: relative; }
-.board-card .dismiss::after,
-.card-time::after,
-.small-button::after,
-#scan-board::after,
-.link-button::after,
-#board-sort::after,
-.listen-time::after,
-.selection-actions button::after,
-dialog .button::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
-.board-filter { min-height: 44px; margin: -5px 0; }
+.board-card .dismiss { top: auto; right: auto; }
+.board-card .dismiss::after { content: ""; position: absolute; inset: -6px -8px -6px -4px; }
+.card-time::after { content: ""; position: absolute; inset: -6px -4px; }
+.small-button::after { content: ""; position: absolute; inset: -6px -4px; }
+.ok-actions .small-button::after,
+.mem-edit-buttons .small-button::after { inset: -3px; }
+.link-button::after { content: ""; position: absolute; inset: -6px -4px; }
+.mem-actions .link-button::after,
+.brief-meta .link-button::after { inset: -2px; }
+.ok-actions .link-button::after { inset: -3px; }
+.mem-meta .link-button::after { inset: 0 -2px -2px -2px; }
+#board-sort::after { content: ""; position: absolute; inset: -5px -4px; }
+.board-bar #board-sort::after,
+.board-bar .link-button::after { inset: -3px -5px; }
+.listen-time::after { content: ""; position: absolute; inset: -6px 0 -1px 0; }
+.selection-actions button::after { content: ""; position: absolute; inset: -3px; }
+dialog .button::after { content: ""; position: absolute; inset: -2px -4px; }
+.board-filter { min-height: 40px; margin: -3px 0; }
 #replay-file { min-height: 44px; padding: 6px 0; }

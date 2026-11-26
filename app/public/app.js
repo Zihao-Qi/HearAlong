@@ -230,17 +230,24 @@ function renderLive(snapshot) {
     const problems = notices.map(n => ` · ${n.short}`).join('');
     // In an inner span: a chip that is too narrow ends in "…" (the full text is in its title) instead of cutting a letter.
     const fullChip = notices.length ? `Recording${problems}` : `Recording${what}${off ? ' · no live preview' : partly || (mine.some(d => d.behind) ? ' · live preview behind' : '')}`;
-    const chipSpan = el('span', undefined, 'chip-text');
-    if (notices.length) chipSpan.append('Rec', el('span', 'ording', 'chip-full'), problems);
-    else chipSpan.append('Rec', el('span', fullChip.slice(3), 'chip-full'));
-    chip.replaceChildren(chipSpan);
+    const shortChip = notices.length ? `Rec${problems}` : 'Rec';
+    const longSpan = el('span', fullChip, 'chip-text chip-long');
+    const shortSpan = el('span', shortChip, 'chip-text chip-short');
+    shortSpan.setAttribute('aria-hidden', 'true');
+    chip.replaceChildren(longSpan, shortSpan);
     chip.title = notices.length ? notices.map(n => n.text).join('\n') : `${fullChip}. The final transcript arrives in 16–24 s pieces; the grey live preview fills in until then.`;
   }
   else if (snapshot?.replay && snapshot.replay.positionMs < snapshot.replay.durationMs) {
     const r = snapshot.replay;
     chip.classList.add('replay');
-    chip.replaceChildren(el('span', `Replay ×${r.speed} · ${stamp(r.positionMs)} / ${stamp(r.durationMs)}`, 'chip-text'));
-  } else { chip.hidden = true; chip.textContent = ''; }
+    const fullReplay = `Replay ×${r.speed} · ${stamp(r.positionMs)} / ${stamp(r.durationMs)}`;
+    const longSpan = el('span', fullReplay, 'chip-text chip-long');
+    const shortSpan = el('span', undefined, 'chip-text chip-short');
+    shortSpan.setAttribute('aria-hidden', 'true');
+    shortSpan.append(el('span', 'Replay ', 'chip-replay-word'), `${stamp(r.positionMs)} / ${stamp(r.durationMs)}`);
+    chip.replaceChildren(longSpan, shortSpan);
+    chip.title = fullReplay;
+  } else { chip.hidden = true; chip.textContent = ''; chip.title = ''; }
   const c = snapshot?.correction;
   let text = '';
   if (c && !c.enabled) text = 'Corrections off (AI models disabled)';
@@ -2075,9 +2082,12 @@ function showSettingsSection(name) {
   if (name === 'microphone') void listMicrophones();
   if (name === 'project') renderPlanSetting();
 }
-function openSettings(name) {
+let settingsReturnFocus = null;
+function openSettings(name, returnFocus = null) {
+  settingsReturnFocus = returnFocus;
   closeMeetingMenu();
   closeSelectionMenu();
+  if (returnFocus && !returnFocus.hidden && returnFocus.offsetParent !== null) returnFocus.focus();
   renderSettingsNav();
   showSettingsSection(name);
   if (!$('settings').open) $('settings').showModal();
@@ -2098,11 +2108,17 @@ $('settings').querySelector('.settings-nav').addEventListener('keydown', event =
   showSettingsSection(next.dataset.section);
 });
 $('open-meeting').onclick = () => openSettings('materials');
-$('meeting-materials').onclick = () => openSettings('materials');
+$('meeting-materials').onclick = () => openSettings('materials', $('meeting-button'));
 // With a warning on the dot, the cog opens where the problem is.
 $('open-system').onclick = () => openSettings($('status-dot').classList.contains('error') ? 'setup' : $('status-dot').classList.contains('warn') ? 'speech' : 'microphone');
 $('close-settings').onclick = () => $('settings').close();
-$('settings').addEventListener('close', () => { micTest?.stop(); setupUi.stop(); });
+$('settings').addEventListener('close', () => {
+  micTest?.stop();
+  setupUi.stop();
+  const target = settingsReturnFocus;
+  settingsReturnFocus = null;
+  if (target && !target.hidden && target.offsetParent !== null) target.focus();
+});
 // A click on the dimmed backdrop closes it too.
 $('settings').addEventListener('click', event => { if (event.target === $('settings')) $('settings').close(); });
 /** "Materials: <first> · Glossary v<N>" (short in compact), or "Add materials". */
@@ -2458,10 +2474,15 @@ let helperAvailable = false;
 let helperCheckedAt = 0;
 function hasAppCapture() { return helperAvailable && Date.now() - helperCheckedAt < 3000; }
 function closeStartMenu() {
-  $('start-menu').hidden = true;
-  if ($('start-menu').dataset) delete $('start-menu').dataset.host;
+  const menu = $('start-menu');
+  const wasMoreHost = menu.dataset?.host === 'topbar-more';
+  menu.hidden = true;
+  if (menu.dataset) delete menu.dataset.host;
   for (const id of ['start', 'start-new', 'add-tab']) $(id).setAttribute('aria-expanded', 'false');
-  $('topbar-more')?.setAttribute('aria-expanded', 'false');
+  if (wasMoreHost) {
+    $('topbar-more')?.setAttribute('aria-expanded', 'false');
+    $('topbar-more')?.setAttribute('aria-controls', 'topbar-more-menu');
+  }
   clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null; callMenuFocusPending = false;
 }
 function startMenuStep(apps) {
@@ -2516,7 +2537,9 @@ function openStartMenu(anchor, host = anchor) {
   callMenuAnchor = anchor;
   if ($('start-menu').dataset) $('start-menu').dataset.host = host;
   $(host).parentElement.append($('start-menu')); startMenuStep(false);
-  $('start-menu').hidden = false; $(host).setAttribute('aria-expanded', 'true');
+  $('start-menu').hidden = false;
+  if (host === 'topbar-more') $(host).setAttribute('aria-controls', 'start-menu');
+  $(host).setAttribute('aria-expanded', 'true');
   fitStartMenu();
   $('start-mic').focus();
 }
@@ -2525,7 +2548,9 @@ function openCallMenu(anchor, host = anchor) {
   if ($('start-menu').dataset) $('start-menu').dataset.host = host;
   $(host).parentElement.append($('start-menu'));
   startMenuStep(true); $('call-back').hidden = anchor === 'add-tab';
-  $('start-menu').hidden = false; $(host).setAttribute('aria-expanded', 'true');
+  $('start-menu').hidden = false;
+  if (host === 'topbar-more') $(host).setAttribute('aria-controls', 'start-menu');
+  $(host).setAttribute('aria-expanded', 'true');
   fitStartMenu();
   const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
   callMenuFocusPending = !first;
@@ -2682,19 +2707,32 @@ async function addCallAction(host = 'add-tab') {
   const session = capture;
   if (!session) return;
   if (window.hearalong?.desktop || hasAppCapture()) { openCallMenu('add-tab', host); return; }
-  await attachTab(session, pickMeetingTab().then(stream => ({ stream }), error => ({ error }))); // called from the click: the picker needs it
+  try {
+    await attachTab(session, pickMeetingTab().then(stream => ({ stream }), error => ({ error }))); // called from the click: the picker needs it
+  } finally {
+    const active = document.activeElement;
+    if (host === 'topbar-more' && (!active || active === document.body || active.offsetParent === null || $('topbar-more-wrap').contains(active))) {
+      (!$('topbar-more-wrap').hidden ? $('topbar-more') : !$('stop').hidden ? $('stop') : $('open-system'))?.focus();
+    }
+  }
 }
 $('add-tab').onclick = guarded(() => addCallAction('add-tab'));
 $('stop').onclick = guarded(() => { closeStartMenu(); return stopCapture(); });
 // Narrow top bar overflow menu (⋯): holds Mini view (< 620 px) and slot 1 (< 480 px).
+function topbarWidth() {
+  const bar = document.querySelector('.topbar');
+  const width = bar?.getBoundingClientRect?.().width;
+  return width && width > 0 ? width : window.innerWidth;
+}
 function moreMenuItems() {
-  return [...$('topbar-more-menu').querySelectorAll('[role="menuitem"]')].filter(n => !n.hidden && !n.disabled);
+  return [...$('topbar-more-menu').querySelectorAll('[role="menuitem"]')].filter(n => !n.hidden);
 }
 function closeMoreMenu(returnFocus = false) {
   const menu = $('topbar-more-menu');
   if (!menu || menu.hidden) return;
   menu.hidden = true;
   $('topbar-more').setAttribute('aria-expanded', 'false');
+  $('topbar-more').setAttribute('aria-controls', 'topbar-more-menu');
   if (returnFocus) {
     const active = document.activeElement;
     if (!active || active === document.body || $('topbar-more-wrap').contains(active)) $('topbar-more').focus();
@@ -2706,31 +2744,105 @@ function openMoreMenu(focusLast = false) {
   closeStartMenu();
   closeMeetingMenu();
   $('topbar-more-menu').hidden = false;
+  $('topbar-more').setAttribute('aria-controls', 'topbar-more-menu');
   $('topbar-more').setAttribute('aria-expanded', 'true');
   for (const n of items) n.tabIndex = -1;
   (focusLast ? items.at(-1) : items[0])?.focus();
 }
+function focusVisibleTopbarControl(preferred = []) {
+  for (const node of [...preferred, $('topbar-more'), $('stop'), $('start-new'), $('start'), $('open-system')]) {
+    if (!node || node.hidden || node.disabled) continue;
+    if (node === $('topbar-more') && $('topbar-more-wrap').hidden) continue;
+    if (node.offsetParent !== null) { node.focus(); return; }
+  }
+}
+const topbarMode = { narrow: null, tiny: null };
 function syncTopbarMore() {
   const wrap = $('topbar-more-wrap');
   if (!wrap) return;
-  const narrow = window.innerWidth < 620, tiny = window.innerWidth < 480;
+  const width = topbarWidth();
+  const narrow = width < 620, tiny = width < 480;
+  const crossed480 = topbarMode.tiny !== null && topbarMode.tiny !== tiny;
+  const crossed620 = topbarMode.narrow !== null && topbarMode.narrow !== narrow;
+  topbarMode.narrow = narrow;
+  topbarMode.tiny = tiny;
+  document.body.classList.toggle('topbar-narrow', narrow);
+  document.body.classList.toggle('topbar-tiny', tiny);
+
+  const moreMenu = $('topbar-more-menu');
+  const moreOpen = !moreMenu.hidden;
+  const allMoreItems = [...moreMenu.querySelectorAll('[role="menuitem"]')];
+  const focusedMoreItem = moreOpen && moreMenu.contains(document.activeElement) ? document.activeElement : null;
+  const focusedMoreIdx = focusedMoreItem ? allMoreItems.indexOf(focusedMoreItem) : -1;
+  const moreHadFocus = moreOpen && $('topbar-more-wrap').contains(document.activeElement);
+
   const showContinue = tiny && !$('start').hidden && !$('start').classList.contains('primary');
   const showAddCall = tiny && !$('add-tab').hidden;
   const showMini = narrow && !$('mini-view').hidden;
+  const continueDisabled = $('start').disabled;
   $('more-continue').hidden = !showContinue;
-  $('more-continue').disabled = $('start').disabled;
+  $('more-continue').disabled = false;
+  $('more-continue').setAttribute('aria-disabled', String(continueDisabled));
+  $('more-continue').title = !continueDisabled ? $('start').title
+    : !status?.config.available ? 'Speech needs setup on this Mac'
+    : replayPlaying() ? 'Wait for the replay to finish'
+    : busy || requestingMic ? 'Recording is starting'
+    : 'Wait for the meeting to load';
   $('more-add-call').hidden = !showAddCall;
+  $('more-add-call').title = $('add-tab').title;
   $('more-mini').hidden = !showMini;
+  $('more-mini').title = $('mini-view').title;
   const any = showContinue || showAddCall || showMini;
   wrap.hidden = !any;
-  if (!any) {
-    closeMoreMenu();
-    if ($('start-menu').dataset?.host === 'topbar-more') closeStartMenu();
-  } else if (!tiny && $('start-menu').dataset?.host === 'topbar-more') {
-    closeStartMenu();
+
+  if (moreOpen) {
+    if (crossed480 || crossed620 || !any) {
+      closeMoreMenu(false);
+      if (moreHadFocus) {
+        const preferred = focusedMoreItem === $('more-mini') ? [$('mini-view'), $('topbar-more')]
+          : focusedMoreItem === $('more-add-call') ? [$('add-tab'), $('topbar-more')]
+          : focusedMoreItem === $('more-continue') ? [$('start'), $('topbar-more')]
+          : [$('topbar-more'), $('mini-view'), $('add-tab'), $('start')];
+        focusVisibleTopbarControl(preferred);
+      }
+    } else if (focusedMoreItem && focusedMoreItem.hidden) {
+      const visible = moreMenuItems();
+      for (const n of visible) n.tabIndex = -1;
+      const next = allMoreItems.slice(focusedMoreIdx + 1).find(n => !n.hidden) ?? visible[0];
+      next?.focus();
+    }
+  }
+
+  const startMenu = $('start-menu');
+  if (!startMenu.hidden) {
+    const host = startMenu.dataset?.host || callMenuAnchor;
+    const anchor = callMenuAnchor;
+    const hostHidden = host === 'topbar-more' ? wrap.hidden
+      : host === 'start' ? (tiny && !$('start').classList.contains('primary')) || $('start').hidden
+      : host === 'add-tab' ? tiny || $('add-tab').hidden
+      : Boolean(host && $(host)?.hidden);
+    if (crossed480 || crossed620 || hostHidden) {
+      const hadFocus = startMenu.contains(document.activeElement) || (host && document.activeElement === $(host));
+      closeStartMenu();
+      if (hadFocus) {
+        const preferred = anchor === 'start' ? (tiny ? [$('topbar-more'), $('start')] : [$('start'), $('topbar-more')])
+          : anchor === 'add-tab' ? (tiny ? [$('topbar-more'), $('add-tab')] : [$('add-tab'), $('topbar-more')])
+          : anchor === 'start-new' ? [$('start-new')]
+          : [$('topbar-more')];
+        focusVisibleTopbarControl(preferred);
+      }
+    }
   }
 }
+if (typeof ResizeObserver !== 'undefined') {
+  const bar = document.querySelector('.topbar');
+  if (bar) new ResizeObserver(() => syncTopbarMore()).observe(bar);
+}
 $('topbar-more').onclick = () => {
+  if (!$('start-menu').hidden && $('start-menu').dataset?.host === 'topbar-more') {
+    closeStartMenu();
+    return;
+  }
   if ($('topbar-more-menu').hidden) openMoreMenu(); else closeMoreMenu(true);
 };
 $('topbar-more').addEventListener('keydown', event => {
@@ -2751,7 +2863,11 @@ $('topbar-more-menu').addEventListener('keydown', event => {
 document.addEventListener('click', event => {
   if (!event.target.closest?.('#topbar-more-wrap')) closeMoreMenu(true);
 });
-$('more-continue').onclick = () => { closeMoreMenu(); openStartMenu('start', 'topbar-more'); };
+$('more-continue').onclick = () => {
+  if ($('more-continue').getAttribute('aria-disabled') === 'true') return;
+  closeMoreMenu();
+  openStartMenu('start', 'topbar-more');
+};
 $('more-add-call').onclick = guarded(() => { closeMoreMenu(); return addCallAction('topbar-more'); });
 $('more-mini').onclick = () => { closeMoreMenu(true); openMini(); };
 void pollAppCapture();
@@ -2794,7 +2910,7 @@ function openMini() {
       if (mini.win !== win) return;
       mini.win = null;
       controls();
-      if (capture && !capture.stopping && (!document.activeElement || document.activeElement === document.body)) (window.innerWidth < 620 ? $('topbar-more') : $('mini-view')).focus();
+      if (capture && !capture.stopping && (!document.activeElement || document.activeElement === document.body)) (topbarWidth() < 620 ? $('topbar-more') : $('mini-view')).focus();
     });
     controls();
   }).catch(error => log(`The mini view could not open: ${error.message}`, true));
