@@ -755,9 +755,10 @@ function setBoardWidth(width, save = true) {
   });
 }
 let layoutFrame = 0;
+let startupDone = false;
 window.addEventListener('resize', () => {
   cancelAnimationFrame(layoutFrame);
-  layoutFrame = requestAnimationFrame(() => { closeSelectionMenu(); applyLayout(); });
+  layoutFrame = requestAnimationFrame(() => { closeSelectionMenu(); if (startupDone) applyLayout(); else applyInitialLayoutClasses(); });
 });
 
 let citationSequence = 0;
@@ -4285,33 +4286,48 @@ async function renderProjectFiles() {
 }
 $('settings').querySelector('.settings-nav button[data-section="project"]').addEventListener('click', () => void renderProjectFiles());
 
-// Prevent the wide-bar flash before startup awaits without touching tab, layoutView, notesView, or storage state.
+// Show the saved layout and tab visually before startup awaits without touching layoutView, notesView, or storage.
 function applyInitialLayoutClasses() {
-  document.body.classList.toggle('layout-compact', window.innerWidth < COMPACT_BELOW);
+  const compact = window.innerWidth < COMPACT_BELOW;
+  document.body.classList.toggle('layout-compact', compact);
   const width = topbarWidth();
   document.body.classList.toggle('topbar-narrow', width < 620);
   document.body.classList.toggle('topbar-tiny', width < 480);
+
+  const savedCompact = store.get('compact-tab');
+  const compactTab = ['board', 'notes', 'plans', 'project'].includes(savedCompact) ? savedCompact : 'live';
+  const savedRight = store.get('right-tab');
+  const rightTab = ['notes', 'plans', 'project'].includes(savedRight) ? savedRight : 'board';
+  const panelTab = compact && compactTab !== 'live' ? compactTab : rightTab;
+
+  document.body.dataset.tab = compactTab;
+  $('compact-tabs').hidden = !compact;
+  $('ctab-project').hidden = compactTab !== 'project';
+  $('tab-project').hidden = rightTab !== 'project';
+  $('compact-tabs').style.setProperty('--tab-count', compactTab === 'project' ? '5' : '4');
+  const pane = $('transcript-pane');
+  if (compact) { pane.setAttribute('role', 'tabpanel'); pane.setAttribute('aria-labelledby', 'ctab-live'); }
+  else { pane.removeAttribute('role'); pane.removeAttribute('aria-labelledby'); }
+  for (const id of ['live', 'board', 'notes', 'plans', 'project']) {
+    const ctab = $(`ctab-${id}`);
+    ctab.setAttribute('aria-selected', String(id === compactTab));
+    ctab.tabIndex = id === compactTab ? 0 : -1;
+  }
+  for (const id of ['board', 'notes', 'plans', 'project']) {
+    const tab = $(`tab-${id}`);
+    tab.setAttribute('aria-selected', String(id === panelTab));
+    tab.tabIndex = id === panelTab ? 0 : -1;
+    const panel = $(`${id}-panel`);
+    panel.hidden = id !== panelTab;
+    panel.setAttribute('aria-labelledby', `${compact ? 'ctab' : 'tab'}-${id}`);
+  }
+  $('board-sort').hidden = panelTab !== 'board';
+  $('notes-options-wrap').hidden = panelTab !== 'notes';
+  $('plans-options-slot').hidden = panelTab !== 'plans';
 }
 applyInitialLayoutClasses();
 
 // ---------- Plans (M7b): its meeting tab, and the project's "Plan after the notes" ----------
-plansApi = await choosePlansApi({ pageId, pageHeaders, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
-plansView = createPlansView({
-  optionsHost: $('plans-options-slot'),
-  optionsInHead: () => !layoutView.compact,
-  host: $('plans'), api: plansApi,
-  hooks: {
-    meetingId: () => meetingId,
-    meetingTitle: () => status?.meetings.find(m => m.id === meetingId)?.title ?? '',
-    showLine: (owner, segmentId) => scrollToSegment(owner, segmentId),
-    visible: () => notesView.tab === 'plans' && (!layoutView.compact || layoutView.tab === 'plans'),
-    noteCounts: () => notesView.owner === meetingId && notesView.data?.notes ? {
-      questions: notesView.data.notes.notes.openQuestions.length, actions: notesView.data.notes.notes.actions.length,
-    } : null,
-    openSettings: name => openSettings(name),
-    log,
-  },
-});
 const planSettingSaves = new Map();
 /** A pending save belongs to one project, not to the checkbox (which may show another project meanwhile). */
 function renderPlanSetting() {
@@ -4345,16 +4361,38 @@ $('plan-after-notes').onchange = async () => {
 };
 
 updateTranscriptDownloads(meetingId);
-// Initialize project-dependent visibility/count even when no meeting detail will ever call setProject().
-setProject(null);
-await refreshStatus();
-await refreshSegments();
-await refreshDetail();
+try {
+  plansApi = await choosePlansApi({ pageId, pageHeaders, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
+  plansView = createPlansView({
+    optionsHost: $('plans-options-slot'),
+    optionsInHead: () => !layoutView.compact,
+    host: $('plans'), api: plansApi,
+    hooks: {
+      meetingId: () => meetingId,
+      meetingTitle: () => status?.meetings.find(m => m.id === meetingId)?.title ?? '',
+      showLine: (owner, segmentId) => scrollToSegment(owner, segmentId),
+      visible: () => notesView.tab === 'plans' && (!layoutView.compact || layoutView.tab === 'plans'),
+      noteCounts: () => notesView.owner === meetingId && notesView.data?.notes ? {
+        questions: notesView.data.notes.notes.openQuestions.length, actions: notesView.data.notes.notes.actions.length,
+      } : null,
+      openSettings: name => openSettings(name),
+      log,
+    },
+  });
+
+  await refreshStatus();
+  await refreshSegments();
+  await refreshDetail();
+  // Initialize project-dependent visibility/count even when no meeting detail will ever call setProject().
+  if (!meetingId) setProject(null);
+} finally {
+  showTab(notesView.tab);
+  applyLayout();
+  startupDone = true;
+}
 setInterval(refreshSegments, 1000);
 startPageSession(refreshStatus);
 setInterval(refreshDetail, 3000);
-showTab(notesView.tab);
-applyLayout();
 // Notes poll while the tab is open, or while a job runs (so the button state is right when the tab opens).
 setInterval(() => {
   if (['notes', 'plans'].includes(notesView.tab) || notesView.data?.job?.state === 'running') void refreshNotes();

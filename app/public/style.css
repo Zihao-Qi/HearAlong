@@ -139,8 +139,6 @@ body.layout-compact .compact-tabs { display: grid; grid-template-columns: repeat
 .compact-tabs button[aria-selected="true"] { background: var(--panel); color: var(--ink); font-weight: 600; box-shadow: 0 1px 3px rgba(24,33,47,.14), inset 0 0 0 1px var(--line-strong); }
 body.layout-compact .board-pane { flex: 1 1 auto; width: auto; border: none; }
 body.layout-compact .board-pane .tabs { display: none; }
-body.layout-compact:not([data-tab]) .transcript-pane,
-body.layout-compact:not([data-tab]) .board-pane { display: none; }
 body.layout-compact[data-tab="live"] .board-pane { display: none; }
 body.layout-compact:not([data-tab="live"]) .transcript-pane { display: none; }
 body.layout-compact .pinned-card:not([hidden]) { display: flex; }
