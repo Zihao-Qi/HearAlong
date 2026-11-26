@@ -4385,9 +4385,18 @@ try {
   await refreshDetail();
   // Initialize project-dependent visibility/count even when no meeting detail will ever call setProject().
   if (!meetingId) setProject(null);
+} catch (error) {
+  console.error(error);
+  log(error?.message ?? String(error), true);
 } finally {
+  if (!projectView.project) {
+    $('tab-project').hidden = true;
+    $('ctab-project').hidden = true;
+    $('compact-tabs').style.setProperty('--tab-count', String(compactTabs().length));
+  }
   showTab(notesView.tab);
   applyLayout();
+  if (layoutView.compact && !projectView.project && layoutView.tab === 'project') showCompactTab('live');
   startupDone = true;
 }
 setInterval(refreshSegments, 1000);
