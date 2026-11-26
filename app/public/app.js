@@ -491,7 +491,6 @@ function selectMeeting(id) {
   closeTranscriptMenu();
   // Invalidate everything shown for the previous meeting's notes, including in-flight requests and the export link.
   notesView.owner = null; notesView.signature = null; notesView.data = null; notesView.sequence++; notesView.busy = false;
-  parkNotesOptions();
   $('notes-body').replaceChildren(); $('notes-body').classList.remove('has-notes'); delete $('notes-body').dataset.record;
   $('notes-warnings').replaceChildren(); $('notes-status').textContent = ''; $('notes-status').hidden = true;
   $('notes-progress').replaceChildren(); $('notes-progress').hidden = true;
@@ -570,6 +569,13 @@ function showTab(tab) {
   notesView.tab = tab;
   if (tab !== 'notes') closeNotesMenu();
   if (tab !== 'plans') plansView?.closeMenu();
+  const active = document.activeElement;
+  const leavingFocus = active && (
+    (tab !== 'board' && $('board-panel').contains?.(active))
+    || (tab !== 'notes' && ($('notes-panel').contains?.(active) || $('notes-options-wrap').contains?.(active)))
+    || (tab !== 'plans' && ($('plans-panel').contains?.(active) || $('plans-options-slot').contains?.(active)))
+    || (tab !== 'project' && $('project-panel').contains?.(active))
+  );
   if (!fallback) store.set('right-tab', tab);
   $('tab-board').setAttribute('aria-selected', String(tab === 'board'));
   $('tab-notes').setAttribute('aria-selected', String(tab === 'notes'));
@@ -588,6 +594,8 @@ function showTab(tab) {
   if (tab === 'plans') void plansView?.refresh();
   $('notes-options-wrap').hidden = tab !== 'notes';
   $('plans-options-slot').hidden = tab !== 'plans';
+  if (leavingFocus) $(`${layoutView.compact ? 'ctab' : 'tab'}-${tab}`)?.focus?.();
+  if (tab === 'notes' && typeof syncNotesBarTuck === 'function') syncNotesBarTuck();
   updateBoardBadge();
   if (tab === 'project') void refreshProject();
 }
@@ -618,6 +626,9 @@ const layoutView = {
 function boardVisible() { return notesView.tab === 'board' && (!layoutView.compact || layoutView.tab === 'board'); }
 /** Keep a single Notes menu and let Plans render its tools into the active layout's slot. */
 function syncPaneTools() {
+  const wrap = $('notes-options').parentElement;
+  const target = layoutView.compact ? document.querySelector('.notes-bar') : document.querySelector('.board-pane .pane-head');
+  if (wrap && target && wrap.parentElement !== target) target.insertBefore(wrap, layoutView.compact ? $('notes-status') : null);
   if (typeof syncNotesBarTuck === 'function') syncNotesBarTuck();
 }
 /** Opens the board or notes in whichever layout is active. */
@@ -637,6 +648,8 @@ function clampBoard() {
 }
 function applyLayout() {
   const activeBefore = document.activeElement;
+  const wrap = $('notes-options-wrap');
+  const notesHadFocus = Boolean(wrap && activeBefore && wrap.contains?.(activeBefore));
   const narrow = window.innerWidth < COMPACT_BELOW;
   const compact = narrow; // the width decides (the mini view covers a small window during a call)
   const changed = compact !== layoutView.compact;
@@ -653,7 +666,7 @@ function applyLayout() {
   if (compact && sort.parentElement !== document.querySelector('.board-bar')) document.querySelector('.board-bar').prepend(sort);
   if (!compact && sort.parentElement === document.querySelector('.board-bar')) document.querySelector('.board-pane .pane-head').append(sort);
   syncPaneTools();
-  if (changed) { closeNotesMenu(); plansView?.closeMenu(); plansView?.render(); }
+  if (changed) { closeNotesMenu(notesHadFocus); plansView?.closeMenu(); plansView?.render(); }
   if (!compact) clampBoard();
   if (compact) {
     if (layoutView.tab !== 'live' && notesView.tab !== layoutView.tab) showTab(layoutView.tab);
@@ -661,6 +674,12 @@ function applyLayout() {
     renderPinned(boardView.owner);
   }
   for (const id of ['board', 'notes', 'plans', 'project']) $(`${id}-panel`).setAttribute('aria-labelledby', `${compact ? 'ctab' : 'tab'}-${id}`);
+  if (changed && notesHadFocus && (!document.activeElement || document.activeElement === document.body || document.activeElement.offsetParent === null)) {
+    const target = !$('notes-options').hidden && $('notes-options').offsetParent !== null
+      ? $('notes-options')
+      : (compact ? $(`ctab-${layoutView.tab}`) : $(`tab-${notesView.tab}`));
+    target?.focus?.();
+  }
   if (changed) restoreScroll();
   fitStartMenu();
   if (typeof syncTopbarMore === 'function') syncTopbarMore(activeBefore);
@@ -696,11 +715,17 @@ function showCompactTab(tab, jumping = false) {
   if (tab === layoutView.tab && layoutView.compact) return;
   closeSelectionMenu();
   if (tab === 'live') { closeNotesMenu(); plansView?.closeMenu(); }
+  const active = document.activeElement;
+  const leavingFocus = active && (
+    (tab === 'live' && $('board-pane').contains?.(active))
+    || (tab !== 'live' && $('transcript-pane').contains?.(active))
+  );
   saveScroll();
   layoutView.tab = tab;
   store.set('compact-tab', tab);
   if (tab !== 'live') showTab(tab);
   selectCompactTab(tab);
+  if (leavingFocus) $(`ctab-${tab}`)?.focus?.();
   if (!jumping) restoreScroll();
   updateBoardBadge();
 }
@@ -905,7 +930,6 @@ function renderNotes(data, owner) {
   }
   $('notes-warnings').replaceChildren(...warningNodes);
   if (!record) {
-    parkNotesOptions();
     $('notes-body').replaceChildren(...(running ? [] : [el('p', 'After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.', 'board-empty')]));
     syncNotesBarTuck();
     return;
@@ -962,51 +986,16 @@ function renderNotes(data, owner) {
     body.push(fold(`Needs review (${record.notes.needsReview.length})`, [list]));
   }
   const hint = el('span', 'Shows this in the transcript'); hint.id = 'note-transcript-hint'; hint.hidden = true;
-  parkNotesOptions();
   host.replaceChildren(...body, hint);
   host.dataset.record = key;
   syncNotesBarTuck();
 }
-let notesTuckPending = false;
-let parkingNotesOptions = false;
-function notesOptionsInUse(wrap, leavingWrap = false) {
-  if (!wrap) return false;
-  const menu = $('notes-menu');
-  if (menu && !menu.hidden) return true;
-  if (leavingWrap) return false;
-  const active = document.activeElement;
-  return Boolean(active && wrap.contains?.(active));
-}
-function parkNotesOptions() {
-  const bar = document.querySelector?.('.notes-bar');
-  const body = $('notes-body');
-  const wrap = $('notes-options')?.parentElement;
-  if (!bar || !body || !wrap || !body.contains(wrap)) return;
-  const active = document.activeElement;
-  const restoreFocus = active && wrap.contains?.(active) ? active : null;
-  const menuOpen = !$('notes-menu').hidden;
-  const compact = Boolean(document.body?.classList?.contains('layout-compact'));
-  const target = compact ? bar : document.querySelector('.board-pane .pane-head');
-  parkingNotesOptions = true;
-  try {
-    if (target) target.insertBefore(wrap, compact ? $('notes-status') : null);
-    bar.classList.remove('tuck-options');
-    body.classList.remove('tuck-options');
-    if (menuOpen) {
-      $('notes-menu').hidden = false;
-      $('notes-options').setAttribute('aria-expanded', 'true');
-    }
-    if (restoreFocus && !restoreFocus.hidden && typeof restoreFocus.focus === 'function') restoreFocus.focus();
-  } finally {
-    parkingNotesOptions = false;
-  }
-}
-function syncNotesBarTuck(leavingWrap = false) {
+function syncNotesBarTuck() {
+  const panel = $('notes-panel');
   const bar = document.querySelector?.('.notes-bar');
   const body = $('notes-body');
   if (!bar || !body) return;
   const compact = Boolean(document.body?.classList?.contains('layout-compact'));
-  const wrap = $('notes-options')?.parentElement;
   const first = body.firstElementChild ?? body.children?.[0];
   const hasCardHeader = body.classList.contains('has-notes') && Boolean(first?.classList?.contains('notes-group'));
   const barOnlyOptions = !$('notes-options').hidden
@@ -1016,27 +1005,13 @@ function syncNotesBarTuck(leavingWrap = false) {
     && ($('notes-ai-hint')?.hidden ?? true)
     && $('notes-progress').hidden;
   const tuck = compact && hasCardHeader && barOnlyOptions;
-  if (wrap) {
-    const target = tuck
-      ? (first.querySelector(':scope > .notes-group-head') ?? first)
-      : (compact ? bar : document.querySelector('.board-pane .pane-head'));
-    if (target && wrap.parentElement !== target) {
-      if (notesOptionsInUse(wrap, leavingWrap)) {
-        notesTuckPending = true;
-      } else {
-        notesTuckPending = false;
-        if (tuck) target.append(wrap);
-        else target.insertBefore(wrap, compact ? $('notes-status') : null);
-      }
-    } else {
-      notesTuckPending = false;
-    }
-  } else {
-    notesTuckPending = false;
+  if (tuck && panel && !$('notes-options').hidden) {
+    const width = $('notes-options').getBoundingClientRect?.().width;
+    if (width > 0) panel.style?.setProperty('--notes-options-w', `${Math.ceil(width)}px`);
   }
-  const wrappedInBody = Boolean(wrap && body.contains(wrap));
-  bar.classList.toggle('tuck-options', tuck && wrappedInBody);
-  body.classList.toggle('tuck-options', wrappedInBody);
+  panel?.classList?.toggle('tuck-options', tuck);
+  bar.classList.toggle('tuck-options', tuck);
+  body.classList.toggle('tuck-options', tuck);
 }
 async function refreshNotes() {
   if (!meetingId || notesView.busy) return;
@@ -1071,7 +1046,7 @@ async function refreshNotes() {
 function bindMenuKeys(menu, close) {
   menu.addEventListener('keydown', event => {
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); return; }
-    if (event.key === 'Tab') { close(); return; }
+    if (event.key === 'Tab') { close(true); return; }
     const items = [...menu.querySelectorAll('[role="menuitem"]')];
     const at = items.indexOf(document.activeElement);
     if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
@@ -1092,7 +1067,6 @@ function closeNotesMenu(returnFocus = false) {
   const opener = notesMenuOpener;
   notesMenuOpener = null;
   if (returnFocus && wasOpen) (opener && !opener.hidden ? opener : $('notes-options')).focus();
-  if (notesTuckPending && typeof syncNotesBarTuck === 'function') syncNotesBarTuck();
 }
 function openNotesMenu(opener = $('notes-options'), last = false) {
   if ($('notes-options').hidden) return;
@@ -1123,12 +1097,6 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('focusin', event => {
   if (!event.target.closest?.('.notes-options-wrap, #notes-stale')) closeNotesMenu(true);
-});
-$('notes-options-wrap')?.addEventListener('focusout', event => {
-  if (parkingNotesOptions) return;
-  const wrap = $('notes-options-wrap');
-  if (!wrap || (event.relatedTarget && wrap.contains(event.relatedTarget))) return;
-  if (notesTuckPending && typeof syncNotesBarTuck === 'function') syncNotesBarTuck(true);
 });
 
 $('write-notes').onclick = $('rewrite-notes').onclick = guarded(async () => {
