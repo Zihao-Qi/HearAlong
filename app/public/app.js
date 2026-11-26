@@ -4303,6 +4303,7 @@ function applyInitialLayoutClasses() {
 
   document.body.dataset.tab = compactTab;
   $('compact-tabs').hidden = !compact;
+  if (!compact) clampBoard();
   $('ctab-project').hidden = compactTab !== 'project';
   $('tab-project').hidden = rightTab !== 'project';
   $('compact-tabs').style.setProperty('--tab-count', compactTab === 'project' ? '5' : '4');

@@ -240,8 +240,7 @@ body.layout-compact .listen-player { gap: 6px; padding: 10px 12px; }
 .notes-body .look-into .button { min-height: 44px; }
 .notes-body .look-into .button:not(.primary) { padding: 0; border: none; background: none; color: var(--accent); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
 .notes-body .look-into textarea { min-height: 44px; }
-body.layout-compact #notes-panel, body.layout-compact #plans-panel { padding-top: 14px; }
-body.layout-compact .notes-bar { padding: 0 12px 14px; }
+body.layout-compact .notes-bar { padding: 14px 12px; }
 body.layout-compact .notes-body { margin: 0 12px; }
 body.layout-compact .notes-menu { width: min(280px, calc(100vw - 24px)); }
 .notes-title { margin: 8px 0 2px; font-size: 17px; }
@@ -260,7 +259,7 @@ body.layout-compact .notes-menu { width: min(280px, calc(100vw - 24px)); }
 .notes-body .note-look > .text-action { min-height: 32px; padding: 0 0 0 6px; font-weight: 400; }
 .notes-body .offtopic-row { display: list-item; }
 #notes-progress { margin: 0 20px 12px; }
-body.layout-compact #notes-progress { margin: 0 12px 12px; }
+body.layout-compact #notes-progress { margin: 14px 12px 12px; }
 .job-progress, .job-progress.plans-status { display: block; padding: 0 16px 10px; border-radius: 12px; background: var(--panel); font-size: 15px; color: var(--ink); }
 .progress-header { display: flex; align-items: center; gap: 12px; min-height: 44px; border-bottom: 1px solid var(--line); font-size: 14px; color: #3B4657; }
 .progress-heading { flex: 1; white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -763,7 +762,7 @@ body.layout-compact .topbar #mini-view { min-height: 44px; }
 /* The section measures its own width (the board pane is resizable): below 520 px the Add moves under the step. */
 .plans { container: plans / inline-size; margin: 4px 20px 24px; font-size: 15px; line-height: 1.45; }
 .plans-content { display: flex; flex-direction: column; gap: 14px; }
-body.layout-compact .plans { margin: 0 12px 24px; }
+body.layout-compact .plans { margin: 14px 12px 24px; }
 .plans-no-notes { margin: 0; color: #3B4657; }
 .plans-head { position: relative; min-height: 44px; justify-content: space-between; }
 .plans-head > .options-button { margin-left: auto; }
@@ -864,28 +863,28 @@ body.layout-compact .plans-head > .plans-menu { width: min(280px, calc(100vw - 2
 .notes-ai-hint { flex-basis: 100%; padding-top: 6px; }
 
 /* Compact Notes / Plans Options ▾: quiet text action tucked into the card header row only when it owns the top cleanly. */
-body.layout-compact .notes-bar { min-height: 32px; padding: 0 12px 10px; }
-body.layout-compact .notes-bar .notes-menu { top: 38px; }
-body.layout-compact .plans-head { min-height: 32px; }
-body.layout-compact .plans-head > .plans-menu { top: 38px; }
+body.layout-compact .notes-bar { min-height: 44px; padding: 14px 12px 10px; }
+body.layout-compact .notes-bar .notes-menu { top: 48px; }
+body.layout-compact .plans-head { min-height: 44px; }
+body.layout-compact .plans-head > .plans-menu { top: 48px; }
 body.layout-compact .notes-bar .options-button,
-body.layout-compact .plans-head .options-button { gap: 4px; min-height: 32px; padding: 0 8px; border: none; background: none; box-shadow: none; color: var(--accent-ink); font: 500 13px var(--sans); white-space: nowrap; position: relative; }
-body.layout-compact .notes-bar .options-button::after,
-body.layout-compact .plans-head .options-button::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 44px; min-height: 44px; width: 100%; height: 100%; }
+body.layout-compact .plans-head .options-button { gap: 4px; min-width: 44px; min-height: 44px; padding: 0 8px; border: none; background: none; color: var(--accent-ink); font: 500 13px var(--sans); white-space: nowrap; position: relative; }
+body.layout-compact .notes-bar .options-button:not([aria-expanded="true"]),
+body.layout-compact .plans-head .options-button:not([aria-expanded="true"]) { box-shadow: none; }
 body.layout-compact .notes-bar .options-button svg,
 body.layout-compact .plans-head .options-button svg { color: inherit; }
 body.layout-compact .notes-bar .options-button:hover,
 body.layout-compact .notes-bar .options-button[aria-expanded="true"],
 body.layout-compact .plans-head .options-button:hover,
 body.layout-compact .plans-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
-body.layout-compact .notes-bar.tuck-options { position: relative; z-index: 2; height: 0; min-height: 0; padding: 0; overflow: visible; }
-body.layout-compact .notes-bar.tuck-options > .notes-options-wrap { position: absolute; top: 8px; right: 20px; }
-body.layout-compact .notes-bar.tuck-options .notes-menu { top: 38px; }
+body.layout-compact .notes-bar.tuck-options { position: relative; z-index: 2; height: 14px; min-height: 0; padding: 0; overflow: visible; }
+body.layout-compact .notes-bar.tuck-options > .notes-options-wrap { position: absolute; top: 16px; right: 16px; }
+body.layout-compact .notes-bar.tuck-options .notes-menu { top: 46px; }
 body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-section,
 body.layout-compact .notes-body.tuck-options > .notes-fold:first-child > summary { padding-right: 84px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) { position: relative; z-index: 2; height: 0; min-height: 0; margin-bottom: -14px; overflow: visible; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .options-button { position: absolute; top: 8px; right: 12px; }
-body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .plans-menu { top: 44px; right: 12px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) { position: relative; z-index: 2; height: 14px; min-height: 0; margin-top: -14px; margin-bottom: -14px; overflow: visible; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .options-button { position: absolute; top: 16px; right: 12px; }
+body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .plans-menu { top: 62px; right: 12px; }
 body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card > .plans-list:first-child > .plan:first-child .plan-label { padding-right: 84px; }
 body.layout-compact .plans-head:not(:has(.plans-stale)) + .plans-card > .plans-list:first-child > .plan:first-child .plan-chev { margin-top: 28px; }
 

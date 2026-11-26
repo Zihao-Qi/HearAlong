@@ -659,17 +659,26 @@ async function run() {
   for (const [w, h] of [[390, 844], [700, 800], [1024, 800]]) {
     await page.setViewportSize({ width: w, height: h });
     await page.waitForTimeout(400);
+    const control = w < 620 ? '#topbar-more' : '#mini-view';
+    const label = w < 620 ? '⋯' : 'Mini view';
     const box = (id: string) => page.locator(id).evaluate(e => { const r = e.getBoundingClientRect(); return { mid: Math.round(r.top + r.height / 2), right: r.right, left: r.left }; });
-    const [mv, st] = [await box('#mini-view'), await box('#stop')];
-    check(`${w} px header: Mini view and Stop on one row, inside the window`, mv.mid === st.mid && st.right <= w && mv.left >= 0, `${mv.mid}/${st.mid}, right ${Math.round(st.right)}`);
-    const heights = await page.locator('#mini-view, #stop').evaluateAll(es => es.map(e => Math.round(e.getBoundingClientRect().height)));
-    check(`${w} px header: Mini view as high as Stop`, heights[0] === heights[1], heights.join('/'));
+    const [mv, st] = [await box(control), await box('#stop')];
+    check(`${w} px header: ${label} and Stop on one row, inside the window`, mv.mid === st.mid && st.right <= w && mv.left >= 0, `${mv.mid}/${st.mid}, right ${Math.round(st.right)}`);
+    const heights = await page.locator(`${control}, #stop`).evaluateAll(es => es.map(e => Math.round(e.getBoundingClientRect().height)));
+    check(`${w} px header: ${label} as high as Stop`, heights[0] === heights[1], heights.join('/'));
     const settingsRight = await page.locator('#open-system').evaluate(e => e.getBoundingClientRect().right);
     check(`${w} px header: the controls end at the right edge`, w - settingsRight <= 24, `${Math.round(w - settingsRight)} px from the edge`);
     const name = await page.locator('#meeting-button').evaluate(e => e.getBoundingClientRect());
     const covered = await page.locator('.topbar-right > :visible').evaluateAll((es, n) => es.some(e => { const r = e.getBoundingClientRect(); return r.left < n.right && r.right > n.left && r.top < n.bottom && r.bottom > n.top; }), { left: name.left, right: name.right, top: name.top, bottom: name.bottom });
     check(`${w} px header: nothing covers the meeting name`, !covered);
     await page.screenshot({ path: join(outDir, `header-${w}.png`), clip: { x: 0, y: 0, width: w, height: 140 } });
+    if (w < 620) {
+      await page.locator('#topbar-more').click();
+      const miniVisible = await page.locator('#more-mini').isVisible();
+      const miniHeight = await page.locator('#more-mini').evaluate(e => Math.round(e.getBoundingClientRect().height));
+      check(`${w} px header: Mini view reachable from ⋯`, miniVisible && miniHeight >= 44, `visible=${miniVisible}, height=${miniHeight}`);
+      await page.keyboard.press('Escape');
+    }
   }
   await page.setViewportSize({ width: 1280, height: 860 });
   pip = await openMini();

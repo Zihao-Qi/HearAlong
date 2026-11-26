@@ -77,7 +77,8 @@ try {
   await page.locator('#close-settings').click();
   // The fake microphone must actually deliver audio before Stop: wait for the server to accept its first upload.
   const firstAudio = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/pcm') && r.ok());
-  await page.locator('#start').click();
+  await page.locator('#topbar-more').click();
+  await page.locator('#more-continue').click();
   await page.locator('#start-mic').click();
   await page.locator('#live-chip').getByText('Recording', { exact: false }).waitFor();
   await firstAudio;

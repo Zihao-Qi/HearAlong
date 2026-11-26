@@ -255,7 +255,7 @@ try {
   replayNow = Date.now();
   try {
     await page.locator('#replay').click();
-    await page.locator('#live-chip').getByText(/Replay/).waitFor();
+    await page.locator('#live-chip .chip-long').getByText(/Replay/).waitFor();
     await recordingButtons('replay', true);
     await longTopbar('replay-playing');
   } finally { replayNow = null; }
