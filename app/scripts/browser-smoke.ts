@@ -354,7 +354,9 @@ try {
   assert.ok(await page.locator('#start-new').evaluate(n => n === document.activeElement));
   // Narrow (< 480 px): call menu Back keeps host topbar-more, and clicking ⋯ toggles the hosted start menu closed.
   await page.setViewportSize({ width: 440, height: 900 });
-  await page.waitForFunction(() => document.body.classList.contains('topbar-tiny') && !document.getElementById('topbar-more-wrap')!.hidden);
+  await page.waitForFunction(() => document.body.classList.contains('layout-compact')
+    && document.body.classList.contains('topbar-tiny')
+    && !document.getElementById('topbar-more-wrap')!.hidden);
   await page.locator('#topbar-more').click();
   await page.locator('#more-continue').click();
   await page.locator('#start-online').click();
@@ -393,7 +395,9 @@ try {
   await page.route('**/api/live/mini', route => { miniOpened = JSON.parse(route.request().postData() ?? '{}').action === 'open'; return route.fulfill({ json: { ok: true } }); });
   await page.evaluate(() => { (window as any).hearalong = { desktop: true }; });
   await page.setViewportSize({ width: 440, height: 900 });
-  await page.waitForFunction(() => document.body.classList.contains('topbar-tiny')
+  await page.waitForFunction(() => document.body.classList.contains('layout-compact')
+    && document.body.classList.contains('topbar-narrow')
+    && document.body.classList.contains('topbar-tiny')
     && !document.getElementById('topbar-more-wrap')!.hidden
     && !document.getElementById('more-add-call')!.hidden
     && !document.getElementById('more-mini')!.hidden);
@@ -401,9 +405,14 @@ try {
     const shortEl = n.querySelector('.chip-short') as HTMLElement | null;
     const longEl = n.querySelector('.chip-long') as HTMLElement | null;
     const shortRect = shortEl?.getBoundingClientRect(), longRect = longEl?.getBoundingClientRect();
+    const longStyle = longEl ? getComputedStyle(longEl) : null;
     return {
       shortText: shortEl?.textContent, shortAriaHidden: shortEl?.getAttribute('aria-hidden'), shortVisible: Boolean(shortRect && shortRect.width > 1 && shortRect.height > 1),
-      longText: longEl?.textContent, longAriaHidden: longEl?.getAttribute('aria-hidden'), longVisuallyHidden: Boolean(longRect && longRect.width <= 1 && longRect.height <= 1),
+      longText: longEl?.textContent, longAriaHidden: longEl?.getAttribute('aria-hidden'),
+      longDisplay: longStyle?.display, longVisibility: longStyle?.visibility,
+      longVisuallyHidden: Boolean(longRect && longStyle
+        && longStyle.display !== 'none' && longStyle.visibility !== 'hidden'
+        && longRect.width > 0 && longRect.width <= 1 && longRect.height > 0 && longRect.height <= 1),
     };
   });
   assert.equal(chipInfo.shortText, 'Rec');
@@ -411,12 +420,15 @@ try {
   assert.equal(chipInfo.shortVisible, true);
   assert.match(chipInfo.longText ?? '', /^Recording/);
   assert.equal(chipInfo.longAriaHidden, null);
+  assert.notEqual(chipInfo.longDisplay, 'none');
+  assert.notEqual(chipInfo.longVisibility, 'hidden');
   assert.equal(chipInfo.longVisuallyHidden, true);
   await page.locator('#topbar-more').click();
   await page.locator('#more-add-call').waitFor({ state: 'visible' });
   await page.locator('#more-mini').waitFor({ state: 'visible' });
   assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');
   await page.locator('#more-add-call').click();
+  await page.locator('#call-apps button').first().waitFor({ state: 'visible' });
   assert.equal(await page.locator('#start-menu').getAttribute('aria-label'), 'Where is the call?');
   assert.ok(await page.locator('#topbar-more').evaluate(n => n.parentElement === document.getElementById('start-menu')!.parentElement));
   assert.equal(await page.locator('#topbar-more').getAttribute('aria-expanded'), 'true');

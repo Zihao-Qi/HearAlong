@@ -125,10 +125,10 @@ body.layout-compact .system-button { min-width: 44px; min-height: 44px; padding:
 body.topbar-narrow .chip-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 body.topbar-narrow .chip-short { display: inline-block; }
 body.topbar-narrow #mini-view { display: none; }
-body.topbar-narrow .meeting-wrap { min-width: 96px; }
-body.topbar-narrow #live-chip { padding: 4px 8px; min-width: 58px; }
-body.topbar-narrow #live-chip.replay { min-width: 168px; font-variant-numeric: tabular-nums; }
-body.topbar-tiny #live-chip.replay { min-width: 115px; gap: 4px; padding: 4px 7px; }
+body.topbar-narrow .topbar-left > .meeting-wrap { min-width: 96px; }
+body.topbar-narrow .topbar-left > #live-chip { padding: 4px 8px; min-width: 58px; }
+body.topbar-narrow .topbar-left > #live-chip.replay { min-width: 168px; font-variant-numeric: tabular-nums; }
+body.topbar-tiny .topbar-left > #live-chip.replay { min-width: 115px; gap: 4px; padding: 4px 7px; }
 body.topbar-tiny .chip-replay-word { display: none; }
 body.topbar-tiny .topbar-right > .start-wrap:has(> #start:not(.primary)),
 body.topbar-tiny #add-call-wrap { display: none; }
@@ -159,7 +159,7 @@ body.layout-compact .para p { font-size: 16px; }
 
 .transcript { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: 4px 28px 80px; outline: none; }
 .para { display: flex; gap: 16px; padding: 8px 10px; border-radius: 10px; }
-.para time { position: relative; flex: 0 0 56px; min-width: 0; font: 13px var(--mono); color: var(--muted); padding-top: 4px; user-select: none; }
+.para time { flex: 0 0 56px; min-width: 0; font: 13px var(--mono); color: var(--muted); padding-top: 4px; user-select: none; }
 .para p { flex: 1; min-width: 0; max-width: 80ch; margin: 0; font: 18px/1.6 var(--serif); }
 .listen-time { position: relative; display: inline-flex; align-items: center; vertical-align: top; min-height: 32px; margin: -8px 0 0 -20px; padding: 0 8px 0 20px; border: none; border-radius: 8px; background: transparent; color: inherit; font: inherit; white-space: nowrap; cursor: pointer; }
 .listen-time::before { content: '▶'; position: absolute; left: 5px; width: 10px; text-align: center; font-size: 10px; opacity: 0; }
@@ -410,11 +410,11 @@ body.layout-compact #notes-progress { margin: 0 12px 12px; }
 .answer.compact { max-height: 7.2em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent); }
 .new-cards { position: sticky; top: 4px; z-index: 3; display: block; margin: 0 auto 6px; padding: 4px 12px; border-radius: 999px; border: none; background: var(--accent); color: #FFF; font: 12px var(--sans); cursor: pointer; box-shadow: 0 2px 6px rgba(24,33,47,.2); }
 .para { position: relative; }
-.para-mark { position: absolute; left: 0; top: 30px; display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; border: none; background: var(--accent-tint); color: var(--accent-ink); font: 10px/16px var(--sans); cursor: pointer; }
-.para time:has(.speaker) .para-mark { left: auto; right: 0; top: 30px; }
-body.layout-compact .para time:has(.speaker) .para-mark { left: 36px; right: auto; top: 30px; }
+.para-mark { position: absolute; left: -20px; top: 12px; display: inline-flex; align-items: center; justify-content: center; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; border: none; background: var(--accent-tint); color: var(--accent-ink); font: 10px/14px var(--sans); cursor: pointer; }
 .para-mark:empty::after { content: "•"; }
-.para-mark::before { content: ""; position: absolute; top: 0; bottom: -6px; left: -6px; right: -6px; }
+.para-mark::before { content: ""; position: absolute; top: -8px; bottom: -8px; left: -6px; right: 0; }
+body.layout-compact .para-mark { left: -15px; top: 11px; padding: 0 2px; }
+body.layout-compact .para-mark::before { left: -1px; right: 0; }
 .more { margin-top: 6px; font-size: 13px; }
 .more > summary { cursor: pointer; color: var(--accent-ink); }
 .auto-answer { margin-top: 8px; font-size: 13px; }
@@ -442,6 +442,8 @@ body.layout-compact .para time:has(.speaker) .para-mark { left: 36px; right: aut
 .call-apps { display: contents; }
 .call-apps button { width: 100%; }
 .call-empty { margin: 6px 6px 2px; font-size: 13px; color: var(--muted); }
+.start-menu:focus:not(:focus-visible), .call-empty:focus:not(:focus-visible) { outline: none; }
+.call-empty:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 body.layout-compact .start-menu { left: auto; right: 0; }
 /* Speaker labels in online meetings: capture channels, under the paragraph time. */
 .para time .speaker { display: block; width: fit-content; margin-top: 2px; font: 600 11px var(--sans); letter-spacing: .03em; text-transform: uppercase; color: var(--accent-ink); }
@@ -872,11 +874,11 @@ body.layout-compact .notes-bar .options-button:hover,
 body.layout-compact .notes-bar .options-button[aria-expanded="true"],
 body.layout-compact .plans-head .options-button:hover,
 body.layout-compact .plans-head .options-button[aria-expanded="true"] { background: var(--accent-tint); }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))):has(+ #notes-progress[hidden] + #notes-body.has-notes:has(> .notes-group, > .notes-fold)) { position: relative; z-index: 2; height: 0; min-height: 0; padding: 0; overflow: visible; }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))):has(+ #notes-progress[hidden] + #notes-body.has-notes:has(> .notes-group, > .notes-fold)) > .notes-options-wrap { position: absolute; top: 8px; right: 20px; }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))):has(+ #notes-progress[hidden] + #notes-body.has-notes:has(> .notes-group, > .notes-fold)) .notes-menu { top: 38px; }
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) + #notes-progress[hidden] + .notes-body.has-notes > .notes-group:first-child > .notes-section,
-body.layout-compact .notes-bar:not(:has(> .button:not([hidden]), > .notes-stale:not([hidden]), > #notes-status:not([hidden]), > #notes-ai-hint:not([hidden]))) + #notes-progress[hidden] + .notes-body.has-notes > .notes-fold:first-child > summary { padding-right: 84px; }
+body.layout-compact .notes-bar.tuck-options { position: relative; z-index: 2; height: 0; min-height: 0; padding: 0; overflow: visible; }
+body.layout-compact .notes-bar.tuck-options > .notes-options-wrap { position: absolute; top: 8px; right: 20px; }
+body.layout-compact .notes-bar.tuck-options .notes-menu { top: 38px; }
+body.layout-compact .notes-body.tuck-options > .notes-group:first-child > .notes-section,
+body.layout-compact .notes-body.tuck-options > .notes-fold:first-child > summary { padding-right: 84px; }
 body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) { position: relative; z-index: 2; height: 0; min-height: 0; margin-bottom: -14px; overflow: visible; }
 body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .options-button { position: absolute; top: 8px; right: 12px; }
 body.layout-compact .plans-head:not(:has(.plans-stale)):has(+ .plans-card > .plans-list:first-child) > .plans-menu { top: 44px; right: 12px; }
@@ -901,7 +903,8 @@ dialog .button { position: relative; }
 .mem-edit-buttons .small-button::after { inset: -3px; }
 .link-button::after { content: ""; position: absolute; inset: -6px -4px; }
 .mem-actions .link-button::after,
-.brief-meta .link-button::after { inset: -2px; }
+.brief-meta .link-button::after,
+.ok-quiet-line .link-button::after { inset: -2px; }
 .ok-actions .link-button::after { inset: -3px; }
 .mem-meta .link-button::after { inset: 0 -2px -2px -2px; }
 #board-sort::after { content: ""; position: absolute; inset: -5px -4px; }

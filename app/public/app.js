@@ -498,6 +498,7 @@ function selectMeeting(id) {
   $('notes-options').hidden = true; $('notes-stale').hidden = true;
   $('export-notes').href = '#';
   $('export-notes-panel').href = '#'; $('export-notes-panel').setAttribute('aria-disabled', 'true'); $('write-notes').hidden = false; $('write-notes').disabled = true;
+  syncNotesBarTuck();
   plansView?.reset();
   if (['notes', 'plans'].includes(notesView.tab)) void refreshNotes();
   if (notesView.tab === 'plans') void plansView?.refresh();
@@ -528,6 +529,7 @@ function replayPlaying() {
   return Boolean(replay && replay.positionMs < replay.durationMs);
 }
 function controls() {
+  const activeBefore = document.activeElement;
   const recording = Boolean(capture);
   document.body.classList.toggle('recording', recording);
   const ready = Boolean(status?.config.available && meetingId) && !busy && !requestingMic && !quitView.seen;
@@ -554,7 +556,7 @@ function controls() {
   $('rename-meeting').disabled = busy || !meetingId;
   for (const item of $('meeting-list').querySelectorAll('button')) item.disabled = locked && item.getAttribute('aria-checked') !== 'true';
   $('replay').disabled = recording || busy || requestingMic || !status?.config.available;
-  if (typeof syncTopbarMore === 'function') syncTopbarMore();
+  if (typeof syncTopbarMore === 'function') syncTopbarMore(activeBefore);
 }
 
 // ---------- Notes (right pane tab) ----------
@@ -635,6 +637,7 @@ function clampBoard() {
   return { shown, max };
 }
 function applyLayout() {
+  const activeBefore = document.activeElement;
   const narrow = window.innerWidth < COMPACT_BELOW;
   const compact = narrow; // the width decides (the mini view covers a small window during a call)
   const changed = compact !== layoutView.compact;
@@ -661,7 +664,7 @@ function applyLayout() {
   for (const id of ['board', 'notes', 'plans', 'project']) $(`${id}-panel`).setAttribute('aria-labelledby', `${compact ? 'ctab' : 'tab'}-${id}`);
   if (changed) restoreScroll();
   fitStartMenu();
-  if (typeof syncTopbarMore === 'function') syncTopbarMore();
+  if (typeof syncTopbarMore === 'function') syncTopbarMore(activeBefore);
   updateBoardBadge();
   renderMeetingChip();
 }
@@ -903,12 +906,13 @@ function renderNotes(data, owner) {
   $('notes-warnings').replaceChildren(...warningNodes);
   if (!record) {
     $('notes-body').replaceChildren(...(running ? [] : [el('p', 'After the meeting (or during it, as a draft), write notes from the transcript: summary, decisions, action items and open questions, each linked to the moment it was said.', 'board-empty')]));
+    syncNotesBarTuck();
     return;
   }
   // Transcript/coverage polling must not close what someone is reading or erase checked citations.
   const host = $('notes-body'), key = `${owner}:${record.version}`;
   const retained = host.dataset.record === key;
-  if (retained) return; // Progress and warnings never rebuild saved content, focus or folds.
+  if (retained) { syncNotesBarTuck(); return; } // Progress and warnings never rebuild saved content, focus or folds.
   const body = [];
   for (const section of ['summary', 'decisions', 'actions', 'openQuestions']) {
     const items = record.notes[section];
@@ -957,6 +961,24 @@ function renderNotes(data, owner) {
   const hint = el('span', 'Shows this in the transcript'); hint.id = 'note-transcript-hint'; hint.hidden = true;
   host.replaceChildren(...body, hint);
   host.dataset.record = key;
+  syncNotesBarTuck();
+}
+function syncNotesBarTuck() {
+  const bar = document.querySelector?.('.notes-bar');
+  const body = $('notes-body');
+  if (!bar || !body) return;
+  const first = body.firstElementChild ?? body.children?.[0];
+  const hasCardHeader = body.classList.contains('has-notes')
+    && Boolean(first && (first.classList.contains('notes-group') || first.classList.contains('notes-fold')));
+  const barOnlyOptions = !$('notes-options').hidden
+    && $('write-notes').hidden
+    && $('notes-stale').hidden
+    && $('notes-status').hidden
+    && ($('notes-ai-hint')?.hidden ?? true)
+    && $('notes-progress').hidden;
+  const tuck = hasCardHeader && barOnlyOptions;
+  bar.classList.toggle('tuck-options', tuck);
+  body.classList.toggle('tuck-options', tuck);
 }
 async function refreshNotes() {
   if (!meetingId || notesView.busy) return;
@@ -983,6 +1005,7 @@ async function refreshNotes() {
     notesView.signature = null;
     if (error?.name === 'TimeoutError') return;
     $('notes-status').hidden = false; $('notes-status').textContent = error.message;
+    if (typeof syncNotesBarTuck === 'function') syncNotesBarTuck();
   }
   finally { if (sequence === notesView.sequence) notesView.busy = false; }
 }
@@ -1763,7 +1786,7 @@ function markTranscript(owner) {
     const mark = el('button', cards.length > 1 ? String(cards.length) : '', 'para-mark');
     mark.title = cards.map(c => `${TYPE_LABELS[c.type]}: ${c.text}`).join('\n');
     mark.onclick = () => { if (sameMeeting(owner)) revealCard(owner, cards[0].id); };
-    (para.querySelector('time') ?? para).append(mark);
+    para.append(mark);
   }
 }
 async function refreshBoard() {
@@ -2483,6 +2506,7 @@ function closeStartMenu() {
     $('topbar-more')?.setAttribute('aria-expanded', 'false');
     $('topbar-more')?.setAttribute('aria-controls', 'topbar-more-menu');
   }
+  $('call-apps')?.replaceChildren?.();
   clearInterval(callMenuTimer); callMenuTimer = null; callMenuAnchor = null; callMenuFocusPending = false;
 }
 function startMenuStep(apps) {
@@ -2512,14 +2536,15 @@ async function refreshCallApps() {
     }
     const lostFocus = [...known.values()].includes(document.activeElement);
     for (const row of known.values()) row.remove();
-    if (lostFocus || (callMenuFocusPending && (document.activeElement === $('call-back') || !$('start-menu').contains(document.activeElement)))) {
-      const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
-      if (first) { first.focus(); callMenuFocusPending = false; }
-    }
     $('call-empty').textContent = window.hearalong?.desktop && !result.available
       ? 'Meeting-app audio is not available right now. You can record the microphone.'
       : 'No meeting app is playing sound.';
     $('call-empty').hidden = apps.length > 0;
+    if (lostFocus || (callMenuFocusPending && (document.activeElement === $('call-back') || document.activeElement === $('start-menu') || document.activeElement === $('call-empty') || !$('start-menu').contains(document.activeElement)))) {
+      const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
+      if (first) { first.focus(); callMenuFocusPending = false; }
+      else if (lostFocus || document.activeElement === $('start-menu')) ($('call-empty').hidden ? $('start-menu') : $('call-empty')).focus?.();
+    }
   } catch { /* keep the last list until the next refresh */ }
 }
 function fitStartMenu() {
@@ -2554,18 +2579,21 @@ function openCallMenu(anchor, host = anchor) {
   fitStartMenu();
   const first = [...$('start-menu').querySelectorAll('[role="menuitem"]')].find(item => !item.hidden && item.offsetParent);
   callMenuFocusPending = !first;
-  first?.focus();
+  if (first) first.focus();
+  else $('start-menu').focus?.();
   void refreshCallApps(); callMenuTimer = setInterval(refreshCallApps, 1000);
 }
 $('start').onclick = () => openStartMenu('start');
 $('start-new').onclick = () => openStartMenu('start-new');
 document.addEventListener('click', event => { if (!event.target.closest?.('.start-wrap')) closeStartMenu(); });
 $('start-menu').addEventListener('keydown', event => {
-  if (event.key === 'Escape') { const host = $('start-menu').dataset?.host || callMenuAnchor || 'start'; closeStartMenu(); $(host).focus(); }
+  if (event.key === 'Escape') { event.preventDefault(); const host = $('start-menu').dataset?.host || callMenuAnchor || 'start'; closeStartMenu(); $(host).focus(); }
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault();
     const rows = [...$('start-menu').querySelectorAll('[role="menuitem"]')].filter(n => !n.hidden && n.offsetParent);
-    rows[(rows.indexOf(document.activeElement) + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus();
+    if (!rows.length) return;
+    const at = rows.indexOf(document.activeElement);
+    rows[(at < 0 ? (event.key === 'ArrowDown' ? 0 : rows.length - 1) : at + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus();
   }
 });
 $('call-back').onclick = () => { const anchor = callMenuAnchor, host = $('start-menu').dataset?.host || anchor; closeStartMenu(); openStartMenu(anchor, host); $('start-online').focus(); };
@@ -2757,9 +2785,10 @@ function focusVisibleTopbarControl(preferred = []) {
   }
 }
 const topbarMode = { narrow: null, tiny: null };
-function syncTopbarMore() {
+function syncTopbarMore(previouslyFocused = null) {
   const wrap = $('topbar-more-wrap');
   if (!wrap) return;
+  const activeBefore = previouslyFocused && previouslyFocused !== document.body ? previouslyFocused : document.activeElement;
   const width = topbarWidth();
   const narrow = width < 620, tiny = width < 480;
   const crossed480 = topbarMode.tiny !== null && topbarMode.tiny !== tiny;
@@ -2772,9 +2801,9 @@ function syncTopbarMore() {
   const moreMenu = $('topbar-more-menu');
   const moreOpen = !moreMenu.hidden;
   const allMoreItems = [...moreMenu.querySelectorAll('[role="menuitem"]')];
-  const focusedMoreItem = moreOpen && moreMenu.contains(document.activeElement) ? document.activeElement : null;
+  const focusedMoreItem = moreOpen && moreMenu.contains(activeBefore) ? activeBefore : null;
   const focusedMoreIdx = focusedMoreItem ? allMoreItems.indexOf(focusedMoreItem) : -1;
-  const moreHadFocus = moreOpen && $('topbar-more-wrap').contains(document.activeElement);
+  const moreHadFocus = moreOpen && $('topbar-more-wrap').contains(activeBefore);
 
   const showContinue = tiny && !$('start').hidden && !$('start').classList.contains('primary');
   const showAddCall = tiny && !$('add-tab').hidden;
@@ -2795,6 +2824,7 @@ function syncTopbarMore() {
   const any = showContinue || showAddCall || showMini;
   wrap.hidden = !any;
 
+  let handledFocus = false;
   if (moreOpen) {
     if (crossed480 || crossed620 || !any) {
       closeMoreMenu(false);
@@ -2804,12 +2834,14 @@ function syncTopbarMore() {
           : focusedMoreItem === $('more-continue') ? [$('start'), $('topbar-more')]
           : [$('topbar-more'), $('mini-view'), $('add-tab'), $('start')];
         focusVisibleTopbarControl(preferred);
+        handledFocus = true;
       }
     } else if (focusedMoreItem && focusedMoreItem.hidden) {
       const visible = moreMenuItems();
       for (const n of visible) n.tabIndex = -1;
       const next = allMoreItems.slice(focusedMoreIdx + 1).find(n => !n.hidden) ?? visible[0];
       next?.focus();
+      handledFocus = true;
     }
   }
 
@@ -2822,13 +2854,37 @@ function syncTopbarMore() {
       : host === 'add-tab' ? tiny || $('add-tab').hidden
       : Boolean(host && $(host)?.hidden);
     if (crossed480 || crossed620 || hostHidden) {
-      const hadFocus = startMenu.contains(document.activeElement) || (host && document.activeElement === $(host));
+      const hadFocus = startMenu.contains(activeBefore) || (host && activeBefore === $(host));
       closeStartMenu();
       if (hadFocus) {
         const preferred = anchor === 'start' ? (tiny ? [$('topbar-more'), $('start')] : [$('start'), $('topbar-more')])
           : anchor === 'add-tab' ? (tiny ? [$('topbar-more'), $('add-tab')] : [$('add-tab'), $('topbar-more')])
           : anchor === 'start-new' ? [$('start-new')]
           : [$('topbar-more')];
+        focusVisibleTopbarControl(preferred);
+        handledFocus = true;
+      }
+    }
+  }
+
+  if (!handledFocus && activeBefore && activeBefore !== document.body) {
+    const topbarControls = [$('topbar-more'), $('mini-view'), $('start'), $('add-tab'), $('start-new'), $('stop'), $('open-meeting')];
+    if (topbarControls.includes(activeBefore)) {
+      const vanished = activeBefore.hidden || activeBefore.disabled
+        || (activeBefore === $('topbar-more') && wrap.hidden)
+        || activeBefore.offsetParent === null;
+      if (vanished) {
+        const preferred = activeBefore === $('topbar-more')
+          ? (crossed620 && !narrow ? [$('mini-view'), $('add-tab'), $('start'), $('stop'), $('start-new')]
+            : crossed480 && !tiny ? [$('add-tab'), $('start'), $('mini-view'), $('stop'), $('start-new')]
+            : [$('stop'), $('start-new'), $('start'), $('open-system')])
+          : activeBefore === $('mini-view') ? [$('topbar-more'), $('stop'), $('start-new'), $('start')]
+          : activeBefore === $('add-tab') ? (tiny ? [$('topbar-more'), $('stop')] : [$('stop'), $('topbar-more')])
+          : activeBefore === $('start') ? (tiny && !$('start').hidden && !$('start').classList.contains('primary') ? [$('topbar-more'), $('start-new'), $('stop')] : [$('stop'), $('start-new'), $('topbar-more')])
+          : activeBefore === $('start-new') ? [$('stop'), $('start'), $('topbar-more')]
+          : activeBefore === $('stop') ? [$('start-new'), $('start'), $('topbar-more')]
+          : activeBefore === $('open-meeting') ? [$('meeting-button')]
+          : [];
         focusVisibleTopbarControl(preferred);
       }
     }
@@ -4227,6 +4283,9 @@ async function renderProjectFiles() {
   } catch { /* shown on the next refresh */ }
 }
 $('settings').querySelector('.settings-nav button[data-section="project"]').addEventListener('click', () => void renderProjectFiles());
+
+// Apply compact and narrow/tiny classes synchronously before first paint and startup awaits.
+applyLayout();
 
 // ---------- Plans (M7b): its meeting tab, and the project's "Plan after the notes" ----------
 plansApi = await choosePlansApi({ pageId, pageHeaders, segmentIds: () => lastSnapshot?.meetingId === meetingId ? lastSnapshot.segments.map(s => s.id) : [] });
