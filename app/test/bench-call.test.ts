@@ -1,13 +1,13 @@
 // Pure parts of npm run bench:call, with fictional words and synthetic audio only: no corpus, model, server or browser.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCallArgs } from '../scripts/bench/cli.ts';
+import { callConditions, parseCallArgs, rotateConditions } from '../scripts/bench/cli.ts';
 import { blockAt, callLayout, lateCallStart, farBlocks, hiddenGenuine, layoutSamples, linePieces, mixMicrophone, nearBlocks, pcm16Wav, placeClips, planClips,
-  power, roomTaps, scoreCall, speakerEcho, stateOf, sumCallScores, wallToMeetingMs, PAIRS, ROOM_VERSION, type Line } from '../scripts/bench/call-mix.ts';
+  power, roomTaps, scoreCall, speakerEcho, stateOf, sumCallScores, wallToMeetingMs, PAIRS, ROOM_VERSION, type CallCondition, type Line } from '../scripts/bench/call-mix.ts';
 import { firstSample } from '../scripts/bench/call-helper.ts';
 import { skippedByAll } from '../scripts/bench/rescore.ts';
 import { parseWav } from '../scripts/rehearsal-input.ts';
-import { parseResult, type CallFile } from '../scripts/bench/results.ts';
+import { parseResult, resultPath, type CallFile } from '../scripts/bench/results.ts';
 import { renderBench } from '../scripts/bench/report.ts';
 import type { ReferenceWord } from '../scripts/bench/ami.ts';
 
@@ -156,23 +156,38 @@ test('call flags: five pairs of six blocks by default; --smoke is one pair and o
   assert.deepEqual(parseCallArgs([], 5), { pairs: [1, 2, 3, 4, 5], blocks: 6, smoke: false, condition: 'both', label: null, allowDirty: false });
   assert.deepEqual(parseCallArgs(['--smoke'], 5), { pairs: [1], blocks: 3, smoke: true, condition: 'both', label: null, allowDirty: false });
   assert.deepEqual(parseCallArgs(['--smoke', '--pairs', '3,2', '--condition', 'control', '--run-label', 'x', '--allow-dirty'], 5), { pairs: [3], blocks: 3, smoke: true, condition: 'control', label: 'x', allowDirty: true });
-  assert.throws(() => parseCallArgs(['--condition', 'none'], 5), /echo, control or both/);
+  assert.deepEqual(parseCallArgs(['--condition', 'raw'], 5), { pairs: [1, 2, 3, 4, 5], blocks: 6, smoke: false, condition: 'raw', label: null, allowDirty: false });
+  assert.deepEqual(parseCallArgs(['--condition', 'all'], 5), { pairs: [1, 2, 3, 4, 5], blocks: 6, smoke: false, condition: 'all', label: null, allowDirty: false });
+  assert.deepEqual(callConditions('both'), ['echo', 'control']);
+  assert.deepEqual(callConditions('all'), ['echo', 'control', 'raw']);
+  assert.deepEqual(callConditions('raw'), ['raw']);
+  assert.deepEqual([0, 1, 2, 3].map(step => rotateConditions(['echo', 'control', 'raw'], step)), [
+    ['echo', 'control', 'raw'],
+    ['control', 'raw', 'echo'],
+    ['raw', 'echo', 'control'],
+    ['echo', 'control', 'raw'],
+  ]);
+  assert.deepEqual([0, 1].map(step => rotateConditions(['echo', 'control'], step)), [['echo', 'control'], ['control', 'echo']]);
+  assert.throws(() => parseCallArgs(['--condition', 'none'], 5), /echo, control, raw, both or all/);
   assert.throws(() => parseCallArgs(['--pairs', '6'], 5), /1 to 5/);
   assert.throws(() => parseCallArgs(['--smoke', '--smoke'], 5), /Repeated/);
   assert.throws(() => parseCallArgs(['--minutes', '1'], 5), /Unknown/);
 });
 
 const point = (value: number, n = 4) => ({ mean: value, p50: value, p95: value, max: value, n });
-function callRun(createdAt = '2026-01-02T00:00:00Z', error: string | null = null, mode: 'echo' | 'control' = 'echo', runScore = score): CallFile {
+function callRun(createdAt = '2026-01-02T00:00:00Z', error: string | null = null, mode: CallCondition = 'echo', runScore = score): CallFile {
   const lag = { me: { preview: point(3000), final: point(9000) }, them: { preview: point(2500), final: point(11000) } };
+  const aec = mode === 'raw'
+    ? { micFrames: 70, aecFrames: 0, failures: 0, referenceCoverage: null, meanWaitMs: null, maxWaitMs: null, notices: [] }
+    : { micFrames: 70, aecFrames: 68, failures: 0, referenceCoverage: 0.99, meanWaitMs: 1000, maxWaitMs: 1040, notices: [] };
   const pair = { name: 'pair-1', pair: 'FictionA.B+FictionB.A', delayMs: 30, gainDb: -6, audioSeconds: 70, error, failedChunks: 0, unfinishedChunks: 0,
-    score: runScore, lag, diagnostic: lag, afterStop: { me: 2, them: 1 }, settle: { waitedMs: 800, chunksTerminal: true, expected: 20, missing: 0 }, aec: { micFrames: 70, aecFrames: 68, failures: 0, referenceCoverage: 0.99, meanWaitMs: 1000, maxWaitMs: 1040, notices: [] },
+    score: runScore, lag, diagnostic: lag, afterStop: { me: 2, them: 1 }, settle: { waitedMs: 800, chunksTerminal: true, expected: 20, missing: 0 }, aec,
     timebase: { micZeroMs: -31, callZeroMs: -11, clockOffsetMs: 0.5, callStartMs: 1500 } };
   return { commit: 'fictional-commit', dirty: false, nodeVersion: 'v22.0.0', logicalCores: 8, macos: '99.0', chip: 'Fictional Chip', ramBytes: 16 * 2 ** 30,
     normalizer: 'hearalong-2', scoringCommit: 'fictional-commit', scoringDirty: false,
     model: 'fiction.gguf', modelIdentity: { basename: 'fiction.gguf', sha256: 'a'.repeat(64), bytes: 3 }, createdAt, runLabel: null, error,
     kind: 'call', failedChunks: 0, unfinishedChunks: 0, condition: { mode, batch: createdAt, pairs: ['1:FictionA.B+FictionB.A'], blocks: 3, smoke: true, room: ROOM_VERSION },
-    pairs: [pair], totals: { pairs: error ? 0 : 1, score: sumCallScores(error ? [] : [runScore]), lag, diagnostic: lag, afterStop: { me: 2, them: 1 }, aec: { micFrames: 70, aecFrames: 68, failures: 0, notices: 0 } } };
+    pairs: [pair], totals: { pairs: error ? 0 : 1, score: sumCallScores(error ? [] : [runScore]), lag, diagnostic: lag, afterStop: { me: 2, them: 1 }, aec: { micFrames: 70, aecFrames: aec.aecFrames, failures: 0, notices: 0 } } };
 }
 
 test('call results round-trip through JSON and render in their own section, idempotently', () => {
@@ -264,4 +279,53 @@ test('echo-against-control output is newest first, names its cohorts, and does n
   const table = out.slice(out.indexOf('### Echo against control 1'));
   assert.ok(table.indexOf('2026-01-09T00:00:00Z') < table.indexOf('2026-01-02T00:00:00Z'), 'newest batch first');
   assert.match(out, /Both counts run slightly high/);
+});
+
+test('raw uses the echo mix, validates in results, and renders with AEC off and beside echo and control', () => {
+  const n = 16000, near = new Float32Array(n), far = new Float32Array(n);
+  for (let i = 0; i < n; i++) { near[i] = 2 * Math.sin(i / 9); far[i] = Math.sin(i / 5); }
+  const echoMix = mixMicrophone(near, far, { delayMs: 30, gainDb: -6 }, 9, 'echo');
+  const rawMix = mixMicrophone(near, far, { delayMs: 30, gainDb: -6 }, 9, 'raw');
+  assert.deepEqual(rawMix.mic, echoMix.mic);
+  assert.deepEqual(rawMix.call, echoMix.call);
+  assert.equal(rawMix.room.commonScale, echoMix.room.commonScale);
+  assert.equal(rawMix.room.echoScale, echoMix.room.echoScale);
+  assert.equal(rawMix.room.condition, 'raw');
+
+  const rawRun = callRun('2026-01-02T00:00:00Z', null, 'raw', {
+    ...score,
+    doubleTalk: { ...score.doubleTalk, me: { ...score.doubleTalk.me, wer: 1, hits: 0, substitutions: 4, deletions: 0 } },
+  });
+  const parsed = parseResult(JSON.parse(JSON.stringify(rawRun)));
+  assert.equal(parsed.kind === 'call' && parsed.condition.mode, 'raw');
+  assert.match(resultPath('/tmp/unused', 'call-raw', new Date('2026-01-02T00:00:00Z')), /call-raw-2026-01-02/);
+  const invalid = JSON.parse(JSON.stringify(rawRun));
+  invalid.condition.mode = 'other';
+  assert.throws(() => parseResult(invalid), /condition\.mode/);
+
+  const controlRun = callRun('2026-01-02T00:00:00Z', null, 'control', {
+    ...score,
+    doubleTalk: { ...score.doubleTalk, me: { ...score.doubleTalk.me, wer: 0.5, hits: 2, substitutions: 2, deletions: 0 } },
+  });
+  const echoRun = callRun('2026-01-02T00:00:00Z', null, 'echo', score);
+  const doc = '<!-- bench:begin -->\n<!-- bench:end -->\n<!-- bench-call:begin -->\n<!-- bench-call:end -->\n';
+  const runs = [echoRun, controlRun, rawRun];
+  const out = renderBench(doc, runs);
+  for (const order of [[...runs].reverse(), [rawRun, echoRun, controlRun], [controlRun, rawRun, echoRun]]) {
+    assert.equal(renderBench(doc, order), out);
+  }
+  assert.match(out, /### Call cohort 3 — raw, with echo, AEC off/);
+  assert.match(out, /\| 1 \| FictionA\.B\+FictionB\.A \| 70 \| off \| off \| off \| off \| off \| off \|/);
+  assert.match(out, /\| 1 \| FictionA\.B\+FictionB\.A \| 30 ms, -6 dB \| 0\.00% \| 100\.00% \|/);
+  assert.doesNotMatch(out, /NaN|Infinity/);
+  assert.match(out, /### Echo against control and raw 1 \(call cohorts 1, 2 and 3\)/);
+  assert.match(out, /\| 2026-01-02T00:00:00Z \| 0\.00% \| 0\.00% \| 0\.00% \| \+0\.00 pts \| 75\.00% \| 50\.00% \| 100\.00% \| \+25\.00 pts \|/);
+  assert.match(out, /Median near-only difference across 1 eligible run: \+0\.00 pts/);
+  assert.match(out, /Median double-talk difference across 1 eligible run: \+25\.00 pts/);
+  assert.match(out, /Median double-talk raw-minus-control difference across 1 eligible run: \+50\.00 pts/);
+  assert.match(out, /Median double-talk echo-minus-raw difference across 1 eligible run: -25\.00 pts/);
+  assert.match(out, /#### Far words in Me/);
+  assert.match(out, /#### Read-time echo rule[\s\S]*\| 2026-01-02T00:00:00Z \| Double talk \| raw \|/);
+  assert.match(out, /#### Them \(call source\)/);
+  assert.match(out, /#### Lag during a call[\s\S]*\| 2026-01-02T00:00:00Z \| Me \| raw \|/);
 });

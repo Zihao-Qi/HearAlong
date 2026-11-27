@@ -141,7 +141,7 @@ export function fileStamp(date = new Date()): string {
 }
 
 /** `wer-<stamp>.json`, with a numeric suffix if that name is already taken. */
-export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm' | 'call-echo' | 'call-control', date = new Date()): string {
+export function resultPath(directory: string, prefix: 'wer' | 'live' | 'ihm' | 'call-echo' | 'call-control' | 'call-raw', date = new Date()): string {
   const base = `${prefix}-${fileStamp(date)}`;
   let path = join(directory, `${base}.json`);
   for (let n = 2; existsSync(path); n++) path = join(directory, `${base}-${n}.json`);
@@ -237,7 +237,7 @@ function parseCall(row: Record<string, unknown>): CallFile {
   return {
     ...machine(row), kind: 'call', createdAt: needString(row.createdAt, 'createdAt'), runLabel: label(row.runLabel), model: needString(row.model, 'model'), error: errorOf(row.error),
     failedChunks: needCount(row.failedChunks, 'failedChunks'), unfinishedChunks: needCount(row.unfinishedChunks, 'unfinishedChunks'),
-    condition: { mode: condition.mode === 'echo' || condition.mode === 'control' ? condition.mode : bad('condition.mode must be "echo" or "control"'),
+    condition: { mode: condition.mode === 'echo' || condition.mode === 'control' || condition.mode === 'raw' ? condition.mode : bad('condition.mode must be "echo", "control", or "raw"'),
       batch: needString(condition.batch, 'condition.batch'), pairs: condition.pairs.map(item => needString(item, 'condition.pairs')), blocks: needCount(condition.blocks, 'condition.blocks'),
       smoke: needBoolean(condition.smoke, 'condition.smoke'), room: needString(condition.room, 'condition.room') },
     pairs: row.pairs.map((item, index) => parseCallPair(item, `pairs[${index}]`)),

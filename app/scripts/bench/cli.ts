@@ -1,5 +1,6 @@
 // Flag parsing for the benchmark runners. Planning only: nothing is downloaded or transcribed here.
 import { isMeetingId, isMic, MICS, SC_MEETINGS, type MeetingId, type Mic } from './ami.ts';
+import type { CallCondition } from './call-mix.ts';
 
 export type WerArgs = { sessions: MeetingId[]; mics: Mic[]; label: string | null; allowDirty: boolean };
 export type LiveArgs = { session: MeetingId; mic: Mic; from: string; fromSec: number; minutes: number; label: string | null; allowDirty: boolean };
@@ -84,12 +85,26 @@ export function parseLiveArgs(argv: string[]): LiveArgs {
   return { session, mic, from, fromSec: clockToSeconds(from), minutes, label, allowDirty };
 }
 
-export type CallArgs = { pairs: number[]; blocks: number; smoke: boolean; condition: 'echo' | 'control' | 'both'; label: string | null; allowDirty: boolean };
-const CALL_USAGE = 'Usage: npm run bench:call -- [--pairs 1,2,3,4,5] [--condition echo|control|both] [--smoke] [--run-label text] [--allow-dirty]';
+export type CallArgs = { pairs: number[]; blocks: number; smoke: boolean; condition: CallCondition | 'both' | 'all'; label: string | null; allowDirty: boolean };
+const CALL_USAGE = 'Usage: npm run bench:call -- [--pairs 1,2,3,4,5] [--condition echo|control|raw|both|all] [--smoke] [--run-label text] [--allow-dirty]';
+
+/** Expand a `--condition` flag into the concrete call conditions to run. */
+export function callConditions(condition: CallArgs['condition']): CallCondition[] {
+  if (condition === 'both') return ['echo', 'control'];
+  if (condition === 'all') return ['echo', 'control', 'raw'];
+  return [condition];
+}
+
+/** Rotate `conditions` by `step` so each condition gets a turn running first across pairs. */
+export function rotateConditions(conditions: readonly CallCondition[], step: number): CallCondition[] {
+  if (conditions.length <= 1) return [...conditions];
+  const shift = ((step % conditions.length) + conditions.length) % conditions.length;
+  return [...conditions.slice(shift), ...conditions.slice(0, shift)];
+}
 
 /**
  * Pairs are 1-based indices into PAIRS (default all five). Each pair plays 6 blocks of 20 s (two of each talk state).
- * `--condition both` (the default) runs each pair twice: with the simulated echo, and as a control with no echo on the microphone.
+ * `--condition both` (the default) runs `echo` and `control`; `all` runs `echo`, `control`, and `raw`.
  * `--smoke` is the short development run: one pair (the first given, default pair 1) and one block of each talk state.
  */
 export function parseCallArgs(argv: string[], pairCount: number): CallArgs {
@@ -106,7 +121,7 @@ export function parseCallArgs(argv: string[], pairCount: number): CallArgs {
     else if (arg === '--run-label') label = take(argv, ++i, arg);
     else if (arg === '--condition') {
       const value = take(argv, ++i, arg);
-      if (value !== 'echo' && value !== 'control' && value !== 'both') throw new Error('--condition must be echo, control or both.');
+      if (value !== 'echo' && value !== 'control' && value !== 'raw' && value !== 'both' && value !== 'all') throw new Error('--condition must be echo, control, raw, both or all.');
       condition = value;
     } else if (arg === '--pairs') {
       const list = take(argv, ++i, arg).split(',').map(item => item.trim());
