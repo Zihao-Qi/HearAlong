@@ -17,7 +17,7 @@ import { echoWords } from '../../src/echo-words.ts';
 import { LagMeter } from '../lag-meter.ts';
 import { benchPaths, reference } from './ami.ts';
 import { planIhm } from './ihm.ts';
-import { parseCallArgs } from './cli.ts';
+import { parseCallArgs, callConditions, rotateConditions } from './cli.ts';
 import { machineInfo, modelIdentity } from './machine.ts';
 import { chunkCompletionError, fileStamp, resultPath, type CallAec, type CallFile, type CallLag, type CallPairResult, type CountSummary } from './results.ts';
 import { applySnapshot, domSight, frameEndMs, mergeSights, rememberSegmentEnds, spokenFrame, visibleLags, type DomSight, type SpokenFrame } from './snapshot.ts';
@@ -152,7 +152,7 @@ type Settle = { waitedMs: number; chunksTerminal: boolean; expected: number; mis
 async function runPair(index: number, pair: CallPair, condition: CallCondition, audio: { near: PairAudio; far: PairAudio }, layout: Layout, modelPath: string, out: string, notices: string[]) {
   const name = `pair-${index}-${condition}`, folder = join(out, name);
   await mkdir(folder, { mode: 0o700 });
-  console.log(`${name}: ${pairName(pair)}, ${condition === 'echo' ? `echo ${pair.delayMs} ms at ${pair.gainDb} dB` : 'control: no echo on the microphone'}`);
+  console.log(`${name}: ${pairName(pair)}, ${condition === 'control' ? 'control: no echo on the microphone' : `echo ${pair.delayMs} ms at ${pair.gainDb} dB${condition === 'raw' ? ', AEC off' : ''}`}`);
   const { near, far } = audio;
   const mixed = mixMicrophone(near.pcm, far.pcm, pair, 123 + index, condition);
   const micWav = join(folder, 'microphone.wav');
@@ -232,7 +232,7 @@ async function runPair(index: number, pair: CallPair, condition: CallCondition, 
       const ticks = setInterval(tick, 250), sightTicks = setInterval(takeSights, 100);
       stop = () => { clearInterval(ticks); clearInterval(sightTicks); };
       tick(); takeSights();
-    }, attach, { modelPath, terminalTimeoutMs: 30 * 60_000, directory, callApp: {
+    }, attach, { modelPath, terminalTimeoutMs: 30 * 60_000, directory, ...(condition === 'raw' ? { echo: null } : {}), callApp: {
       app: helper.app, connect: url => helper.connect(url), anchor: at => helper.anchor(at),
       // After Stop and every job settled: confirm every chunk of both sources is terminal on the server, then wait (bounded) until
       // the page shows each final line the segments view lists, so tail lines are timed too.
@@ -348,7 +348,7 @@ async function main(): Promise<void> {
   await mkdir(results, { recursive: true, mode: 0o700 });
   const stamp = fileStamp(started), work = join(results, `call-${stamp}`);
   await mkdir(work, { mode: 0o700 });
-  const conditions: CallCondition[] = args.condition === 'both' ? ['echo', 'control'] : [args.condition];
+  const conditions = callConditions(args.condition);
   // The server logs AEC fallback once per recording through console.warn; count those lines, and still print them.
   const notices: string[] = [];
   const warn = console.warn;
@@ -356,11 +356,11 @@ async function main(): Promise<void> {
   const pool = (): Samples => ({ me: { preview: [], final: [] }, them: { preview: [], final: [] } });
   const runs = new Map(conditions.map(condition => [condition, { pairs: [] as CallPairResult[], pooled: pool(), pooledDiagnostic: pool() }]));
   try {
-    for (const index of args.pairs) {
+    for (const [step, index] of args.pairs.entries()) {
       const pair = PAIRS[index - 1];
       const audio = { near: await speakerAudio(pair.near, nearBlocks(layout), layout, paths.root), far: await speakerAudio(pair.far, farBlocks(layout), layout, paths.root) };
-      // Alternate which condition goes first, so warm-up and order effects do not fall on one side.
-      for (const condition of index % 2 ? conditions : [...conditions].reverse()) {
+      // Rotate which condition goes first, so warm-up and order effects do not fall on one side.
+      for (const condition of rotateConditions(conditions, step)) {
         const { result, samples } = await runPair(index, pair, condition, audio, layout, config.path, work, notices);
         const run = runs.get(condition)!;
         run.pairs.push(result);

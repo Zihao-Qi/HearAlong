@@ -5,7 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { benchPaths } from './ami.ts';
 import { parseResult, validateCompletion, type BenchResult, type CallFile, type CallLag, type CountSummary, type LiveFile, type WerFile, type IhmFile } from './results.ts';
-import type { Leak } from './call-mix.ts';
+import type { CallCondition, Leak } from './call-mix.ts';
+import { TALK_STATES } from './call-mix.ts';
 import { medianSpread } from './stats.ts';
 import { sumScores } from './breakdown.ts';
 
@@ -73,15 +74,18 @@ function provenanceTable(group: BenchResult[]): string[] {
       run.kind === 'call' || run.kind === 'live' ? run.unfinishedChunks ?? 'n/a' : (run.sessions.every(s => s.unfinishedChunks !== undefined) ? run.sessions.reduce((n, s) => n + s.unfinishedChunks!, 0) : 'n/a')]));
 }
 
+const CALL_MODE_ORDER: Record<CallCondition, number> = { echo: 0, control: 1, raw: 2 };
+const CALL_MODE_LABELS: Record<CallCondition, string> = { echo: 'with echo', control: 'control, no echo', raw: 'raw, with echo, AEC off' };
+
 function renderCallRuns(runs: CallFile[]): string {
   const lines = [ATTRIBUTION, '', 'Accuracy is custom-normalized WER; not directly comparable to published Whisper/NIST scores. Echo is simulated (see Method).'];
   let index = 0;
   const numbers = new Map<string, number>();
-  // The echo and control files of one run share a date; put echo first so ties never depend on the order of the input files.
-  const ordered = [...runs].sort((a, b) => Number(a.condition.mode !== 'echo') - Number(b.condition.mode !== 'echo') || a.condition.batch.localeCompare(b.condition.batch));
+  // Files of one run share a date; fix the mode order so ties never depend on the order of the input files.
+  const ordered = [...runs].sort((a, b) => CALL_MODE_ORDER[a.condition.mode] - CALL_MODE_ORDER[b.condition.mode] || a.condition.batch.localeCompare(b.condition.batch));
   for (const [key, group] of cohorts(ordered)) {
     const legacy = key.startsWith('legacy:'), example = group[0], finished = group.filter(run => !run.error);
-    const mode = example.condition.mode === 'echo' ? 'with echo' : 'control, no echo';
+    const mode = CALL_MODE_LABELS[example.condition.mode];
     if (!legacy) numbers.set(key, index + 1);
     lines.push('', legacy ? '### Legacy' : `### Call cohort ${++index} — ${mode}`, '', `${group.length} ${group.length === 1 ? 'run' : 'runs'}; ${finished.length} finished.`, '',
       `Normalizer: ${example.normalizer ?? 'hearalong-1'}. Scoring commit: ${example.scoringCommit ?? example.commit}; scoring dirty: ${example.scoringDirty ?? example.dirty ?? 'unknown'}.`, '',
@@ -114,12 +118,19 @@ function renderCallRuns(runs: CallFile[]): string {
       aggregate('Them final p50', finished.filter(r => r.totals.lag.them.final.n).map(r => r.totals.lag.them.final.p50), formatLagValue));
     lines.push('', '#### Echo cancellation', '', 'From the server: microphone frames processed by the AEC worker (`echoStats`), the share of their samples that had call audio to cancel against, the wait for that audio, worker failures, and the once-per-recording notices that AEC passed raw audio.', '', ...markdownTable(
       ['Run', 'Pair', 'Mic frames', 'Through AEC', 'Reference covered', 'Mean wait', 'Max wait', 'Worker failures', 'Raw notices'],
-      group.flatMap(run => run.pairs.map(pair => [n(run), pair.pair, pair.aec.micFrames, pair.aec.aecFrames, pair.aec.referenceCoverage === null ? 'n/a' : formatPercent(pair.aec.referenceCoverage),
-        pair.aec.meanWaitMs === null ? 'n/a' : `${Math.round(pair.aec.meanWaitMs)} ms`, pair.aec.maxWaitMs === null ? 'n/a' : `${Math.round(pair.aec.maxWaitMs)} ms`,
-        pair.aec.failures, pair.aec.notices.length ? pair.aec.notices.map(oneLine).join(' / ') : 0]))));
+      group.flatMap(run => run.pairs.map(pair => {
+        const off = run.condition.mode === 'raw';
+        return [n(run), pair.pair, pair.aec.micFrames,
+          off ? 'off' : pair.aec.aecFrames,
+          off ? 'off' : (pair.aec.referenceCoverage === null ? 'n/a' : formatPercent(pair.aec.referenceCoverage)),
+          off ? 'off' : (pair.aec.meanWaitMs === null ? 'n/a' : `${Math.round(pair.aec.meanWaitMs)} ms`),
+          off ? 'off' : (pair.aec.maxWaitMs === null ? 'n/a' : `${Math.round(pair.aec.maxWaitMs)} ms`),
+          off ? 'off' : pair.aec.failures,
+          off ? 'off' : (pair.aec.notices.length ? pair.aec.notices.map(oneLine).join(' / ') : 0)];
+      }))));
     lines.push('', '#### Per pair', '', ...markdownTable(
       ['Run', 'Pair', 'Echo', 'Me near-only WER', 'Me double-talk WER', 'Far words in Me, echo only', 'Them WER, far alone', 'Genuine Me words hidden', 'Me final p50', 'Them final p50', 'Error'],
-      group.flatMap(run => run.pairs.map(pair => { const t = pair.score; return [n(run), pair.pair, run.condition.mode === 'echo' ? `${pair.delayMs} ms, ${pair.gainDb} dB` : 'none', wer(t.nearOnly.me), wer(t.doubleTalk.me),
+      group.flatMap(run => run.pairs.map(pair => { const t = pair.score; return [n(run), pair.pair, run.condition.mode === 'control' ? 'none' : `${pair.delayMs} ms, ${pair.gainDb} dB`, wer(t.nearOnly.me), wer(t.doubleTalk.me),
         formatLeak(t.echoOnly.leak), wer(t.echoOnly.them), formatHidden(t.nearOnly.hidden.genuine + t.doubleTalk.hidden.genuine, t.nearOnly.hidden.recognizedGenuine + t.doubleTalk.hidden.recognizedGenuine),
         formatLag(pair.lag.me.final, 'p50'), formatLag(pair.lag.them.final, 'p50'), pair.error ? oneLine(pair.error) : '']; }))));
     lines.push('', UPPER_BOUNDS);
@@ -130,42 +141,140 @@ function renderCallRuns(runs: CallFile[]): string {
   return lines.join('\n');
 }
 
-/** Me WER with echo beside the control (no echo) from the same run, matched by batch, cohort by cohort. Never pooled across modes. */
+type WerScore = { referenceWords: number; wer: number };
+type MatchedBatch = { batch: string; echo?: CallFile; control?: CallFile; raw?: CallFile; createdAt: string };
+
+function formatCohortList(values: number[]): string {
+  if (values.length <= 1) return values.map(String).join('');
+  if (values.length === 2) return `${values[0]} and ${values[1]}`;
+  return `${values.slice(0, -1).join(', ')} and ${values.at(-1)}`;
+}
+
+/** Me WER and side-by-side metrics across conditions from the same run, matched by batch, cohort by cohort. Never pooled across modes. */
 function renderCallControl(runs: CallFile[], numbers: ReadonlyMap<string, number>): string[] {
   // Newest first, as cohorts() orders them, so the output does not depend on the order of the input files.
-  const pairsOf = new Map<string, { echo: CallFile[]; control: CallFile[] }>();
-  for (const run of [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.condition.mode.localeCompare(b.condition.mode))) {
+  const pairsOf = new Map<string, { echo: CallFile[]; control: CallFile[]; raw: CallFile[] }>();
+  for (const run of [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || CALL_MODE_ORDER[a.condition.mode] - CALL_MODE_ORDER[b.condition.mode] || a.condition.batch.localeCompare(b.condition.batch))) {
     const key = cohortKey({ ...run, condition: { ...run.condition, mode: 'echo' } });
     if (!key) continue;
-    const entry = pairsOf.get(key) ?? { echo: [], control: [] };
+    const entry = pairsOf.get(key) ?? { echo: [], control: [], raw: [] };
     entry[run.condition.mode].push(run); pairsOf.set(key, entry);
   }
   const lines: string[] = [];
-  const wer = (score: { referenceWords: number; wer: number }) => score.referenceWords > 0 ? formatPercent(score.wer) : 'n/a';
-  const diff = (a: { referenceWords: number; wer: number }, b: { referenceWords: number; wer: number }) =>
-    a.referenceWords && b.referenceWords && Number.isFinite(a.wer - b.wer) ? `${a.wer >= b.wer ? '+' : ''}${((a.wer - b.wer) * 100).toFixed(2)} pts` : 'n/a';
+  const wer = (score?: WerScore) => score && score.referenceWords > 0 ? formatPercent(score.wer) : 'n/a';
+  const diff = (a?: WerScore, b?: WerScore) =>
+    a && b && a.referenceWords && b.referenceWords && Number.isFinite(a.wer - b.wer) ? `${a.wer >= b.wer ? '+' : ''}${((a.wer - b.wer) * 100).toFixed(2)} pts` : 'n/a';
+  const points = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)} pts`;
   let index = 0;
-  for (const { echo, control } of pairsOf.values()) {
-    const matched = echo.flatMap(e => { const c = control.find(item => item.condition.batch === e.condition.batch); return c && !e.error && !c.error ? [{ e, c }] : []; })
-      .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt));
+  for (const group of pairsOf.values()) {
+    const batches = new Map<string, { echo?: CallFile; control?: CallFile; raw?: CallFile }>();
+    for (const mode of ['echo', 'control', 'raw'] as const) {
+      for (const run of group[mode]) {
+        if (run.error) continue;
+        const item = batches.get(run.condition.batch) ?? {};
+        item[mode] ??= run;
+        batches.set(run.condition.batch, item);
+      }
+    }
+    const matched: MatchedBatch[] = [...batches.entries()]
+      .map(([batch, entry]) => ({ batch, ...entry, createdAt: (entry.echo ?? entry.control ?? entry.raw)!.createdAt }))
+      .filter(m => Number(Boolean(m.echo)) + Number(Boolean(m.control)) + Number(Boolean(m.raw)) >= 2)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.batch.localeCompare(a.batch));
     if (!matched.length) continue;
-    const example = matched[0].e.condition;
-    const echoNo = numbers.get(cohortKey(matched[0].e)!), controlNo = numbers.get(cohortKey(matched[0].c)!);
-    lines.push('', `### Echo against control ${++index} (call cohorts ${echoNo} and ${controlNo})`, '', `Me WER with the simulated echo and in the control (the same microphone without echo, AEC still running), from the same runs. ${example.blocks} blocks per pair${example.smoke ? ' (smoke run)' : ''}; pairs ${example.pairs.join(', ')}. The difference is echo minus control, in percentage points.`, '',
-      ...markdownTable(['Batch', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
-        matched.map(({ e, c }) => { const a = e.totals.score, b = c.totals.score; return [e.condition.batch, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me),
-          wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]; })));
-    const differences = (state: 'nearOnly' | 'doubleTalk') => matched.filter(({ e, c }) => e.totals.score[state].me.referenceWords && c.totals.score[state].me.referenceWords)
-      .map(({ e, c }) => e.totals.score[state].me.wer - c.totals.score[state].me.wer);
-    const points = (value: number) => `${value >= 0 ? '+' : ''}${(value * 100).toFixed(2)} pts`;
-    lines.push('', aggregate('near-only difference', differences('nearOnly'), points), aggregate('double-talk difference', differences('doubleTalk'), points));
-    lines.push('', '#### Per pair', '', ...markdownTable(['Batch', 'Pair', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
-      matched.flatMap(({ e, c }) => e.pairs.flatMap(pe => {
-        const pc = c.pairs.find(item => item.pair === pe.pair);
-        if (!pc || pe.error || pc.error) return [];
-        const a = pe.score, b = pc.score;
-        return [[e.condition.batch, pe.pair, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me), wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]];
-      }))));
+    const hasRaw = matched.some(m => m.raw !== undefined);
+    const differences = (pick: (m: MatchedBatch) => [WerScore | undefined, WerScore | undefined]) =>
+      matched.flatMap(m => {
+        const [a, b] = pick(m);
+        return a && b && a.referenceWords && b.referenceWords && Number.isFinite(a.wer - b.wer) ? [a.wer - b.wer] : [];
+      });
+    if (!hasRaw) {
+      const example = matched[0].echo!.condition;
+      const echoNo = numbers.get(cohortKey(matched[0].echo!)!), controlNo = numbers.get(cohortKey(matched[0].control!)!);
+      lines.push('', `### Echo against control ${++index} (call cohorts ${echoNo} and ${controlNo})`, '', `Me WER with the simulated echo and in the control (the same microphone without echo, AEC still running), from the same runs. ${example.blocks} blocks per pair${example.smoke ? ' (smoke run)' : ''}; pairs ${example.pairs.join(', ')}. The difference is echo minus control, in percentage points.`, '',
+        ...markdownTable(['Batch', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
+          matched.map(m => { const a = m.echo!.totals.score, b = m.control!.totals.score; return [m.batch, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me),
+            wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]; })));
+      lines.push('', aggregate('near-only difference', differences(m => [m.echo?.totals.score.nearOnly.me, m.control?.totals.score.nearOnly.me]), points),
+        aggregate('double-talk difference', differences(m => [m.echo?.totals.score.doubleTalk.me, m.control?.totals.score.doubleTalk.me]), points));
+      lines.push('', '#### Per pair', '', ...markdownTable(['Batch', 'Pair', 'Near only, echo', 'Near only, control', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, difference'],
+        matched.flatMap(m => m.echo!.pairs.flatMap(pe => {
+          const pc = m.control!.pairs.find(item => item.pair === pe.pair);
+          if (!pc || pe.error || pc.error) return [];
+          const a = pe.score, b = pc.score;
+          return [[m.batch, pe.pair, wer(a.nearOnly.me), wer(b.nearOnly.me), diff(a.nearOnly.me, b.nearOnly.me), wer(a.doubleTalk.me), wer(b.doubleTalk.me), diff(a.doubleTalk.me, b.doubleTalk.me)]];
+        }))));
+      continue;
+    }
+    const firstOf = (mode: CallCondition) => matched.find(m => m[mode])?.[mode];
+    const cohortNos = (['echo', 'control', 'raw'] as const).flatMap(mode => {
+      const sample = firstOf(mode);
+      const no = sample ? numbers.get(cohortKey(sample)!) : undefined;
+      return no !== undefined ? [no] : [];
+    });
+    const example = (matched[0].echo ?? matched[0].raw ?? matched[0].control)!.condition;
+    lines.push('', `### Echo against control and raw ${++index} (call cohorts ${formatCohortList(cohortNos)})`, '',
+      `Me WER with the simulated echo (echo, AEC on), without echo (control, AEC on), and raw (with echo, AEC off), from the same runs. ${example.blocks} blocks per pair${example.smoke ? ' (smoke run)' : ''}; pairs ${example.pairs.join(', ')}. The difference column is echo minus control, in percentage points.`, '',
+      ...markdownTable(['Batch', 'Near only, echo', 'Near only, control', 'Near only, raw', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, raw', 'Double talk, difference'],
+        matched.map(m => {
+          const e = m.echo?.totals.score, c = m.control?.totals.score, r = m.raw?.totals.score;
+          return [m.batch, wer(e?.nearOnly.me), wer(c?.nearOnly.me), wer(r?.nearOnly.me), diff(e?.nearOnly.me, c?.nearOnly.me),
+            wer(e?.doubleTalk.me), wer(c?.doubleTalk.me), wer(r?.doubleTalk.me), diff(e?.doubleTalk.me, c?.doubleTalk.me)];
+        })));
+    lines.push('',
+      aggregate('near-only difference', differences(m => [m.echo?.totals.score.nearOnly.me, m.control?.totals.score.nearOnly.me]), points),
+      aggregate('double-talk difference', differences(m => [m.echo?.totals.score.doubleTalk.me, m.control?.totals.score.doubleTalk.me]), points),
+      aggregate('double-talk raw-minus-control difference', differences(m => [m.raw?.totals.score.doubleTalk.me, m.control?.totals.score.doubleTalk.me]), points),
+      aggregate('double-talk echo-minus-raw difference', differences(m => [m.echo?.totals.score.doubleTalk.me, m.raw?.totals.score.doubleTalk.me]), points));
+    lines.push('', '#### Per pair', '', ...markdownTable(['Batch', 'Pair', 'Near only, echo', 'Near only, control', 'Near only, raw', 'Near only, difference', 'Double talk, echo', 'Double talk, control', 'Double talk, raw', 'Double talk, difference'],
+      matched.flatMap(m => {
+        const order = (m.echo ?? m.raw ?? m.control)!.pairs.map(item => item.pair);
+        return order.flatMap(pairName => {
+          const pe = m.echo?.pairs.find(item => item.pair === pairName && !item.error);
+          const pc = m.control?.pairs.find(item => item.pair === pairName && !item.error);
+          const pr = m.raw?.pairs.find(item => item.pair === pairName && !item.error);
+          if (Number(Boolean(pe)) + Number(Boolean(pc)) + Number(Boolean(pr)) < 2) return [];
+          return [[m.batch, pairName, wer(pe?.score.nearOnly.me), wer(pc?.score.nearOnly.me), wer(pr?.score.nearOnly.me), diff(pe?.score.nearOnly.me, pc?.score.nearOnly.me),
+            wer(pe?.score.doubleTalk.me), wer(pc?.score.doubleTalk.me), wer(pr?.score.doubleTalk.me), diff(pe?.score.doubleTalk.me, pc?.score.doubleTalk.me)]];
+        });
+      })));
+    const optLeak = (leak?: Leak) => leak ? formatLeak(leak) : 'n/a';
+    lines.push('', '#### Far words in Me', '', ...markdownTable(
+      ['Batch', 'Echo-only Me words, echo', 'Echo-only Me words, control', 'Echo-only Me words, raw', 'Echo-only far words, echo', 'Echo-only far words, control', 'Echo-only far words, raw', 'Double-talk far words, echo', 'Double-talk far words, control', 'Double-talk far words, raw'],
+      matched.map(m => [m.batch,
+        m.echo ? m.echo.totals.score.echoOnly.leak.meWords : 'n/a', m.control ? m.control.totals.score.echoOnly.leak.meWords : 'n/a', m.raw ? m.raw.totals.score.echoOnly.leak.meWords : 'n/a',
+        optLeak(m.echo?.totals.score.echoOnly.leak), optLeak(m.control?.totals.score.echoOnly.leak), optLeak(m.raw?.totals.score.echoOnly.leak),
+        optLeak(m.echo?.totals.score.doubleTalk.leak), optLeak(m.control?.totals.score.doubleTalk.leak), optLeak(m.raw?.totals.score.doubleTalk.leak)])),
+      '', UPPER_BOUNDS);
+    lines.push('', '#### Read-time echo rule', '', ...markdownTable(
+      ['Batch', 'Talk state', 'Condition', 'Me lines hidden', 'Me words hidden', 'Far words in Me, raw', 'Far words in Me, shown', 'Genuine Me words hidden', 'Me WER raw', 'Me WER shown'],
+      matched.flatMap(m => TALK_STATES.flatMap(state => (['echo', 'control', 'raw'] as const).flatMap(cond => {
+        const run = m[cond];
+        if (!run) return [];
+        const t = run.totals.score[state];
+        return [[m.batch, STATE_NAMES[state], cond, t.hidden.lines, t.hidden.words, formatLeak(t.leakRaw), formatLeak(t.leak),
+          formatHidden(t.hidden.genuine, t.hidden.recognizedGenuine), state === 'echoOnly' ? 'n/a' : wer(t.meRaw), state === 'echoOnly' ? 'n/a' : wer(t.me)]];
+      })))),
+      '', UPPER_BOUNDS);
+    lines.push('', '#### Them (call source)', '', ...markdownTable(
+      ['Batch', 'Far alone, echo', 'Far alone, control', 'Far alone, raw', 'Double talk, echo', 'Double talk, control', 'Double talk, raw'],
+      matched.map(m => [m.batch, wer(m.echo?.totals.score.echoOnly.them), wer(m.control?.totals.score.echoOnly.them), wer(m.raw?.totals.score.echoOnly.them),
+        wer(m.echo?.totals.score.doubleTalk.them), wer(m.control?.totals.score.doubleTalk.them), wer(m.raw?.totals.score.doubleTalk.them)])));
+    lines.push('', '#### Lag during a call', '', ...markdownTable(
+      ['Batch', 'Source', 'Condition', 'Preview p50', 'Preview p95', 'Preview max', 'Preview n', 'Final p50', 'Final p95', 'Final max', 'Final n', 'After Stop'],
+      matched.flatMap(m => (['me', 'them'] as const).flatMap(role => (['echo', 'control', 'raw'] as const).flatMap(cond => {
+        const run = m[cond];
+        if (!run) return [];
+        const lag = run.totals.lag[role];
+        return [[m.batch, role === 'me' ? 'Me' : 'Them', cond, ...lagCells(lag.preview), ...lagCells(lag.final), run.totals.afterStop[role]]];
+      })))),
+      '', '##### Diagnostic: reached server to available on server', '', ...markdownTable(
+        ['Batch', 'Source', 'Condition', 'Preview p50', 'Preview p95', 'Preview max', 'Preview n', 'Final p50', 'Final p95', 'Final max', 'Final n'],
+        matched.flatMap(m => (['me', 'them'] as const).flatMap(role => (['echo', 'control', 'raw'] as const).flatMap(cond => {
+          const run = m[cond];
+          if (!run) return [];
+          const lag = run.totals.diagnostic[role];
+          return [[m.batch, role === 'me' ? 'Me' : 'Them', cond, ...lagCells(lag.preview), ...lagCells(lag.final)]];
+        })))));
   }
   return lines;
 }
